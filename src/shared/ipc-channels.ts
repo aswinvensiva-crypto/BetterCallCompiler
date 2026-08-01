@@ -30,7 +30,9 @@ export const INVOKE_CHANNEL_NAMES = [
   'terminal:write',
   'terminal:resize',
   'terminal:dispose',
-  'terminal:list'
+  'terminal:list',
+  'toolchain:list',
+  'toolchain:rescan'
 ] as const
 
 export type InvokeChannel = (typeof INVOKE_CHANNEL_NAMES)[number]

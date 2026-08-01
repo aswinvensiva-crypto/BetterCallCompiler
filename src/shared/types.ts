@@ -45,6 +45,43 @@ export const fsWatchEventSchema = z.strictObject({
 })
 export type FsWatchEvent = z.infer<typeof fsWatchEventSchema>
 
+/* ------------------------------ toolchains ------------------------------ */
+
+/**
+ * What the probe concluded about a tool.
+ *
+ * `unusable` is not in the original spec but the probe cannot do without it: a
+ * binary that resolves on PATH and then fails `--version` is neither missing nor
+ * runnable, and collapsing it into either one produces a lie. The runner (step
+ * 7) treats only `real` as a usable toolchain.
+ */
+export const toolchainKindSchema = z.enum(['real', 'store-stub', 'unusable', 'missing'])
+export type ToolchainKind = z.infer<typeof toolchainKindSchema>
+
+export const toolchainSchema = z.strictObject({
+  /** Stable identifier: `node`, `python`, `gcc`, `g++`, `tsc`, `docker`. */
+  id: z.string(),
+  label: z.string(),
+  found: z.boolean(),
+  /** Absolute path as resolved from PATH; null when nothing matched. */
+  path: z.string().nullable(),
+  /** First line of `--version` output, verbatim; null when it produced none. */
+  version: z.string().nullable(),
+  kind: toolchainKindSchema,
+  /**
+   * Human guidance for a tool that is present but not usable. Carried on the
+   * record rather than reconstructed in the renderer so there is exactly one
+   * copy of the Store-stub wording.
+   */
+  guidance: z.string().nullable()
+})
+export type Toolchain = z.infer<typeof toolchainSchema>
+
+/** True when the probe found something the runner can actually execute. */
+export function isRunnable(toolchain: Toolchain): boolean {
+  return toolchain.kind === 'real' && toolchain.path !== null
+}
+
 /* ------------------------------- terminal ------------------------------- */
 
 export const terminalSessionSchema = z.strictObject({

@@ -674,6 +674,107 @@
   color: var(--ap-fg);
 }
 
+/* ---------- toolchains popover ---------- */
+
+.toolchains-popover {
+  position: fixed;
+  z-index: 70;
+  width: min(400px, calc(100vw - 16px));
+  max-height: min(440px, calc(100vh - 80px));
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--ap-border-strong);
+  border-radius: var(--ap-radius);
+  background: var(--ap-bg-elevated);
+  box-shadow: var(--ap-shadow-overlay);
+}
+
+.toolchains-popover__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--ap-border);
+}
+
+.toolchains-popover__title {
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-size: var(--ap-font-size-sm);
+  color: var(--ap-fg-muted);
+}
+
+.toolchains-popover__list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  margin: 0;
+  padding: 4px 0;
+  list-style: none;
+}
+
+.toolchains-row {
+  padding: 7px 12px;
+  border-left: 2px solid transparent;
+}
+
+.toolchains-row--real {
+  border-left-color: var(--ap-success);
+}
+
+.toolchains-row--store-stub,
+.toolchains-row--unusable {
+  border-left-color: var(--ap-warning);
+}
+
+.toolchains-row__top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.toolchains-row__name {
+  font-weight: 600;
+}
+
+.toolchains-row__status {
+  color: var(--ap-fg-muted);
+  font-size: var(--ap-font-size-sm);
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.toolchains-row--missing .toolchains-row__name {
+  color: var(--ap-fg-subtle);
+}
+
+.toolchains-row__path {
+  margin-top: 2px;
+  font-family: var(--ap-font-mono);
+  font-size: var(--ap-font-size-sm);
+  color: var(--ap-fg-subtle);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}
+
+.toolchains-row__guidance {
+  margin: 6px 0 2px;
+  padding: 6px 8px;
+  border-radius: var(--ap-radius);
+  background: rgba(224, 179, 65, 0.1);
+  color: var(--ap-fg);
+  font-size: var(--ap-font-size-sm);
+  user-select: text;
+}
+
 /* ---------- panel: terminals ---------- */
 
 .panel__body {

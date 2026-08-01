@@ -31,6 +31,7 @@ import {
   resizeSession,
   writeToSession
 } from './terminal'
+import { listToolchains, rescanToolchains } from './toolchains'
 
 export type InvokeHandler<C extends InvokeChannel> = (
   request: RequestOf<C>,
@@ -113,7 +114,11 @@ export function createHandlerMap(): HandlerMap {
       return { disposed: true }
     },
 
-    'terminal:list': () => ({ sessions: listSessions() })
+    'terminal:list': () => ({ sessions: listSessions() }),
+
+    'toolchain:list': async () => ({ toolchains: [...(await listToolchains())] }),
+
+    'toolchain:rescan': async () => ({ toolchains: [...(await rescanToolchains())] })
   }
 }
 

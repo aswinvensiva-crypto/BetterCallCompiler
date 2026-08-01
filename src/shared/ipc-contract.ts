@@ -6,6 +6,7 @@ import {
   terminalDataSchema,
   terminalExitSchema,
   terminalSessionSchema,
+  toolchainSchema,
   workspaceSchema
 } from './types'
 
@@ -168,6 +169,18 @@ export const INVOKE_CHANNELS = {
   'terminal:list': {
     request: empty,
     response: z.strictObject({ sessions: z.array(terminalSessionSchema) })
+  },
+
+  // `list` serves the session cache; `rescan` drops it first. Two channels
+  // rather than one with a `force` flag, so a caller cannot invalidate a cache
+  // it only meant to read.
+  'toolchain:list': {
+    request: empty,
+    response: z.strictObject({ toolchains: z.array(toolchainSchema) })
+  },
+  'toolchain:rescan': {
+    request: empty,
+    response: z.strictObject({ toolchains: z.array(toolchainSchema) })
   }
 } as const satisfies Record<InvokeChannel, ChannelSpec>
 

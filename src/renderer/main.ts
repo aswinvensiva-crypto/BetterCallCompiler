@@ -14,6 +14,7 @@ import { attachEditor, activeDocument, openFile, reloadFromDisk, saveActive } fr
 import { mountTabs } from './editor/tabs'
 import { notifyError } from './workbench/notifications'
 import { mountPanel } from './workbench/panel'
+import { mountStatusBar } from './workbench/status-bar'
 
 declare global {
   interface Window {
@@ -141,31 +142,20 @@ function mountEditor(editorHost: HTMLElement, tabBar: HTMLElement): void {
 }
 
 /**
- * Renders the status bar, then proves the whole boundary works by calling
+ * Mounts the status bar, then proves the whole boundary works by calling
  * `app:ping` — preload bridge, zod-validated request, main handler, and a
  * `Result` all the way back.
  */
 async function renderStatusBar(host: HTMLElement): Promise<void> {
-  const bridge = el('span', 'status-bar__item')
-  const dot = el('span', 'status-bar__dot')
-  const label = document.createTextNode('Connecting…')
-  bridge.append(dot, label)
-
-  const build = el('span', 'status-bar__item', 'Aperture')
-
-  host.append(bridge)
-  host.append(el('span', 'status-bar__spacer'))
-  host.append(build)
+  const statusBar = mountStatusBar(host)
 
   const result = await window.aperture.app.ping({})
 
   if (result.ok) {
-    dot.classList.add('status-bar__dot--ok')
-    label.textContent = `Bridge connected · Electron ${result.value.electron}`
-    build.textContent = `Aperture ${result.value.version} · ${result.value.platform}`
+    statusBar.setBridge(`Bridge connected · Electron ${result.value.electron}`, 'ok')
+    statusBar.setBuild(`Aperture ${result.value.version} · ${result.value.platform}`)
   } else {
-    dot.classList.add('status-bar__dot--error')
-    label.textContent = `Bridge error: ${result.error.code}`
+    statusBar.setBridge(`Bridge error: ${result.error.code}`, 'error')
   }
 }
 
