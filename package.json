@@ -16,6 +16,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
+    "test:asar": "node test/asar/run-matrix.mjs",
+    "test:gc": "node test/gc/run-gc-control.mjs",
     "rebuild": "electron-rebuild"
   },
   "dependencies": {
