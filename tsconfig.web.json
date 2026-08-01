@@ -1,0 +1,9 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2022", "DOM", "DOM.Iterable", "WebWorker"],
+    // vite/client declares the `?worker` module suffix used by monaco-setup.ts.
+    "types": ["vite/client"]
+  },
+  "include": ["src/renderer/**/*.ts", "src/shared/**/*.ts"]
+}

@@ -1,0 +1,190 @@
+/**
+ * Renderer entry point.
+ *
+ * Step 1 renders the static workbench shell. Later steps replace each region's
+ * placeholder with a real view; nothing here may reach for Node or the network
+ * — the renderer's only privileged path is `window.aperture`.
+ */
+
+import type { ApertureApi } from '../shared/ipc-contract'
+import type { FileNode } from '../shared/types'
+import { mountExplorer, OPEN_FILE_EVENT } from './views/explorer'
+import { createEditor } from './editor/monaco-setup'
+import { attachEditor, activeDocument, openFile, reloadFromDisk, saveActive } from './editor/models'
+import { mountTabs } from './editor/tabs'
+import { notifyError } from './workbench/notifications'
+import { mountPanel } from './workbench/panel'
+
+declare global {
+  interface Window {
+    /** The only privileged surface in the renderer. Installed by the preload. */
+    readonly aperture: ApertureApi
+  }
+}
+
+interface ActivityItem {
+  readonly id: string
+  readonly label: string
+  /** 24x24 stroke-only path data. */
+  readonly icon: string
+}
+
+const ACTIVITY_ITEMS: readonly ActivityItem[] = [
+  { id: 'explorer', label: 'Explorer', icon: 'M3 5h6l2 2h10v12H3z' },
+  { id: 'search', label: 'Search', icon: 'M10.5 4a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13zM20 20l-4.9-4.9' },
+  { id: 'scm', label: 'Source Control', icon: 'M6 3v12M6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6zm0 0v3a5 5 0 0 1-5 5H9' },
+  { id: 'run', label: 'Run', icon: 'M8 5v14l11-7z' },
+  { id: 'insights', label: 'Insights', icon: 'M4 20V10M10 20V4M16 20v-7M22 20H2' },
+  { id: 'ai', label: 'Assistant', icon: 'M12 3l2.2 5.6L20 10.8l-5.8 2.2L12 19l-2.2-6L4 10.8l5.8-2.2z' }
+]
+
+function el<K extends keyof HTMLElementTagNameMap>(
+  tag: K,
+  className?: string,
+  text?: string
+): HTMLElementTagNameMap[K] {
+  const node = document.createElement(tag)
+  if (className !== undefined) node.className = className
+  if (text !== undefined) node.textContent = text
+  return node
+}
+
+function requireEl<T extends HTMLElement>(id: string): T {
+  const found = document.getElementById(id)
+  if (found === null) throw new Error(`workbench region #${id} is missing from index.html`)
+  return found as T
+}
+
+function renderActivityBar(host: HTMLElement): void {
+  for (const item of ACTIVITY_ITEMS) {
+    const button = el('button', 'activity-bar__item')
+    button.type = 'button'
+    button.title = item.label
+    button.setAttribute('role', 'tab')
+    button.setAttribute('aria-label', item.label)
+    button.setAttribute('aria-selected', String(item.id === 'explorer'))
+    button.dataset['viewId'] = item.id
+    button.innerHTML =
+      `<svg viewBox="0 0 24 24" aria-hidden="true">` +
+      `<path d="${item.icon}" stroke-linecap="round" stroke-linejoin="round" /></svg>`
+    host.append(button)
+  }
+}
+
+function renderEditorPlaceholder(host: HTMLElement): void {
+  const wrap = el('div', 'editor-placeholder')
+  wrap.id = 'editor-placeholder'
+  wrap.append(el('div', 'editor-placeholder__mark', 'Aperture'))
+  wrap.append(
+    el('p', 'editor-placeholder__hint', 'Select a file in the explorer to start editing.')
+  )
+  host.append(wrap)
+}
+
+/**
+ * Mounts Monaco and connects it to the explorer, the tab bar and the watcher.
+ *
+ * The editor is created once and has its *model* swapped per file, rather than
+ * being torn down and rebuilt — that is what preserves undo history and view
+ * state across tab switches.
+ */
+function mountEditor(editorHost: HTMLElement, tabBar: HTMLElement): void {
+  const surface = el('div', 'editor-surface')
+  surface.id = 'editor-surface'
+  editorHost.append(surface)
+
+  const editor = createEditor(surface)
+  attachEditor(editor)
+  mountTabs(tabBar)
+
+  const placeholder = document.getElementById('editor-placeholder')
+  const syncPlaceholder = (): void => {
+    const hasDocument = activeDocument() !== null
+    if (placeholder !== null) placeholder.hidden = hasDocument
+    surface.hidden = !hasDocument
+  }
+  syncPlaceholder()
+
+  document.addEventListener(OPEN_FILE_EVENT, (event) => {
+    const node = (event as CustomEvent<FileNode>).detail
+    void openFile(node).then(syncPlaceholder)
+  })
+
+  // Monaco owns Ctrl+S while focused; the document listener covers the case
+  // where focus is in the explorer or the tab bar.
+  editor.addAction({
+    id: 'aperture.saveFile',
+    label: 'Save File',
+    keybindings: [2048 /* CtrlCmd */ | 49 /* KeyS */],
+    run: () => {
+      void saveActive()
+    }
+  })
+
+  document.addEventListener('keydown', (event) => {
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
+      event.preventDefault()
+      void saveActive().then((saved) => {
+        if (!saved) notifyError('Could not save the file.')
+      })
+    }
+  })
+
+  // A file changed on disk (git checkout, another editor) is reloaded only when
+  // our buffer is clean — never clobbering unsaved work.
+  window.aperture.fs.onWatchEvent((watchEvent) => {
+    if (watchEvent.type === 'change') void reloadFromDisk(watchEvent.path)
+  })
+
+  const observer = new MutationObserver(syncPlaceholder)
+  observer.observe(tabBar, { childList: true })
+}
+
+/**
+ * Renders the status bar, then proves the whole boundary works by calling
+ * `app:ping` — preload bridge, zod-validated request, main handler, and a
+ * `Result` all the way back.
+ */
+async function renderStatusBar(host: HTMLElement): Promise<void> {
+  const bridge = el('span', 'status-bar__item')
+  const dot = el('span', 'status-bar__dot')
+  const label = document.createTextNode('Connecting…')
+  bridge.append(dot, label)
+
+  const build = el('span', 'status-bar__item', 'Aperture')
+
+  host.append(bridge)
+  host.append(el('span', 'status-bar__spacer'))
+  host.append(build)
+
+  const result = await window.aperture.app.ping({})
+
+  if (result.ok) {
+    dot.classList.add('status-bar__dot--ok')
+    label.textContent = `Bridge connected · Electron ${result.value.electron}`
+    build.textContent = `Aperture ${result.value.version} · ${result.value.platform}`
+  } else {
+    dot.classList.add('status-bar__dot--error')
+    label.textContent = `Bridge error: ${result.error.code}`
+  }
+}
+
+async function boot(): Promise<void> {
+  renderActivityBar(requireEl('activity-bar'))
+  renderEditorPlaceholder(requireEl('editor-host'))
+  await renderStatusBar(requireEl('status-bar'))
+
+  mountEditor(requireEl('editor-host'), requireEl('tab-bar'))
+  mountPanel(requireEl('panel'), requireEl('panel-tabs'), requireEl('panel-body'))
+  await mountExplorer(requireEl('side-bar-title'), requireEl('side-bar-body'))
+
+  // Readiness marker. The workbench regions are static markup, so their mere
+  // presence says nothing about whether the renderer has booted — a test that
+  // waits on `#workbench` can fire input before any listener is attached.
+  // This flips only once every view is mounted.
+  document.documentElement.dataset['apertureReady'] = 'true'
+}
+
+void boot()
+
+export {}

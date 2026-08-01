@@ -1,0 +1,23 @@
+node_modules/
+out/
+dist/
+release/
+
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+
+.vite/
+.eslintcache
+*.tsbuildinfo
+
+test-results/
+playwright-report/
+blob-report/
+.playwright/
+
+# Never commit a workspace's AI provenance journal or local settings.
+.aperture/
+.env
+.env.*

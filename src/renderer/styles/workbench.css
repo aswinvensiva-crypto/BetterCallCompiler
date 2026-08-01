@@ -1,0 +1,718 @@
+/* Workbench shell geometry.
+
+   The grid is the load-bearing piece: activity bar and side bar are fixed
+   columns, the editor area takes the remaining space, and the panel is a row
+   that collapses to zero when hidden. Everything inside these regions must be
+   free to scroll without the page itself ever scrolling. */
+
+.workbench {
+  display: grid;
+  grid-template-columns: var(--ap-activity-bar-width) auto 1fr;
+  grid-template-rows: 1fr auto var(--ap-status-bar-height);
+  grid-template-areas:
+    'activity sidebar editor'
+    'activity sidebar panel'
+    'status   status  status';
+  height: 100vh;
+  width: 100vw;
+  overflow: hidden;
+}
+
+.workbench[data-sidebar-hidden='true'] {
+  grid-template-columns: var(--ap-activity-bar-width) 0 1fr;
+}
+
+/* ---------- activity bar ---------- */
+
+.activity-bar {
+  grid-area: activity;
+  background: var(--ap-bg-inset);
+  border-right: 1px solid var(--ap-border);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding-top: 4px;
+  gap: 2px;
+}
+
+.activity-bar__item {
+  width: 100%;
+  height: 48px;
+  display: grid;
+  place-items: center;
+  color: var(--ap-fg-subtle);
+  background: none;
+  border: none;
+  border-left: 2px solid transparent;
+  cursor: pointer;
+  position: relative;
+}
+
+.activity-bar__item:hover {
+  color: var(--ap-fg);
+}
+
+.activity-bar__item[aria-selected='true'] {
+  color: var(--ap-fg);
+  border-left-color: var(--ap-accent);
+}
+
+.activity-bar__item svg {
+  width: 22px;
+  height: 22px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+}
+
+/* ---------- side bar ---------- */
+
+.side-bar {
+  grid-area: sidebar;
+  width: var(--ap-side-bar-width);
+  background: var(--ap-bg-elevated);
+  border-right: 1px solid var(--ap-border);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.workbench[data-sidebar-hidden='true'] .side-bar {
+  display: none;
+}
+
+.side-bar__title {
+  flex: 0 0 35px;
+  display: flex;
+  align-items: center;
+  padding: 0 16px;
+  font-size: var(--ap-font-size-sm);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ap-fg-muted);
+}
+
+.side-bar__body {
+  flex: 1 1 auto;
+  overflow: auto;
+  min-height: 0;
+}
+
+/* ---------- editor ---------- */
+
+.editor-area {
+  grid-area: editor;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--ap-bg);
+}
+
+.tab-bar {
+  flex: 0 0 var(--ap-tab-height);
+  display: flex;
+  align-items: stretch;
+  background: var(--ap-bg-inset);
+  border-bottom: 1px solid var(--ap-border);
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+.tab-bar::-webkit-scrollbar {
+  height: 0;
+}
+
+.editor-host {
+  flex: 1 1 auto;
+  min-height: 0;
+  position: relative;
+}
+
+/* Placeholder shown until a real editor is mounted. */
+.editor-placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--ap-fg-subtle);
+  text-align: center;
+  padding: 24px;
+}
+
+.editor-placeholder__mark {
+  font-size: 34px;
+  font-weight: 200;
+  letter-spacing: 0.36em;
+  text-transform: uppercase;
+  color: var(--ap-fg-muted);
+  margin-left: 0.36em;
+}
+
+.editor-placeholder__hint {
+  font-size: var(--ap-font-size-sm);
+  max-width: 40ch;
+}
+
+/* ---------- panel ---------- */
+
+.panel {
+  grid-area: panel;
+  height: 280px;
+  background: var(--ap-bg-inset);
+  border-top: 1px solid var(--ap-border);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.panel[hidden] {
+  display: none;
+}
+
+.panel__tabs {
+  flex: 0 0 35px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--ap-border);
+}
+
+.panel__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+
+/* ---------- status bar ---------- */
+
+.status-bar {
+  grid-area: status;
+  height: var(--ap-status-bar-height);
+  background: var(--ap-status-bg);
+  border-top: 1px solid var(--ap-border);
+  color: var(--ap-status-fg);
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 8px;
+  font-size: var(--ap-font-size-sm);
+  white-space: nowrap;
+}
+
+.status-bar__spacer {
+  flex: 1 1 auto;
+}
+
+.status-bar__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 100%;
+  padding: 0 7px;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  border-radius: 2px;
+}
+
+.status-bar__item--button {
+  cursor: pointer;
+}
+
+.status-bar__item--button:hover {
+  background: var(--ap-bg-hover);
+}
+
+.status-bar__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ap-fg-subtle);
+  flex: none;
+}
+
+.status-bar__dot--ok {
+  background: var(--ap-success);
+}
+
+.status-bar__dot--warn {
+  background: var(--ap-warning);
+}
+
+.status-bar__dot--error {
+  background: var(--ap-danger);
+}
+
+/* ---------- side bar header ---------- */
+
+.side-bar__title {
+  justify-content: space-between;
+  gap: 4px;
+}
+
+.side-bar__heading {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.side-bar__actions {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  flex: none;
+}
+
+.icon-button {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: var(--ap-radius);
+  background: none;
+  color: var(--ap-fg-muted);
+  cursor: pointer;
+}
+
+.icon-button:hover {
+  background: var(--ap-bg-hover);
+  color: var(--ap-fg);
+}
+
+.icon-button svg {
+  width: 15px;
+  height: 15px;
+}
+
+/* ---------- tree ---------- */
+
+.tree {
+  padding: 2px 0 8px;
+}
+
+.tree__row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding-right: 8px;
+  cursor: pointer;
+  white-space: nowrap;
+  color: var(--ap-fg);
+}
+
+.tree__row:hover {
+  background: var(--ap-bg-hover);
+}
+
+.tree__row--selected {
+  background: var(--ap-bg-selected);
+}
+
+.tree__row--editing {
+  background: var(--ap-bg-hover);
+  cursor: default;
+}
+
+.tree__chevron {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  color: var(--ap-fg-subtle);
+  transition: transform 90ms ease;
+}
+
+.tree__chevron--open {
+  transform: rotate(90deg);
+}
+
+.tree__chevron-spacer {
+  width: 14px;
+  flex: none;
+}
+
+.tree__icon {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  border-radius: 2px;
+  background: currentColor;
+  opacity: 0.55;
+  /* Simple silhouettes keep the tree readable without an icon font. */
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+}
+
+.tree__icon--file {
+  color: var(--ap-fg-muted);
+  -webkit-mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><path d='M4 1.5h5L12.5 5v9.5h-9z' fill='black'/></svg>");
+}
+
+.tree__icon--directory {
+  color: var(--ap-accent);
+  -webkit-mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><path d='M1.5 3h4.5l1.5 2h7v8h-13z' fill='black'/></svg>");
+}
+
+.tree__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tree__input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 19px;
+  padding: 0 4px;
+  border: 1px solid var(--ap-accent);
+  border-radius: 2px;
+  background: var(--ap-bg-inset);
+  color: var(--ap-fg);
+  font: inherit;
+  outline: none;
+}
+
+/* ---------- explorer empty + status ---------- */
+
+.explorer__empty {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+}
+
+.explorer__empty-text {
+  margin: 0;
+  color: var(--ap-fg-subtle);
+  font-size: var(--ap-font-size-sm);
+}
+
+.explorer__status {
+  margin: 6px 8px;
+  padding: 6px 8px;
+  border-left: 2px solid var(--ap-danger);
+  background: rgba(240, 97, 109, 0.09);
+  color: var(--ap-fg);
+  font-size: var(--ap-font-size-sm);
+  word-break: break-word;
+}
+
+/* ---------- buttons ---------- */
+
+.button {
+  height: 26px;
+  padding: 0 12px;
+  border: 1px solid var(--ap-border-strong);
+  border-radius: var(--ap-radius);
+  background: var(--ap-bg-hover);
+  color: var(--ap-fg);
+  font: inherit;
+  cursor: pointer;
+}
+
+.button:hover {
+  background: var(--ap-bg-active);
+}
+
+.button--primary {
+  border-color: transparent;
+  background: var(--ap-accent);
+  color: var(--ap-accent-fg);
+}
+
+.button--primary:hover {
+  background: var(--ap-accent-hover);
+}
+
+.button--danger {
+  border-color: transparent;
+  background: var(--ap-danger);
+  color: #fff;
+}
+
+/* ---------- context menu ---------- */
+
+.context-menu {
+  position: fixed;
+  z-index: 60;
+  min-width: 168px;
+  padding: 4px;
+  border: 1px solid var(--ap-border-strong);
+  border-radius: var(--ap-radius);
+  background: var(--ap-bg-elevated);
+  box-shadow: var(--ap-shadow-overlay);
+  display: flex;
+  flex-direction: column;
+}
+
+.context-menu__item {
+  height: 26px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 2px;
+  background: none;
+  color: var(--ap-fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.context-menu__item:hover {
+  background: var(--ap-accent);
+  color: var(--ap-accent-fg);
+}
+
+.context-menu__separator {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--ap-border);
+}
+
+/* ---------- modal ---------- */
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.modal {
+  width: min(420px, calc(100vw - 48px));
+  padding: 18px 20px 16px;
+  border: 1px solid var(--ap-border-strong);
+  border-radius: 6px;
+  background: var(--ap-bg-elevated);
+  box-shadow: var(--ap-shadow-overlay);
+}
+
+.modal__title {
+  margin: 0 0 6px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.modal__detail {
+  margin: 0 0 16px;
+  color: var(--ap-fg-muted);
+  font-size: var(--ap-font-size-sm);
+}
+
+.modal__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* ---------- editor surface + tabs ---------- */
+
+.editor-surface {
+  position: absolute;
+  inset: 0;
+}
+
+.editor-surface[hidden] {
+  display: none;
+}
+
+.tab-bar[hidden] {
+  display: none;
+}
+
+.tab {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 100%;
+  padding: 0 8px 0 12px;
+  border-right: 1px solid var(--ap-border);
+  background: var(--ap-bg-inset);
+  color: var(--ap-fg-subtle);
+  cursor: pointer;
+  white-space: nowrap;
+  max-width: 220px;
+}
+
+.tab:hover {
+  background: var(--ap-bg-hover);
+}
+
+.tab--active {
+  background: var(--ap-bg);
+  color: var(--ap-fg);
+  box-shadow: inset 0 1px 0 0 var(--ap-accent);
+}
+
+.tab__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tab__close {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  flex: none;
+  padding: 0;
+  border: none;
+  border-radius: 3px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  position: relative;
+}
+
+.tab__close:hover {
+  background: var(--ap-bg-active);
+}
+
+.tab__close-glyph {
+  font-size: 15px;
+  line-height: 1;
+  opacity: 0;
+}
+
+.tab:hover .tab__close-glyph,
+.tab--active .tab__close-glyph {
+  opacity: 1;
+}
+
+/* Dirty state shows a dot that becomes an × on hover — same slot, no reflow. */
+.tab__dirty-dot {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--ap-modified);
+}
+
+.tab__close--dirty .tab__close-glyph {
+  opacity: 0;
+}
+
+.tab__close--dirty:hover .tab__dirty-dot {
+  opacity: 0;
+}
+
+.tab__close--dirty:hover .tab__close-glyph {
+  opacity: 1;
+}
+
+/* ---------- toasts ---------- */
+
+.toasts {
+  position: fixed;
+  right: 14px;
+  bottom: calc(var(--ap-status-bar-height) + 14px);
+  z-index: 90;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: min(420px, calc(100vw - 28px));
+}
+
+.toast {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 10px 10px 12px;
+  border: 1px solid var(--ap-border-strong);
+  border-left-width: 3px;
+  border-radius: var(--ap-radius);
+  background: var(--ap-bg-elevated);
+  box-shadow: var(--ap-shadow-overlay);
+  font-size: var(--ap-font-size-sm);
+}
+
+.toast--info {
+  border-left-color: var(--ap-accent);
+}
+
+.toast--warning {
+  border-left-color: var(--ap-warning);
+}
+
+.toast--error {
+  border-left-color: var(--ap-danger);
+}
+
+.toast__text {
+  flex: 1 1 auto;
+  word-break: break-word;
+}
+
+.toast__dismiss {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 3px;
+  background: none;
+  color: var(--ap-fg-muted);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.toast__dismiss:hover {
+  background: var(--ap-bg-hover);
+  color: var(--ap-fg);
+}
+
+/* ---------- panel: terminals ---------- */
+
+.panel__body {
+  position: relative;
+  padding: 4px 0 4px 8px;
+}
+
+.panel-tab {
+  height: 24px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 3px;
+  background: none;
+  color: var(--ap-fg-muted);
+  font: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.panel-tab:hover {
+  background: var(--ap-bg-hover);
+  color: var(--ap-fg);
+}
+
+.panel-tab--active {
+  background: var(--ap-bg-active);
+  color: var(--ap-fg);
+}
+
+.terminal-instance {
+  position: absolute;
+  inset: 4px 0 4px 8px;
+}
+
+.terminal-instance[hidden] {
+  display: none;
+}
+
+/* xterm renders its own viewport; let it own the scrollbar. */
+.terminal-instance .xterm {
+  height: 100%;
+}

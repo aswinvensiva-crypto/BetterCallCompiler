@@ -1,0 +1,103 @@
+/* Aperture dark theme. Single source of colour truth; components reference
+   these variables and never hard-code a hex value. */
+
+:root {
+  color-scheme: dark;
+
+  --ap-bg: #1b1d23;
+  --ap-bg-elevated: #22252c;
+  --ap-bg-inset: #16181d;
+  --ap-bg-hover: #2a2e37;
+  --ap-bg-active: #313742;
+  --ap-bg-selected: #2d3b52;
+
+  --ap-border: #2e323b;
+  --ap-border-strong: #3d434f;
+
+  --ap-fg: #d7dae0;
+  --ap-fg-muted: #9aa1ad;
+  --ap-fg-subtle: #6d7481;
+  --ap-fg-inverse: #16181d;
+
+  --ap-accent: #4c9df3;
+  --ap-accent-hover: #6bb0f7;
+  --ap-accent-fg: #ffffff;
+
+  --ap-success: #4ec97a;
+  --ap-warning: #e0b341;
+  --ap-danger: #f0616d;
+  --ap-modified: #e0b341;
+  --ap-added: #4ec97a;
+  --ap-deleted: #f0616d;
+
+  --ap-status-bg: #1e252f;
+  --ap-status-fg: #b9c0cc;
+
+  --ap-font-ui:
+    'Segoe UI Variable Text', 'Segoe UI', system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif;
+  --ap-font-mono: 'Cascadia Code', 'Cascadia Mono', Consolas, 'Courier New', monospace;
+
+  --ap-font-size: 13px;
+  --ap-font-size-sm: 11px;
+  --ap-line-height: 1.5;
+
+  --ap-activity-bar-width: 48px;
+  --ap-side-bar-width: 260px;
+  --ap-status-bar-height: 24px;
+  --ap-tab-height: 35px;
+
+  --ap-radius: 4px;
+  --ap-shadow-overlay: 0 8px 28px rgba(0, 0, 0, 0.45);
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+body {
+  background: var(--ap-bg);
+  color: var(--ap-fg);
+  font-family: var(--ap-font-ui);
+  font-size: var(--ap-font-size);
+  line-height: var(--ap-line-height);
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+  cursor: default;
+}
+
+:focus-visible {
+  outline: 1px solid var(--ap-accent);
+  outline-offset: -1px;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #414753;
+  border: 2px solid transparent;
+  background-clip: content-box;
+  border-radius: 6px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #525a68;
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-corner,
+::-webkit-scrollbar-track {
+  background: transparent;
+}
