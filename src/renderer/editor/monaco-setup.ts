@@ -41,7 +41,7 @@ self.MonacoEnvironment = {
   }
 }
 
-const THEME = 'aperture-dark'
+const THEME = 'bettercallcompiler-dark'
 
 let themeDefined = false
 

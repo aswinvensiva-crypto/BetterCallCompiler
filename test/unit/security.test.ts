@@ -95,17 +95,17 @@ describe('navigation containment', () => {
   })
 
   it('allows the packaged app:// origin', () => {
-    const appOrigin = 'app://aperture'
-    expect(isInternalNavigation('app://aperture/index.html', { appOrigin })).toBe(true)
-    expect(isInternalNavigation('app://aperture/assets/main.js', { appOrigin })).toBe(true)
+    const appOrigin = 'app://bettercallcompiler'
+    expect(isInternalNavigation('app://bettercallcompiler/index.html', { appOrigin })).toBe(true)
+    expect(isInternalNavigation('app://bettercallcompiler/assets/main.js', { appOrigin })).toBe(true)
   })
 
   it('refuses a different app:// host', () => {
     // `new URL(...).origin` is the string "null" for every non-special scheme,
     // so an origin-equality check would wrongly treat these as the same site.
-    const appOrigin = 'app://aperture'
+    const appOrigin = 'app://bettercallcompiler'
     expect(isInternalNavigation('app://evil/index.html', { appOrigin })).toBe(false)
-    expect(isInternalNavigation('app2://aperture/index.html', { appOrigin })).toBe(false)
+    expect(isInternalNavigation('app2://bettercallcompiler/index.html', { appOrigin })).toBe(false)
   })
 
   it('refuses remote origins when no dev server is configured', () => {

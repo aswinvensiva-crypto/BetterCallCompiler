@@ -1,7 +1,7 @@
 import { simpleGit, type SimpleGit } from 'simple-git'
 import { watch, type FSWatcher } from 'chokidar'
 import { join, relative, sep } from 'node:path'
-import { ApertureServiceError } from '../shared/ipc-contract'
+import { BetterCallCompilerServiceError } from '../shared/ipc-contract'
 import type {
   GitBranches,
   GitCommit,
@@ -33,7 +33,7 @@ function gitFor(root: string): SimpleGit {
 function requireRoot(): string {
   const root = getWorkspace().root
   if (root === null) {
-    throw new ApertureServiceError('NO_WORKSPACE', 'no folder is open')
+    throw new BetterCallCompilerServiceError('NO_WORKSPACE', 'no folder is open')
   }
   return root
 }
@@ -222,7 +222,7 @@ export async function unstage(paths: readonly string[]): Promise<void> {
     try {
       await gitFor(root).raw(['rm', '--cached', '-r', '--', ...targets])
     } catch {
-      throw new ApertureServiceError(
+      throw new BetterCallCompilerServiceError(
         'IO_ERROR',
         `could not unstage: ${error instanceof Error ? error.message : 'unknown error'}`
       )
@@ -234,12 +234,12 @@ export async function commit(message: string): Promise<GitCommit> {
   const root = requireRoot()
   const trimmed = message.trim()
   if (trimmed === '') {
-    throw new ApertureServiceError('BAD_REQUEST', 'a commit needs a message')
+    throw new BetterCallCompilerServiceError('BAD_REQUEST', 'a commit needs a message')
   }
 
   const current = await status()
   if (!current.changes.some((change) => change.staged)) {
-    throw new ApertureServiceError('BAD_REQUEST', 'nothing is staged')
+    throw new BetterCallCompilerServiceError('BAD_REQUEST', 'nothing is staged')
   }
 
   let result
@@ -248,7 +248,7 @@ export async function commit(message: string): Promise<GitCommit> {
   } catch (error) {
     // Missing user.name/user.email is the overwhelmingly common failure here,
     // and git's own message already says exactly what to run.
-    throw new ApertureServiceError(
+    throw new BetterCallCompilerServiceError(
       'IO_ERROR',
       error instanceof Error ? error.message : 'commit failed'
     )

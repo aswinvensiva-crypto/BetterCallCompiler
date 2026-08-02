@@ -2,11 +2,11 @@ import { BrowserWindow, dialog } from 'electron'
 import { watch, type FSWatcher } from 'chokidar'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { promises as fsp } from 'node:fs'
-import { ApertureServiceError } from '../shared/ipc-contract'
+import { BetterCallCompilerServiceError } from '../shared/ipc-contract'
 import type { FileNode, FsWatchEvent, FsWatchEventType, SearchMatch, Workspace } from '../shared/types'
 
 /** Directories never walked by the watcher — cheap to skip, ruinous to watch. */
-const UNWATCHED = new Set(['node_modules', '.git', '.aperture', 'dist', 'out', '.next'])
+const UNWATCHED = new Set(['node_modules', '.git', '.bettercallcompiler', 'dist', 'out', '.next'])
 
 /** Hidden from the explorer. `.git` is machinery, not content. */
 const HIDDEN = new Set(['.git'])
@@ -61,7 +61,7 @@ async function realpathAllowingMissing(target: string): Promise<string> {
     } catch {
       const parent = dirname(current)
       if (parent === current) {
-        throw new ApertureServiceError('NOT_FOUND', `cannot resolve path: ${target}`)
+        throw new BetterCallCompilerServiceError('NOT_FOUND', `cannot resolve path: ${target}`)
       }
       missing.push(basename(current))
       current = parent
@@ -81,7 +81,7 @@ async function realpathAllowingMissing(target: string): Promise<string> {
  */
 export async function confinePath(root: string, candidate: string): Promise<string> {
   if (root === '') {
-    throw new ApertureServiceError('NO_WORKSPACE', 'no folder is open')
+    throw new BetterCallCompilerServiceError('NO_WORKSPACE', 'no folder is open')
   }
 
   const realRoot = await fsp.realpath(resolve(root))
@@ -89,7 +89,7 @@ export async function confinePath(root: string, candidate: string): Promise<stri
   const resolved = await realpathAllowingMissing(absolute)
 
   if (!isWithin(realRoot, resolved)) {
-    throw new ApertureServiceError(
+    throw new BetterCallCompilerServiceError(
       'PATH_ESCAPES_WORKSPACE',
       `path resolves outside the workspace: ${candidate}`
     )
@@ -100,7 +100,7 @@ export async function confinePath(root: string, candidate: string): Promise<stri
 
 function requireRoot(): string {
   if (workspaceRoot === null) {
-    throw new ApertureServiceError('NO_WORKSPACE', 'no folder is open')
+    throw new BetterCallCompilerServiceError('NO_WORKSPACE', 'no folder is open')
   }
   return workspaceRoot
 }
@@ -287,7 +287,7 @@ export async function searchWorkspace(options: SearchOptions): Promise<SearchMat
     const source = options.isRegex ? options.query : escapeRegExp(options.query)
     pattern = new RegExp(source, options.caseSensitive ? 'g' : 'gi')
   } catch {
-    throw new ApertureServiceError('BAD_REQUEST', `invalid regular expression: ${options.query}`)
+    throw new BetterCallCompilerServiceError('BAD_REQUEST', `invalid regular expression: ${options.query}`)
   }
 
   const files = await listFiles()
@@ -344,7 +344,7 @@ export async function readDirectory(requestedPath: string): Promise<FileNode[]> 
   try {
     entries = await fsp.readdir(dir, { withFileTypes: true })
   } catch {
-    throw new ApertureServiceError('NOT_FOUND', `cannot read directory: ${requestedPath}`)
+    throw new BetterCallCompilerServiceError('NOT_FOUND', `cannot read directory: ${requestedPath}`)
   }
 
   const nodes: FileNode[] = []
@@ -386,7 +386,7 @@ export async function readFile(requestedPath: string): Promise<string> {
   try {
     return await fsp.readFile(target, 'utf8')
   } catch {
-    throw new ApertureServiceError('NOT_FOUND', `cannot read file: ${requestedPath}`)
+    throw new BetterCallCompilerServiceError('NOT_FOUND', `cannot read file: ${requestedPath}`)
   }
 }
 
@@ -396,7 +396,7 @@ export async function writeFile(requestedPath: string, content: string): Promise
   try {
     await fsp.writeFile(target, content, 'utf8')
   } catch {
-    throw new ApertureServiceError('IO_ERROR', `cannot write file: ${requestedPath}`)
+    throw new BetterCallCompilerServiceError('IO_ERROR', `cannot write file: ${requestedPath}`)
   }
 }
 
@@ -410,9 +410,9 @@ export async function createFile(requestedPath: string): Promise<FileNode> {
     await handle.close()
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
-      throw new ApertureServiceError('ALREADY_EXISTS', `already exists: ${requestedPath}`)
+      throw new BetterCallCompilerServiceError('ALREADY_EXISTS', `already exists: ${requestedPath}`)
     }
-    throw new ApertureServiceError('IO_ERROR', `cannot create file: ${requestedPath}`)
+    throw new BetterCallCompilerServiceError('IO_ERROR', `cannot create file: ${requestedPath}`)
   }
   return toNode(root, target, 'file')
 }
@@ -424,9 +424,9 @@ export async function createDirectory(requestedPath: string): Promise<FileNode> 
     await fsp.mkdir(target)
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
-      throw new ApertureServiceError('ALREADY_EXISTS', `already exists: ${requestedPath}`)
+      throw new BetterCallCompilerServiceError('ALREADY_EXISTS', `already exists: ${requestedPath}`)
     }
-    throw new ApertureServiceError('IO_ERROR', `cannot create directory: ${requestedPath}`)
+    throw new BetterCallCompilerServiceError('IO_ERROR', `cannot create directory: ${requestedPath}`)
   }
   return toNode(root, target, 'directory')
 }
@@ -441,7 +441,7 @@ export async function rename(from: string, to: string): Promise<FileNode> {
   try {
     await fsp.rename(source, destination)
   } catch {
-    throw new ApertureServiceError('IO_ERROR', `cannot rename ${from} to ${to}`)
+    throw new BetterCallCompilerServiceError('IO_ERROR', `cannot rename ${from} to ${to}`)
   }
 
   const stats = await fsp.stat(destination)
@@ -453,13 +453,13 @@ export async function remove(requestedPath: string): Promise<void> {
   const target = await confinePath(root, requestedPath)
 
   if (isWithin(target, root) && normalizeForCompare(target) === normalizeForCompare(root)) {
-    throw new ApertureServiceError('UNSUPPORTED', 'refusing to delete the workspace root')
+    throw new BetterCallCompilerServiceError('UNSUPPORTED', 'refusing to delete the workspace root')
   }
 
   try {
     await fsp.rm(target, { recursive: true, force: false })
   } catch {
-    throw new ApertureServiceError('IO_ERROR', `cannot delete: ${requestedPath}`)
+    throw new BetterCallCompilerServiceError('IO_ERROR', `cannot delete: ${requestedPath}`)
   }
 }
 

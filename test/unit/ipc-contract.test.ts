@@ -125,7 +125,7 @@ describe('the validation wrapper', () => {
     expect(result.error.message).toContain('boom')
   })
 
-  // Services signal specific failures with ApertureServiceError; the wrapper
+  // Services signal specific failures with BetterCallCompilerServiceError; the wrapper
   // must surface that code rather than flattening everything to HANDLER_FAILED.
   it('preserves a service error code instead of flattening it', async () => {
     registerIpcHandlers(createHandlerMap())

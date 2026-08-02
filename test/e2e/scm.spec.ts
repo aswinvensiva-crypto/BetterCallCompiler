@@ -26,13 +26,13 @@ function git(...args: string[]): string {
 }
 
 test.beforeAll(async () => {
-  fixture = await mkdtemp(join(tmpdir(), 'aperture-scm-'))
+  fixture = await mkdtemp(join(tmpdir(), 'bettercallcompiler-scm-'))
 
   git('init', '-b', 'main')
   // Commit identity is repo-local so the suite never depends on, or touches,
   // the machine's global git config.
-  git('config', 'user.email', 'aperture@example.com')
-  git('config', 'user.name', 'Aperture Test')
+  git('config', 'user.email', 'bettercallcompiler@example.com')
+  git('config', 'user.name', 'BetterCallCompiler Test')
   git('config', 'commit.gpgsign', 'false')
 
   await writeFile(join(fixture, 'tracked.txt'), 'original\n')
@@ -46,7 +46,7 @@ test.beforeAll(async () => {
 
   app = await electron.launch({ args: [MAIN_ENTRY, `--folder=${fixture}`], cwd: APP_ROOT })
   window = await app.firstWindow()
-  await window.waitForSelector('html[data-aperture-ready="true"]')
+  await window.waitForSelector('html[data-bettercallcompiler-ready="true"]')
 })
 
 test.afterAll(async () => {

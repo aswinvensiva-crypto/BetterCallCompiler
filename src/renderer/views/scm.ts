@@ -68,7 +68,7 @@ function signatureOf(): string {
 }
 
 export async function refresh(): Promise<void> {
-  const result = await window.aperture.git.status({})
+  const result = await window.betterCallCompiler.git.status({})
   if (!result.ok) {
     status = { isRepository: false, branch: null, tracking: null, ahead: 0, behind: 0, changes: [] }
     render()
@@ -78,7 +78,7 @@ export async function refresh(): Promise<void> {
   setBadge('scm', status.changes.length)
 
   if (status.isRepository) {
-    const history = await window.aperture.git.log({ limit: 50 })
+    const history = await window.betterCallCompiler.git.log({ limit: 50 })
     commits = history.ok ? history.value.commits : []
   } else {
     commits = []
@@ -120,7 +120,7 @@ function renderTitle(): void {
 }
 
 async function openDiff(change: GitFileChange, staged: boolean): Promise<void> {
-  const result = await window.aperture.git.diff({ path: change.absolutePath, staged })
+  const result = await window.betterCallCompiler.git.diff({ path: change.absolutePath, staged })
   if (!result.ok) {
     notifyError(`Could not diff ${change.path}: ${result.error.message}`)
     return
@@ -297,8 +297,8 @@ async function stagePaths(changes: readonly GitFileChange[], stage: boolean): Pr
   if (paths.length === 0) return
 
   const result = stage
-    ? await window.aperture.git.stage({ paths })
-    : await window.aperture.git.unstage({ paths })
+    ? await window.betterCallCompiler.git.stage({ paths })
+    : await window.betterCallCompiler.git.unstage({ paths })
 
   if (!result.ok) {
     notifyError(result.error.message)
@@ -312,7 +312,7 @@ async function doCommit(): Promise<void> {
   busy = true
   render()
 
-  const result = await window.aperture.git.commit({ message })
+  const result = await window.betterCallCompiler.git.commit({ message })
   busy = false
 
   if (!result.ok) {
@@ -340,7 +340,7 @@ export async function mountScm(title: HTMLElement, body: HTMLElement): Promise<v
 
   // A commit made in the terminal must show up here without the user hunting
   // for a refresh button.
-  window.aperture.git.onChanged(() => void refresh())
+  window.betterCallCompiler.git.onChanged(() => void refresh())
 
   await refresh()
 }

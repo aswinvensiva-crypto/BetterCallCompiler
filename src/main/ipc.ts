@@ -1,6 +1,6 @@
 import { BrowserWindow, app, ipcMain, type IpcMain, type IpcMainInvokeEvent } from 'electron'
 import {
-  ApertureServiceError,
+  BetterCallCompilerServiceError,
   EVENT_CHANNELS,
   INVOKE_CHANNELS,
   fail,
@@ -288,9 +288,9 @@ export function registerIpcHandlers(
             event
           )
         } catch (error) {
-          // Services throw ApertureServiceError to name a specific failure;
+          // Services throw BetterCallCompilerServiceError to name a specific failure;
           // anything else is an unexpected bug and stays generic.
-          if (error instanceof ApertureServiceError) {
+          if (error instanceof BetterCallCompilerServiceError) {
             return fail(error.code, error.message)
           }
           return fail('HANDLER_FAILED', `${channel}: ${describeError(error)}`)

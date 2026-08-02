@@ -18,7 +18,7 @@ const MODE_LABELS: Readonly<Record<AiMode, string>> = {
 }
 
 /** Fired when the user invokes an AI action. The AI view listens. */
-export const AI_ACTION_EVENT = 'aperture:ai-action'
+export const AI_ACTION_EVENT = 'bettercallcompiler:ai-action'
 
 export interface AiActionDetail {
   readonly mode: AiMode
@@ -102,9 +102,9 @@ export function registerAiActions(editor: monacoNs.editor.IStandaloneCodeEditor)
   const modes: readonly AiMode[] = ['explain', 'find-bugs', 'improve']
   modes.forEach((mode, index) => {
     editor.addAction({
-      id: `aperture.ai.${mode}`,
-      label: `Aperture: ${MODE_LABELS[mode]}`,
-      contextMenuGroupId: 'aperture-ai',
+      id: `bettercallcompiler.ai.${mode}`,
+      label: `BetterCallCompiler: ${MODE_LABELS[mode]}`,
+      contextMenuGroupId: 'bettercallcompiler-ai',
       contextMenuOrder: index,
       precondition: 'editorHasSelection',
       run: () => dispatch(mode)

@@ -79,7 +79,7 @@ export function anyDirty(): boolean {
 
 /** Monaco keys models by URI; a stable per-file URI is what dedupes them. */
 function uriFor(node: FileNode): monacoNs.Uri {
-  return monaco.Uri.parse(`aperture:///${encodeURI(node.relativePath)}`)
+  return monaco.Uri.parse(`bettercallcompiler:///${encodeURI(node.relativePath)}`)
 }
 
 export async function openFile(node: FileNode): Promise<boolean> {
@@ -90,7 +90,7 @@ export async function openFile(node: FileNode): Promise<boolean> {
     return true
   }
 
-  const result = await window.aperture.fs.readFile({ path: node.path })
+  const result = await window.betterCallCompiler.fs.readFile({ path: node.path })
   if (!result.ok) return false
 
   const uri = uriFor(node)
@@ -175,7 +175,7 @@ export async function save(doc: OpenDocument): Promise<boolean> {
   // Capture the id *before* awaiting: an edit landing mid-write must leave the
   // document dirty rather than be marked saved.
   const versionAtWrite = doc.model.getAlternativeVersionId()
-  const result = await window.aperture.fs.writeFile({
+  const result = await window.betterCallCompiler.fs.writeFile({
     path: doc.node.path,
     content: doc.model.getValue()
   })
@@ -223,7 +223,7 @@ export async function reloadFromDisk(path: string): Promise<void> {
   // Never clobber unsaved work; the user's buffer wins until they decide.
   if (isDirty(doc)) return
 
-  const result = await window.aperture.fs.readFile({ path })
+  const result = await window.betterCallCompiler.fs.readFile({ path })
   if (!result.ok) return
   if (result.value.content === doc.model.getValue()) return
 

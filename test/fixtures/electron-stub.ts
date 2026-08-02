@@ -39,7 +39,7 @@ export function resetStub(): void {
 
 export const app = {
   getVersion: (): string => '0.1.0-test',
-  getPath: (): string => 'C:/tmp/aperture-test',
+  getPath: (): string => 'C:/tmp/bettercallcompiler-test',
   isPackaged: false
 }
 

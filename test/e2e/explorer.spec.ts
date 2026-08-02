@@ -11,7 +11,7 @@ let app: ElectronApplication
 let window: Page
 
 test.beforeAll(async () => {
-  fixture = await mkdtemp(join(tmpdir(), 'aperture-explorer-'))
+  fixture = await mkdtemp(join(tmpdir(), 'bettercallcompiler-explorer-'))
   await mkdir(join(fixture, 'src', 'nested'), { recursive: true })
   await writeFile(join(fixture, 'readme.md'), '# fixture\n')
   await writeFile(join(fixture, 'alpha.txt'), 'a\n')
@@ -23,7 +23,7 @@ test.beforeAll(async () => {
     cwd: APP_ROOT
   })
   window = await app.firstWindow()
-  await window.waitForSelector('html[data-aperture-ready="true"]')
+  await window.waitForSelector('html[data-bettercallcompiler-ready="true"]')
 })
 
 test.afterAll(async () => {
@@ -95,7 +95,7 @@ test('refuses a path that escapes the workspace', async () => {
   // renderer would, and confinement must hold at the boundary rather than in
   // the view layer.
   const result = await window.evaluate(async () => {
-    const bridge = (globalThis as unknown as Record<string, unknown>)['aperture'] as {
+    const bridge = (globalThis as unknown as Record<string, unknown>)['betterCallCompiler'] as {
       fs: { readFile: (r: { path: string }) => Promise<unknown> }
     }
     return (await bridge.fs.readFile({

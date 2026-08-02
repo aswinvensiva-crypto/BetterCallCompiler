@@ -217,9 +217,9 @@ function runElectron(electronPath, appPath, variant, outFile, nonce) {
       cwd: path.dirname(appPath),
       env: {
         ...process.env,
-        APERTURE_PROBE_OUT: outFile,
-        APERTURE_PROBE_VARIANT: variant.id,
-        APERTURE_PROBE_NONCE: nonce,
+        BETTERCALLCOMPILER_PROBE_OUT: outFile,
+        BETTERCALLCOMPILER_PROBE_VARIANT: variant.id,
+        BETTERCALLCOMPILER_PROBE_NONCE: nonce,
         // Never ELECTRON_RUN_AS_NODE here: it disables the asar hooks under test.
         ELECTRON_ENABLE_LOGGING: '1'
       },
@@ -260,10 +260,10 @@ async function readReport(outFile, stdout) {
   try {
     return JSON.parse(await readFile(outFile, 'utf8'))
   } catch {
-    const marker = stdout.lastIndexOf('---APERTURE-PROBE---')
+    const marker = stdout.lastIndexOf('---BETTERCALLCOMPILER-PROBE---')
     if (marker === -1) return null
     try {
-      return JSON.parse(stdout.slice(marker + '---APERTURE-PROBE---'.length))
+      return JSON.parse(stdout.slice(marker + '---BETTERCALLCOMPILER-PROBE---'.length))
     } catch {
       return null
     }
@@ -356,7 +356,7 @@ async function main() {
     fail(`no variant matched. Known ids: ${VARIANTS.map((v) => v.id).join(', ')}`)
   }
 
-  const workDir = await mkdtemp(path.join(tmpdir(), 'aperture-asar-pty-'))
+  const workDir = await mkdtemp(path.join(tmpdir(), 'bettercallcompiler-asar-pty-'))
   const nonce = Math.random().toString(36).slice(2, 10)
   process.stdout.write(`  electron:  ${electronPath}\n  staging:   ${workDir}\n`)
 

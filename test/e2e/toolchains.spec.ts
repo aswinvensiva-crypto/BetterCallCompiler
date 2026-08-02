@@ -22,7 +22,7 @@ let window: Page
 test.beforeAll(async () => {
   app = await electron.launch({ args: [MAIN_ENTRY], cwd: APP_ROOT })
   window = await app.firstWindow()
-  await window.waitForSelector('html[data-aperture-ready="true"]')
+  await window.waitForSelector('html[data-bettercallcompiler-ready="true"]')
 })
 
 test.afterAll(async () => {
@@ -43,7 +43,7 @@ interface ToolchainRecord {
 
 async function probe(channel: 'list' | 'rescan'): Promise<ToolchainRecord[]> {
   return await window.evaluate(async (method: 'list' | 'rescan') => {
-    const bridge = (globalThis as unknown as Record<string, unknown>)['aperture'] as {
+    const bridge = (globalThis as unknown as Record<string, unknown>)['betterCallCompiler'] as {
       toolchain: Record<string, (r: Record<string, never>) => Promise<unknown>>
     }
     const call = bridge.toolchain[method]

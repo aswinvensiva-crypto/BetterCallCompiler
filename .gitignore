@@ -18,6 +18,6 @@ blob-report/
 .playwright/
 
 # Never commit a workspace's AI provenance journal or local settings.
-.aperture/
+.bettercallcompiler/
 .env
 .env.*

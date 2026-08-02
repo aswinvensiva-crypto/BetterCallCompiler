@@ -43,9 +43,9 @@ export type { InvokeChannel, EventChannel } from './ipc-channels'
  */
 export type Result<T> =
   | { readonly ok: true; readonly value: T }
-  | { readonly ok: false; readonly error: ApertureError }
+  | { readonly ok: false; readonly error: BetterCallCompilerError }
 
-export interface ApertureError {
+export interface BetterCallCompilerError {
   readonly code: ErrorCode
   readonly message: string
 }
@@ -83,12 +83,12 @@ export function fail(code: ErrorCode, message: string): Result<never> {
  * Lives here rather than in main/ so services and the registry can both import
  * it without a cycle.
  */
-export class ApertureServiceError extends Error {
+export class BetterCallCompilerServiceError extends Error {
   readonly code: ErrorCode
 
   constructor(code: ErrorCode, message: string) {
     super(message)
-    this.name = 'ApertureServiceError'
+    this.name = 'BetterCallCompilerServiceError'
     this.code = code
   }
 }
@@ -374,15 +374,15 @@ type EventMethodsFor<P extends string> = {
 }
 
 /**
- * The exact type of `window.aperture`, derived from both tables. Adding a
+ * The exact type of `window.betterCallCompiler`, derived from both tables. Adding a
  * channel adds a typed method with no other edit — and there is deliberately no
  * index signature, so there is no way to reach a channel the tables do not name.
  */
-export type ApertureApi = {
+export type BetterCallCompilerApi = {
   readonly [P in PrefixOf<InvokeChannel | EventChannel>]: InvokeMethodsFor<P> & EventMethodsFor<P>
 }
 
-/** Renders zod issues into one human-readable line for an `ApertureError`. */
+/** Renders zod issues into one human-readable line for an `BetterCallCompilerError`. */
 export function formatIssues(error: z.ZodError): string {
   return error.issues
     .map((issue) => {

@@ -1,5 +1,5 @@
 {
-  "name": "aperture-gc-probe",
+  "name": "bettercallcompiler-gc-probe",
   "version": "0.0.0",
   "private": true,
   "main": "main.js"

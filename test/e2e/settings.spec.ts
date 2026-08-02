@@ -23,14 +23,14 @@ let window: Page
  * secrets and preferences into the real profile of whoever runs the suite.
  */
 test.beforeAll(async () => {
-  userData = await mkdtemp(join(tmpdir(), 'aperture-profile-'))
+  userData = await mkdtemp(join(tmpdir(), 'bettercallcompiler-profile-'))
 
   app = await electron.launch({
     args: [MAIN_ENTRY, `--user-data-dir=${userData}`],
     cwd: APP_ROOT
   })
   window = await app.firstWindow()
-  await window.waitForSelector('html[data-aperture-ready="true"]')
+  await window.waitForSelector('html[data-bettercallcompiler-ready="true"]')
 })
 
 test.afterAll(async () => {
@@ -86,7 +86,7 @@ test('stores a key, reports it as stored, and never renders it back', async () =
 
 test('the bridge exposes no way to read a stored secret back', async () => {
   const surface = await window.evaluate(() => {
-    const bridge = (globalThis as unknown as Record<string, unknown>)['aperture'] as Record<
+    const bridge = (globalThis as unknown as Record<string, unknown>)['betterCallCompiler'] as Record<
       string,
       Record<string, unknown>
     >

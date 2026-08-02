@@ -45,7 +45,7 @@ const webPack: BundledPack = {
   languages: ['html'],
 
   async run(context: PackContext): Promise<number> {
-    const result = await window.aperture.fs.readFile({ path: context.filePath })
+    const result = await window.betterCallCompiler.fs.readFile({ path: context.filePath })
     if (!result.ok) {
       context.write('stderr', `Could not read ${context.relativePath}: ${result.error.message}\n`)
       return 1

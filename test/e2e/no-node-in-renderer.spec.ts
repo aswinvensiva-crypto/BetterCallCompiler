@@ -15,11 +15,11 @@ test('the renderer has no Node access and no generic IPC escape hatch', async ()
 
   try {
     const window = await app.firstWindow()
-    await window.waitForSelector('html[data-aperture-ready="true"]')
+    await window.waitForSelector('html[data-bettercallcompiler-ready="true"]')
 
     const probe = await window.evaluate(() => {
       const g = globalThis as unknown as Record<string, unknown>
-      const bridge = g['aperture'] as Record<string, unknown> | undefined
+      const bridge = g['betterCallCompiler'] as Record<string, unknown> | undefined
 
       return {
         requireType: typeof g['require'],
@@ -60,11 +60,11 @@ test('app:ping round-trips through the bridge and returns a Result', async () =>
 
   try {
     const window = await app.firstWindow()
-    await window.waitForSelector('html[data-aperture-ready="true"]')
+    await window.waitForSelector('html[data-bettercallcompiler-ready="true"]')
 
     const result = await window.evaluate(async () => {
       const g = globalThis as unknown as Record<string, unknown>
-      const bridge = g['aperture'] as { app: { ping: (r: unknown) => Promise<unknown> } }
+      const bridge = g['betterCallCompiler'] as { app: { ping: (r: unknown) => Promise<unknown> } }
       return (await bridge.app.ping({})) as { ok: boolean; value?: { pong: boolean } }
     })
 

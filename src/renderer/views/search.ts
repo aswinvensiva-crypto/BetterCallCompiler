@@ -50,7 +50,7 @@ async function run(): Promise<void> {
   error = null
   render()
 
-  const result = await window.aperture.fs.search({ query, caseSensitive, isRegex })
+  const result = await window.betterCallCompiler.fs.search({ query, caseSensitive, isRegex })
   searching = false
   ran = true
 

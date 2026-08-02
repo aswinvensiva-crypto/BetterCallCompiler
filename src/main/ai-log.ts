@@ -1,13 +1,13 @@
 import { promises as fsp } from 'node:fs'
 import { join, relative, sep } from 'node:path'
-import { ApertureServiceError } from '../shared/ipc-contract'
+import { BetterCallCompilerServiceError } from '../shared/ipc-contract'
 import { aiLogEntrySchema, type AiLogEntry, type AiMode } from '../shared/types'
 import { confinePath, getWorkspace } from './fs-service'
 
 /**
  * The provenance journal.
  *
- * Every AI edit that touches a file is recorded in `.aperture/ai-log.jsonl` in
+ * Every AI edit that touches a file is recorded in `.bettercallcompiler/ai-log.jsonl` in
  * the workspace, and the file's prior contents are snapshotted beside it so the
  * edit can be undone byte for byte. This is the auditability claim: after the
  * fact, you can say which model changed which range of which file, when, from
@@ -18,24 +18,24 @@ import { confinePath, getWorkspace } from './fs-service'
  * not evidence of anything.
  */
 
-const APERTURE_DIR = '.aperture'
+const BETTERCALLCOMPILER_DIR = '.bettercallcompiler'
 const LOG_NAME = 'ai-log.jsonl'
 const SNAPSHOT_DIR = 'snapshots'
 
 function requireRoot(): string {
   const root = getWorkspace().root
   if (root === null) {
-    throw new ApertureServiceError('NO_WORKSPACE', 'no folder is open')
+    throw new BetterCallCompilerServiceError('NO_WORKSPACE', 'no folder is open')
   }
   return root
 }
 
 function logPath(root: string): string {
-  return join(root, APERTURE_DIR, LOG_NAME)
+  return join(root, BETTERCALLCOMPILER_DIR, LOG_NAME)
 }
 
 function snapshotPath(root: string, id: string): string {
-  return join(root, APERTURE_DIR, SNAPSHOT_DIR, `${id}.snapshot`)
+  return join(root, BETTERCALLCOMPILER_DIR, SNAPSHOT_DIR, `${id}.snapshot`)
 }
 
 let sequence = 0
@@ -82,7 +82,7 @@ export async function readAiLog(): Promise<AiLogEntry[]> {
 
 async function append(root: string, entry: AiLogEntry): Promise<void> {
   const path = logPath(root)
-  await fsp.mkdir(join(root, APERTURE_DIR), { recursive: true })
+  await fsp.mkdir(join(root, BETTERCALLCOMPILER_DIR), { recursive: true })
   await fsp.appendFile(path, `${JSON.stringify(entry)}\n`, 'utf8')
 }
 
@@ -116,18 +116,18 @@ export async function applyAiEdit(request: ApplyRequest): Promise<AiLogEntry> {
   try {
     previous = await fsp.readFile(target, 'utf8')
   } catch {
-    throw new ApertureServiceError('NOT_FOUND', `cannot read ${request.path}`)
+    throw new BetterCallCompilerServiceError('NOT_FOUND', `cannot read ${request.path}`)
   }
 
   const id = nextId()
   const snapshot = snapshotPath(root, id)
-  await fsp.mkdir(join(root, APERTURE_DIR, SNAPSHOT_DIR), { recursive: true })
+  await fsp.mkdir(join(root, BETTERCALLCOMPILER_DIR, SNAPSHOT_DIR), { recursive: true })
   await fsp.writeFile(snapshot, previous, 'utf8')
 
   try {
     await fsp.writeFile(target, request.content, 'utf8')
   } catch {
-    throw new ApertureServiceError('IO_ERROR', `cannot write ${request.path}`)
+    throw new BetterCallCompilerServiceError('IO_ERROR', `cannot write ${request.path}`)
   }
 
   const entry: AiLogEntry = {
@@ -159,24 +159,24 @@ export async function revertAiEdit(id: string): Promise<AiLogEntry> {
   const entries = await readAiLog()
   const original = entries.find((entry) => entry.id === id && entry.applied)
   if (original === undefined) {
-    throw new ApertureServiceError('NOT_FOUND', `no applied AI edit ${id}`)
+    throw new BetterCallCompilerServiceError('NOT_FOUND', `no applied AI edit ${id}`)
   }
   if (entries.some((entry) => entry.revertOf === id)) {
-    throw new ApertureServiceError('ALREADY_EXISTS', `edit ${id} was already reverted`)
+    throw new BetterCallCompilerServiceError('ALREADY_EXISTS', `edit ${id} was already reverted`)
   }
 
   let snapshot: string
   try {
     snapshot = await fsp.readFile(snapshotPath(root, id), 'utf8')
   } catch {
-    throw new ApertureServiceError('NOT_FOUND', `the snapshot for ${id} is missing`)
+    throw new BetterCallCompilerServiceError('NOT_FOUND', `the snapshot for ${id} is missing`)
   }
 
   const target = await confinePath(root, join(root, original.file))
   try {
     await fsp.writeFile(target, snapshot, 'utf8')
   } catch {
-    throw new ApertureServiceError('IO_ERROR', `cannot restore ${original.file}`)
+    throw new BetterCallCompilerServiceError('IO_ERROR', `cannot restore ${original.file}`)
   }
 
   const entry: AiLogEntry = {

@@ -37,7 +37,7 @@ function isDevServerMode(): boolean {
 const rendererRoot = join(__dirname, '../renderer')
 
 /** Origin the packaged renderer is served from. See `installAppProtocol`. */
-const APP_ORIGIN = 'app://aperture'
+const APP_ORIGIN = 'app://bettercallcompiler'
 
 /**
  * The renderer is served over a custom scheme rather than `file://`.
@@ -67,7 +67,7 @@ function devServerUrl(): string | undefined {
 let mainWindow: BrowserWindow | null = null
 
 /**
- * `aperture --folder=<path>` opens a workspace at launch, the same affordance
+ * `bettercallcompiler --folder=<path>` opens a workspace at launch, the same affordance
  * `code <dir>` provides. It is also what lets E2E tests open a fixture folder
  * without driving a native dialog.
  */
@@ -89,7 +89,7 @@ function createWindow(): BrowserWindow {
     minWidth: 940,
     minHeight: 600,
     show: false,
-    title: 'Aperture',
+    title: 'BetterCallCompiler',
     backgroundColor: '#1b1d23',
     webPreferences: {
       preload: join(__dirname, '../preload/bridge.js'),
@@ -167,10 +167,10 @@ function installContentSecurityPolicy(): void {
  * OS browser instead of being opened inside the app.
  */
 /**
- * Serves the built renderer from `app://aperture/...`.
+ * Serves the built renderer from `app://bettercallcompiler/...`.
  *
  * Every request is resolved against the renderer directory and confined to it,
- * so a crafted `app://aperture/../../..` cannot be used to read the user's disk
+ * so a crafted `app://bettercallcompiler/../../..` cannot be used to read the user's disk
  * through the very origin we just declared trusted.
  */
 function installAppProtocol(): void {
@@ -254,7 +254,7 @@ function buildMenu(): void {
       label: '&Help',
       submenu: [
         {
-          label: 'Aperture on GitHub',
+          label: 'BetterCallCompiler on GitHub',
           click: () => {
             const url = 'https://github.com/'
             if (isAllowedExternalUrl(url)) void shell.openExternal(url)
@@ -281,7 +281,7 @@ if (!gotLock) {
   })
 
   void app.whenReady().then(async () => {
-    app.setAppUserModelId('com.aperture.ide')
+    app.setAppUserModelId('com.bettercallcompiler.ide')
     installAppProtocol()
     installContentSecurityPolicy()
     installNavigationGuards()

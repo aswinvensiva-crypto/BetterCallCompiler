@@ -81,7 +81,7 @@ function scheduleInput(view: View, data: string): void {
     const payload = view.outbound
     view.outbound = ''
     if (payload === '') return
-    void window.aperture.terminal.write({ id: view.session.id, data: payload })
+    void window.betterCallCompiler.terminal.write({ id: view.session.id, data: payload })
   }, 4)
 }
 
@@ -89,12 +89,12 @@ function bindGlobalListeners(): void {
   if (listenersBound) return
   listenersBound = true
 
-  window.aperture.terminal.onData(({ id, data }) => {
+  window.betterCallCompiler.terminal.onData(({ id, data }) => {
     const view = views.get(id)
     if (view !== undefined) scheduleWrite(view, data)
   })
 
-  window.aperture.terminal.onExit(({ id, exitCode }) => {
+  window.betterCallCompiler.terminal.onExit(({ id, exitCode }) => {
     const view = views.get(id)
     if (view === undefined) return
     view.exited = true
@@ -112,7 +112,7 @@ function applyFit(view: View): void {
     return
   }
   if (view.exited) return
-  void window.aperture.terminal.resize({
+  void window.betterCallCompiler.terminal.resize({
     id: view.session.id,
     cols: view.terminal.cols,
     rows: view.terminal.rows
@@ -149,7 +149,7 @@ export async function createTerminal(): Promise<void> {
     // Host not laid out yet; the ResizeObserver will correct it.
   }
 
-  const created = await window.aperture.terminal.create({
+  const created = await window.betterCallCompiler.terminal.create({
     cols: terminal.cols,
     rows: terminal.rows
   })
@@ -213,7 +213,7 @@ export function closeTerminal(id: string): void {
 
   // Order matters: stop the PTY first, then tear the view down, so late data
   // cannot arrive for a disposed terminal.
-  void window.aperture.terminal.dispose({ id })
+  void window.betterCallCompiler.terminal.dispose({ id })
   view.terminal.dispose()
   view.host.remove()
   views.delete(id)

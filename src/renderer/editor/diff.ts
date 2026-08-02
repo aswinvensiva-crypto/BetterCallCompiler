@@ -83,7 +83,7 @@ function ensureDiffEditor(): monacoNs.editor.IStandaloneDiffEditor | null {
   if (body === null) return null
 
   diffEditor = monaco.editor.createDiffEditor(body, {
-    theme: 'aperture-dark',
+    theme: 'bettercallcompiler-dark',
     automaticLayout: true,
     readOnly: true,
     // The whole point is comparing two revisions of the same file; an inline

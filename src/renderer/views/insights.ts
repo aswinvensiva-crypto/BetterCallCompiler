@@ -183,7 +183,7 @@ async function load(force: boolean): Promise<void> {
   loading = true
   render()
 
-  const result = await window.aperture.github.insights({ force })
+  const result = await window.betterCallCompiler.github.insights({ force })
   loading = false
 
   if (!result.ok) {

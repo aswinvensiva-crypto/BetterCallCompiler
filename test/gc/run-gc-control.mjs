@@ -83,9 +83,9 @@ function runArm(electronPath, arm, outFile, nonce) {
       cwd: PROBE_DIR,
       env: {
         ...process.env,
-        APERTURE_GC_OUT: outFile,
-        APERTURE_GC_ARM: String(arm.id),
-        APERTURE_GC_NONCE: nonce,
+        BETTERCALLCOMPILER_GC_OUT: outFile,
+        BETTERCALLCOMPILER_GC_ARM: String(arm.id),
+        BETTERCALLCOMPILER_GC_NONCE: nonce,
         ELECTRON_ENABLE_LOGGING: '1'
       },
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -135,10 +135,10 @@ async function readReport(outFile, stdout) {
   try {
     return JSON.parse(await readFile(outFile, 'utf8'))
   } catch {
-    const marker = stdout.lastIndexOf('---APERTURE-GC---')
+    const marker = stdout.lastIndexOf('---BETTERCALLCOMPILER-GC---')
     if (marker === -1) return null
     try {
-      return JSON.parse(stdout.slice(marker + '---APERTURE-GC---'.length))
+      return JSON.parse(stdout.slice(marker + '---BETTERCALLCOMPILER-GC---'.length))
     } catch {
       return null
     }
@@ -209,7 +209,7 @@ async function main() {
   const selected = options.arms === null ? ARMS : ARMS.filter((a) => options.arms.includes(a.id))
   if (selected.length === 0) fail('no arm matched. Known arms: 0, 1, 2')
 
-  const workDir = await mkdtemp(path.join(tmpdir(), 'aperture-gc-'))
+  const workDir = await mkdtemp(path.join(tmpdir(), 'bettercallcompiler-gc-'))
   const nonce = Math.random().toString(36).slice(2, 10)
   process.stdout.write(`  electron: ${electronPath}\n  probe:    ${PROBE_DIR}\n`)
 
