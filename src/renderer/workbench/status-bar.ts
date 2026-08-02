@@ -6,12 +6,10 @@ import { notify, notifyError } from './notifications'
  *
  * Step 1 built this inline in `main.ts` as a bridge-liveness readout. Step 6
  * gives it a second job — the toolchain indicator — so it moves to the module
- * the target layout names, and later steps hang their own items off
- * `addStatusItem` rather than reaching into `main.ts`.
+ * the target layout names.
  */
 
 let host: HTMLElement | null = null
-let spacer: HTMLElement | null = null
 
 function el<K extends keyof HTMLElementTagNameMap>(
   tag: K,
@@ -186,10 +184,6 @@ async function loadToolchains(): Promise<void> {
   renderIndicator()
 }
 
-/** Current probe results, for the runner view (step 7). */
-export function knownToolchains(): readonly Toolchain[] {
-  return toolchains
-}
 
 /* --------------------------------- mount -------------------------------- */
 
@@ -209,8 +203,7 @@ export function mountStatusBar(statusBar: HTMLElement): StatusBarHandle {
   bridge.append(bridgeDot, bridgeLabel)
   host.append(bridge)
 
-  spacer = el('span', 'status-bar__spacer')
-  host.append(spacer)
+  host.append(el('span', 'status-bar__spacer'))
 
   indicator = el('button', 'status-bar__item status-bar__item--button')
   indicator.type = 'button'
@@ -247,8 +240,3 @@ export function mountStatusBar(statusBar: HTMLElement): StatusBarHandle {
   }
 }
 
-/** Lets later steps add their own items without editing this file. */
-export function addStatusItem(item: HTMLElement): void {
-  if (host === null || spacer === null) return
-  host.insertBefore(item, spacer.nextSibling)
-}

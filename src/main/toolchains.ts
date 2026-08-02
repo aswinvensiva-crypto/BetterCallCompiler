@@ -197,6 +197,49 @@ export function spawnExecutable(
   })
 }
 
+/**
+ * Kills a process and everything it spawned.
+ *
+ * `child.kill()` alone is not enough on Windows: a grandchild that detaches —
+ * anything with its own console, a hidden window, or a GUI helper — survives its
+ * parent's death indefinitely and leaks. A compiler driver is exactly this
+ * shape; `gcc` is a front end that forks `cc1` and `as`, so killing the driver
+ * leaves the real work running.
+ *
+ * Spawned with an argv array and `shell: false` — never an interpolated string.
+ * Shared by the PTY pool (step 5) and the runner (step 7), which need identical
+ * semantics: cancelling must leave nothing behind.
+ */
+export function killProcessTree(pid: number): void {
+  if (!Number.isInteger(pid) || pid <= 0) return
+
+  if (process.platform !== 'win32') {
+    try {
+      // Negative pid targets the process group.
+      process.kill(-pid, 'SIGKILL')
+    } catch {
+      try {
+        process.kill(pid, 'SIGKILL')
+      } catch {
+        // Already gone.
+      }
+    }
+    return
+  }
+
+  try {
+    const killer = spawn('taskkill', ['/pid', String(pid), '/T', '/F'], {
+      shell: false,
+      stdio: 'ignore',
+      windowsHide: true
+    })
+    // taskkill exits non-zero when the process is already dead; that is fine.
+    killer.on('error', () => undefined)
+  } catch {
+    // Nothing more we can do.
+  }
+}
+
 /* ------------------------------------------------------------------ *
  * The probe
  * ------------------------------------------------------------------ */
@@ -489,11 +532,6 @@ export async function rescanToolchains(): Promise<readonly Toolchain[]> {
   return await listToolchains()
 }
 
-/** Resolved toolchain by id, or null when it is missing or not runnable. */
-export async function findToolchain(id: string): Promise<Toolchain | null> {
-  const all = await listToolchains()
-  return all.find((toolchain) => toolchain.id === id) ?? null
-}
 
 /** Test hook: drop the session cache between cases. */
 export function resetToolchainsForTests(): void {

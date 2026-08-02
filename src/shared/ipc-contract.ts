@@ -3,6 +3,9 @@ import type { EventChannel, InvokeChannel } from './ipc-channels'
 import {
   fileNodeSchema,
   fsWatchEventSchema,
+  runExitSchema,
+  runOutputSchema,
+  runStartedSchema,
   terminalDataSchema,
   terminalExitSchema,
   terminalSessionSchema,
@@ -181,6 +184,21 @@ export const INVOKE_CHANNELS = {
   'toolchain:rescan': {
     request: empty,
     response: z.strictObject({ toolchains: z.array(toolchainSchema) })
+  },
+
+  // The decision — real toolchain, bundled pack, or neither — comes back on the
+  // invoke rather than as an event. The renderer has to know which console to
+  // open and which banner to draw *before* the first byte of output arrives.
+  'run:start': {
+    request: z.strictObject({
+      path: z.string().min(1),
+      languageId: z.string().min(1)
+    }),
+    response: z.strictObject({ run: runStartedSchema })
+  },
+  'run:cancel': {
+    request: z.strictObject({ runId: z.string().min(1) }),
+    response: z.strictObject({ cancelled: z.boolean() })
   }
 } as const satisfies Record<InvokeChannel, ChannelSpec>
 
@@ -188,7 +206,10 @@ export const INVOKE_CHANNELS = {
 export const EVENT_CHANNELS = {
   'fs:watchEvent': { payload: fsWatchEventSchema },
   'terminal:data': { payload: terminalDataSchema },
-  'terminal:exit': { payload: terminalExitSchema }
+  'terminal:exit': { payload: terminalExitSchema },
+  'run:stdout': { payload: runOutputSchema },
+  'run:stderr': { payload: runOutputSchema },
+  'run:exit': { payload: runExitSchema }
 } as const satisfies Record<EventChannel, { readonly payload: z.ZodType }>
 
 export type InvokeChannels = typeof INVOKE_CHANNELS

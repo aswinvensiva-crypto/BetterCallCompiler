@@ -32,6 +32,7 @@ import {
   writeToSession
 } from './terminal'
 import { listToolchains, rescanToolchains } from './toolchains'
+import { cancelRun, startRun } from './runner'
 
 export type InvokeHandler<C extends InvokeChannel> = (
   request: RequestOf<C>,
@@ -118,7 +119,11 @@ export function createHandlerMap(): HandlerMap {
 
     'toolchain:list': async () => ({ toolchains: [...(await listToolchains())] }),
 
-    'toolchain:rescan': async () => ({ toolchains: [...(await rescanToolchains())] })
+    'toolchain:rescan': async () => ({ toolchains: [...(await rescanToolchains())] }),
+
+    'run:start': async (request) => ({ run: await startRun(request.path, request.languageId) }),
+
+    'run:cancel': (request) => ({ cancelled: cancelRun(request.runId) })
   }
 }
 

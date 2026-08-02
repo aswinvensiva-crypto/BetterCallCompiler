@@ -23,7 +23,24 @@ export interface OpenDocument {
   viewState: monacoNs.editor.ICodeEditorViewState | null
 }
 
+/**
+ * Documents are keyed by a *normalised* path, not the raw string.
+ *
+ * The same file reaches this module spelled several ways: the explorer and the
+ * watcher deliver what `node:path` produced (`C:\work\a.js`), while a location
+ * parsed out of a stack trace is assembled by the run view and arrives
+ * forward-slashed. Keying on the raw string opens two tabs for one file, and
+ * because both resolve to the same Monaco URI they share a model — so closing
+ * either one disposes the model the other is still showing.
+ */
+function keyFor(path: string): string {
+  const unified = path.replace(/\\/g, '/')
+  // Drive letters make the whole path case-insensitive on Windows.
+  return /^[a-zA-Z]:\//.test(unified) ? unified.toLowerCase() : unified
+}
+
 const documents = new Map<string, OpenDocument>()
+/** Tab order, holding the same normalised keys as `documents`. */
 const order: string[] = []
 
 let activePath: string | null = null
@@ -65,15 +82,16 @@ function uriFor(node: FileNode): monacoNs.Uri {
   return monaco.Uri.parse(`aperture:///${encodeURI(node.relativePath)}`)
 }
 
-export async function openFile(node: FileNode): Promise<void> {
-  const existing = documents.get(node.path)
+export async function openFile(node: FileNode): Promise<boolean> {
+  const key = keyFor(node.path)
+  const existing = documents.get(key)
   if (existing !== undefined) {
-    activate(node.path)
-    return
+    activate(key)
+    return true
   }
 
   const result = await window.aperture.fs.readFile({ path: node.path })
-  if (!result.ok) return
+  if (!result.ok) return false
 
   const uri = uriFor(node)
   const model =
@@ -89,29 +107,64 @@ export async function openFile(node: FileNode): Promise<void> {
 
   model.onDidChangeContent(() => notify())
 
-  documents.set(node.path, doc)
-  order.push(node.path)
-  activate(node.path)
+  documents.set(key, doc)
+  order.push(key)
+  activate(key)
+  return true
+}
+
+/**
+ * Opens a file and puts the cursor on a specific position.
+ *
+ * This is what a clickable `file:line:col` in the output console lands on.
+ * `revealPositionInCenter` rather than `revealPosition`: a stack frame usually
+ * needs its surrounding lines to be readable, and a location pinned to the
+ * bottom edge of the viewport is not.
+ */
+export async function revealLocation(
+  node: FileNode,
+  line: number,
+  column: number | null
+): Promise<boolean> {
+  const opened = await openFile(node)
+  if (!opened || editor === null) return false
+
+  const doc = documents.get(keyFor(node.path))
+  if (doc === undefined) return false
+
+  // Clamp: output can outlive the file it refers to, and Monaco throws on a
+  // position past the end of the model.
+  const lineCount = doc.model.getLineCount()
+  const targetLine = Math.min(Math.max(1, line), lineCount)
+  const maxColumn = doc.model.getLineMaxColumn(targetLine)
+  const targetColumn = Math.min(Math.max(1, column ?? 1), maxColumn)
+
+  const position = { lineNumber: targetLine, column: targetColumn }
+  editor.setPosition(position)
+  editor.revealPositionInCenter(position)
+  editor.focus()
+  return true
 }
 
 export function activate(path: string): void {
-  const doc = documents.get(path)
+  const key = keyFor(path)
+  const doc = documents.get(key)
   if (doc === undefined || editor === null) return
 
   // Re-activating the current document would re-render the tab bar for no
   // reason, tearing down DOM that may be mid-interaction.
-  if (activePath === path) {
+  if (activePath === key) {
     editor.focus()
     return
   }
 
   // Preserve where the user was in the outgoing document before swapping.
   const outgoing = activeDocument()
-  if (outgoing !== null && outgoing.node.path !== path) {
+  if (outgoing !== null && keyFor(outgoing.node.path) !== key) {
     outgoing.viewState = editor.saveViewState()
   }
 
-  activePath = path
+  activePath = key
   editor.setModel(doc.model)
   if (doc.viewState !== null) editor.restoreViewState(doc.viewState)
   editor.focus()
@@ -140,16 +193,17 @@ export async function saveActive(): Promise<boolean> {
 }
 
 export function close(path: string): void {
-  const doc = documents.get(path)
+  const key = keyFor(path)
+  const doc = documents.get(key)
   if (doc === undefined) return
 
-  documents.delete(path)
-  const index = order.indexOf(path)
+  documents.delete(key)
+  const index = order.indexOf(key)
   if (index >= 0) order.splice(index, 1)
 
   doc.model.dispose()
 
-  if (activePath === path) {
+  if (activePath === key) {
     activePath = null
     const next = order[Math.min(index, order.length - 1)]
     if (next !== undefined) {
@@ -164,7 +218,7 @@ export function close(path: string): void {
 
 /** External change (git checkout, another editor) for a file we have open. */
 export async function reloadFromDisk(path: string): Promise<void> {
-  const doc = documents.get(path)
+  const doc = documents.get(keyFor(path))
   if (doc === undefined) return
   // Never clobber unsaved work; the user's buffer wins until they decide.
   if (isDirty(doc)) return

@@ -82,6 +82,57 @@ export function isRunnable(toolchain: Toolchain): boolean {
   return toolchain.kind === 'real' && toolchain.path !== null
 }
 
+/* --------------------------------- run ---------------------------------- */
+
+/**
+ * How a file is being executed.
+ *
+ * `real` and `bundled` are the two halves of the hybrid model: the same run
+ * interface either drives an installed toolchain or a pack that ships with the
+ * app. `unsupported` is the honest third case — the language has neither — and
+ * exists so the UI can name what is missing instead of showing an empty console.
+ */
+export const runModeSchema = z.enum(['real', 'bundled', 'unsupported'])
+export type RunMode = z.infer<typeof runModeSchema>
+
+export const runStreamSchema = z.enum(['stdout', 'stderr'])
+export type RunStream = z.infer<typeof runStreamSchema>
+
+export const runStartedSchema = z.strictObject({
+  /** Correlates every subsequent event; a stale run's output is discarded. */
+  runId: z.string(),
+  mode: runModeSchema,
+  filePath: z.string(),
+  relativePath: z.string(),
+  languageId: z.string(),
+  /** Resolved executable for `real` runs; null otherwise. */
+  command: z.string().nullable(),
+  args: z.array(z.string()),
+  /** Toolchain id backing a `real` run, e.g. `node`. */
+  toolchainId: z.string().nullable(),
+  /** Bundled pack id for `bundled` runs, e.g. `web`. */
+  pack: z.string().nullable(),
+  /** Why this mode was chosen. Always set for `bundled` and `unsupported`. */
+  reason: z.string().nullable()
+})
+export type RunStarted = z.infer<typeof runStartedSchema>
+
+export const runOutputSchema = z.strictObject({
+  runId: z.string(),
+  stream: runStreamSchema,
+  data: z.string()
+})
+export type RunOutput = z.infer<typeof runOutputSchema>
+
+export const runExitSchema = z.strictObject({
+  runId: z.string(),
+  /** Null when the process was killed before reporting a code. */
+  code: z.number().nullable(),
+  durationMs: z.number(),
+  cancelled: z.boolean()
+})
+export type RunExit = z.infer<typeof runExitSchema>
+
 /* ------------------------------- terminal ------------------------------- */
 
 export const terminalSessionSchema = z.strictObject({

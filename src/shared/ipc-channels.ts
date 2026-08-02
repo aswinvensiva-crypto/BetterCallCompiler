@@ -32,7 +32,9 @@ export const INVOKE_CHANNEL_NAMES = [
   'terminal:dispose',
   'terminal:list',
   'toolchain:list',
-  'toolchain:rescan'
+  'toolchain:rescan',
+  'run:start',
+  'run:cancel'
 ] as const
 
 export type InvokeChannel = (typeof INVOKE_CHANNEL_NAMES)[number]
@@ -41,7 +43,10 @@ export type InvokeChannel = (typeof INVOKE_CHANNEL_NAMES)[number]
 export const EVENT_CHANNEL_NAMES = [
   'fs:watchEvent',
   'terminal:data',
-  'terminal:exit'
+  'terminal:exit',
+  'run:stdout',
+  'run:stderr',
+  'run:exit'
 ] as const
 
 export type EventChannel = (typeof EVENT_CHANNEL_NAMES)[number]

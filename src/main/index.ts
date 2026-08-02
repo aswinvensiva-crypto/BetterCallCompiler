@@ -14,6 +14,7 @@ import { isWithin } from './fs-service'
 import { setWatchEmitter, setWorkspace, stopWatching } from './fs-service'
 import { createHandlerMap, emitEvent, registerIpcHandlers } from './ipc'
 import { disposeAllSessions, setTerminalEmitters } from './terminal'
+import { cancelAllRuns, setRunEmitters } from './runner'
 import { buildCspHeader, isAllowedExternalUrl, isInternalNavigation } from './security'
 
 /**
@@ -106,9 +107,18 @@ function createWindow(): BrowserWindow {
     (id, data) => emitEvent(win, 'terminal:data', { id, data }),
     (payload) => emitEvent(win, 'terminal:exit', payload)
   )
+  setRunEmitters(
+    (payload) =>
+      emitEvent(win, payload.stream === 'stdout' ? 'run:stdout' : 'run:stderr', payload),
+    (payload) => emitEvent(win, 'run:exit', payload)
+  )
 
-  // Orphaned shells outlive the window unless every PTY is reaped explicitly.
-  win.on('closed', () => disposeAllSessions())
+  // Orphaned shells and half-finished builds outlive the window unless every
+  // child is reaped explicitly.
+  win.on('closed', () => {
+    disposeAllSessions()
+    cancelAllRuns()
+  })
 
   const devUrl = devServerUrl()
   if (devUrl !== undefined) {
@@ -292,6 +302,7 @@ if (!gotLock) {
   // A live chokidar watcher keeps handles open and can hold the process up.
   app.on('will-quit', () => {
     disposeAllSessions()
+    cancelAllRuns()
     void stopWatching()
   })
 

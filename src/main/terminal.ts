@@ -1,8 +1,7 @@
 import { spawn, type IPty } from 'node-pty'
-import { spawn as spawnProcess } from 'node:child_process'
 import { ApertureServiceError } from '../shared/ipc-contract'
 import type { TerminalExit, TerminalSession } from '../shared/types'
-import { resolveShell } from './toolchains'
+import { killProcessTree, resolveShell } from './toolchains'
 
 /**
  * PTY session pool.
@@ -145,49 +144,6 @@ export function resizeSession(id: string, cols: number, rows: number): void {
   }
 }
 
-/**
- * Kills a process and everything it spawned.
- *
- * `IPty.kill()` alone is not enough on Windows: a grandchild that detaches from
- * the ConPTY — anything with its own console, a hidden window, or a GUI helper —
- * survives the pty's death indefinitely and leaks. node-pty does attempt its own
- * descendant reaping, but that path forks `conpty_console_list_agent.js`, which
- * races the synchronous console teardown and dies with an uncaught
- * "AttachConsole failed". In a packaged app that stack trace is invisible, so
- * the leak is silent. We reap the tree ourselves instead.
- *
- * Spawned with an argv array and `shell: false` — never an interpolated string.
- */
-function killProcessTree(pid: number): void {
-  if (!Number.isInteger(pid) || pid <= 0) return
-
-  if (process.platform !== 'win32') {
-    try {
-      // Negative pid targets the process group.
-      process.kill(-pid, 'SIGKILL')
-    } catch {
-      try {
-        process.kill(pid, 'SIGKILL')
-      } catch {
-        // Already gone.
-      }
-    }
-    return
-  }
-
-  try {
-    const killer = spawnProcess('taskkill', ['/pid', String(pid), '/T', '/F'], {
-      shell: false,
-      stdio: 'ignore',
-      windowsHide: true
-    })
-    // taskkill exits non-zero when the process is already dead; that is fine.
-    killer.on('error', () => undefined)
-  } catch {
-    // Nothing more we can do.
-  }
-}
-
 export function disposeSession(id: string): void {
   const session = sessions.get(id)
   if (session === undefined) return
@@ -197,7 +153,10 @@ export function disposeSession(id: string): void {
   sessions.delete(id)
 
   // Reap the tree first: it is fast and it is what actually frees the
-  // grandchildren.
+  // grandchildren. node-pty does attempt its own descendant reaping, but that
+  // path forks `conpty_console_list_agent.js`, which races the synchronous
+  // console teardown and dies with an uncaught "AttachConsole failed". In a
+  // packaged app that stack trace is invisible, so the leak is silent.
   killProcessTree(session.pty.pid)
 
   // `IPty.kill()` blocks its caller for ~1.6s. On the Electron main thread that

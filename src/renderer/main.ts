@@ -13,8 +13,9 @@ import { createEditor } from './editor/monaco-setup'
 import { attachEditor, activeDocument, openFile, reloadFromDisk, saveActive } from './editor/models'
 import { mountTabs } from './editor/tabs'
 import { notifyError } from './workbench/notifications'
-import { mountPanel } from './workbench/panel'
+import { mountPanel, showOutput } from './workbench/panel'
 import { mountStatusBar } from './workbench/status-bar'
+import { runActiveFile } from './views/run'
 
 declare global {
   interface Window {
@@ -131,6 +132,14 @@ function mountEditor(editorHost: HTMLElement, tabBar: HTMLElement): void {
     }
   })
 
+  // Ctrl+F5 — VS Code's "Run Without Debugging". Plain F5 is deliberately left
+  // alone: it means "start debugging", and there is no debugger until M2.
+  document.addEventListener('keydown', (event) => {
+    if (event.key !== 'F5' || !event.ctrlKey) return
+    event.preventDefault()
+    void saveThenRun()
+  })
+
   // A file changed on disk (git checkout, another editor) is reloaded only when
   // our buffer is clean — never clobbering unsaved work.
   window.aperture.fs.onWatchEvent((watchEvent) => {
@@ -139,6 +148,17 @@ function mountEditor(editorHost: HTMLElement, tabBar: HTMLElement): void {
 
   const observer = new MutationObserver(syncPlaceholder)
   observer.observe(tabBar, { childList: true })
+}
+
+/**
+ * Saves first, then runs. Running the file the user is looking at while the
+ * on-disk copy is a version behind is the single most confusing thing a run
+ * button can do.
+ */
+async function saveThenRun(): Promise<void> {
+  await saveActive()
+  await showOutput()
+  await runActiveFile()
 }
 
 /**

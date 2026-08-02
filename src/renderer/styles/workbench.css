@@ -817,3 +817,181 @@
 .terminal-instance .xterm {
   height: 100%;
 }
+
+/* ---------- panel: view tabs ---------- */
+
+.panel__views {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+}
+
+.panel-view-tab {
+  height: 24px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 3px;
+  background: none;
+  color: var(--ap-fg-subtle);
+  font: inherit;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-size: var(--ap-font-size-sm);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.panel-view-tab:hover {
+  color: var(--ap-fg);
+}
+
+.panel-view-tab--active {
+  color: var(--ap-fg);
+  box-shadow: inset 0 -1px 0 0 var(--ap-accent);
+  border-radius: 0;
+}
+
+.panel__divider {
+  width: 1px;
+  height: 16px;
+  margin: 0 6px;
+  background: var(--ap-border);
+  flex: none;
+}
+
+.panel__actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.panel__actions[hidden] {
+  display: none;
+}
+
+.panel__view {
+  position: absolute;
+  inset: 0;
+}
+
+.panel__view[hidden] {
+  display: none;
+}
+
+/* ---------- run: output console ---------- */
+
+.run-action {
+  height: 22px;
+  padding: 0 10px;
+  font-size: var(--ap-font-size-sm);
+}
+
+.run-action[hidden] {
+  display: none;
+}
+
+/* Stopping a run is interruptive, not destructive — warning, not danger. */
+.run-action--cancel {
+  border-color: transparent;
+  background: var(--ap-warning);
+  color: var(--ap-fg-inverse);
+}
+
+.run-action--cancel:hover {
+  background: #eec25d;
+}
+
+#panel-output-view {
+  display: flex;
+  flex-direction: column;
+  padding: 4px 0 4px 8px;
+}
+
+.run-banner {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex: none;
+  margin: 0 8px 4px 0;
+  padding: 5px 8px;
+  border-left: 2px solid var(--ap-border-strong);
+  border-radius: 0 var(--ap-radius) var(--ap-radius) 0;
+  background: var(--ap-bg-elevated);
+  font-size: var(--ap-font-size-sm);
+  user-select: text;
+}
+
+.run-banner[hidden] {
+  display: none;
+}
+
+.run-banner--real {
+  border-left-color: var(--ap-success);
+}
+
+.run-banner--bundled {
+  border-left-color: var(--ap-accent);
+}
+
+.run-banner--unsupported {
+  border-left-color: var(--ap-warning);
+}
+
+.run-banner__badge {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: var(--ap-bg-active);
+  color: var(--ap-fg-muted);
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.run-banner__text {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: var(--ap-font-mono);
+  color: var(--ap-fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.run-preview {
+  flex: 0 0 45%;
+  min-height: 0;
+  margin: 0 8px 6px 0;
+  border: 1px solid var(--ap-border-strong);
+  border-radius: var(--ap-radius);
+  overflow: hidden;
+  background: #fff;
+}
+
+.run-preview[hidden] {
+  display: none;
+}
+
+.run-preview__frame {
+  width: 100%;
+  height: 100%;
+  border: none;
+  display: block;
+}
+
+.run-console {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.run-console .xterm {
+  height: 100%;
+}
+
+/* xterm marks a detected link with this class on hover. */
+.run-console .xterm-rows .xterm-fg-4 {
+  text-decoration: underline;
+}
