@@ -33,6 +33,16 @@ import {
 } from './terminal'
 import { listToolchains, rescanToolchains } from './toolchains'
 import { cancelRun, startRun } from './runner'
+import {
+  branches as gitBranches,
+  commit as gitCommit,
+  diff as gitDiff,
+  log as gitLog,
+  stage as gitStage,
+  startGitWatch,
+  status as gitStatus,
+  unstage as gitUnstage
+} from './git-service'
 
 export type InvokeHandler<C extends InvokeChannel> = (
   request: RequestOf<C>,
@@ -65,8 +75,14 @@ export function createHandlerMap(): HandlerMap {
       electron: process.versions['electron'] ?? 'unknown'
     }),
 
-    'fs:openFolder': async (_request, event) =>
-      await openFolder(BrowserWindow.fromWebContents(event.sender)),
+    // The `.git` watch is started here rather than inside `setWorkspace`,
+    // because git-service already imports fs-service and the reverse import
+    // would close the cycle.
+    'fs:openFolder': async (_request, event) => {
+      const workspace = await openFolder(BrowserWindow.fromWebContents(event.sender))
+      if (workspace.root !== null) await startGitWatch(workspace.root)
+      return workspace
+    },
 
     'fs:getWorkspace': () => getWorkspace(),
 
@@ -123,7 +139,28 @@ export function createHandlerMap(): HandlerMap {
 
     'run:start': async (request) => ({ run: await startRun(request.path, request.languageId) }),
 
-    'run:cancel': (request) => ({ cancelled: cancelRun(request.runId) })
+    'run:cancel': (request) => ({ cancelled: cancelRun(request.runId) }),
+
+    'git:status': async () => ({ status: await gitStatus() }),
+
+    'git:diff': async (request) => ({ diff: await gitDiff(request.path, request.staged) }),
+
+    'git:stage': async (request) => {
+      await gitStage(request.paths)
+      return { staged: true }
+    },
+
+    'git:unstage': async (request) => {
+      await gitUnstage(request.paths)
+      return { unstaged: true }
+    },
+
+    'git:commit': async (request) => ({ commit: await gitCommit(request.message) }),
+
+    'git:branches': async () => ({ branches: await gitBranches() }),
+
+    'git:log': async (request) => ({ commits: await gitLog(request.limit) })
+
   }
 }
 

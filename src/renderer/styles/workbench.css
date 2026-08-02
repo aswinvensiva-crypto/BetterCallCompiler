@@ -1037,3 +1037,219 @@
   font-weight: 600;
 }
 
+/* ---------- SCM ---------- */
+
+.scm-branch {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  color: var(--ap-fg-muted);
+  font-size: var(--ap-font-size-sm);
+}
+
+.scm-branch__name {
+  font-weight: 600;
+  color: var(--ap-fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scm-branch__sync {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.scm-commit {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0 12px 10px;
+}
+
+.scm-commit__message {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--ap-border-strong);
+  border-radius: var(--ap-radius);
+  background: var(--ap-bg-inset);
+  color: var(--ap-fg);
+  font: inherit;
+  resize: vertical;
+  outline: none;
+  user-select: text;
+}
+
+.scm-commit__message:focus {
+  border-color: var(--ap-accent);
+}
+
+.scm-commit__button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.scm-section {
+  margin-top: 4px;
+}
+
+.scm-section__header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 12px;
+  color: var(--ap-fg-muted);
+  font-size: var(--ap-font-size-sm);
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.scm-section__label {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scm-section__count {
+  flex: none;
+  padding: 0 6px;
+  border-radius: 8px;
+  background: var(--ap-bg-active);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+}
+
+.scm-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  padding: 0 8px 0 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.scm-row:hover {
+  background: var(--ap-bg-hover);
+}
+
+.scm-row--selected {
+  background: var(--ap-bg-selected);
+}
+
+.scm-row__name {
+  flex: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 60%;
+}
+
+.scm-row__dir {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--ap-fg-subtle);
+  font-size: var(--ap-font-size-sm);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  direction: rtl;
+  text-align: left;
+}
+
+.scm-row__actions {
+  flex: none;
+  display: none;
+}
+
+.scm-row:hover .scm-row__actions {
+  display: flex;
+}
+
+.scm-row__status {
+  flex: none;
+  width: 14px;
+  text-align: center;
+  font-weight: 600;
+  font-size: var(--ap-font-size-sm);
+  color: var(--ap-fg-muted);
+}
+
+.scm-row__status--m { color: var(--ap-modified); }
+.scm-row__status--a { color: var(--ap-added); }
+.scm-row__status--d { color: var(--ap-deleted); }
+.scm-row__status--u { color: var(--ap-success); }
+.scm-row__status--c { color: var(--ap-danger); }
+
+.scm-clean {
+  padding: 4px 12px;
+}
+
+.scm-commit-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 3px 12px;
+  white-space: nowrap;
+}
+
+.scm-commit-row:hover {
+  background: var(--ap-bg-hover);
+}
+
+.scm-commit-row__hash {
+  flex: none;
+  font-family: var(--ap-font-mono);
+  font-size: var(--ap-font-size-sm);
+  color: var(--ap-fg-subtle);
+}
+
+.scm-commit-row__message {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---------- diff surface ---------- */
+
+.diff-surface {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  background: var(--ap-bg);
+}
+
+.diff-surface[hidden] {
+  display: none;
+}
+
+.diff-surface__header {
+  flex: 0 0 var(--ap-tab-height);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 8px 0 12px;
+  background: var(--ap-bg-inset);
+  border-bottom: 1px solid var(--ap-border);
+}
+
+.diff-surface__title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ap-fg-muted);
+  font-size: var(--ap-font-size-sm);
+}
+
+.diff-surface__body {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+

@@ -82,6 +82,67 @@ export function isRunnable(toolchain: Toolchain): boolean {
   return toolchain.kind === 'real' && toolchain.path !== null
 }
 
+/* --------------------------------- git ---------------------------------- */
+
+export const gitFileChangeSchema = z.strictObject({
+  /** POSIX-separated, relative to the repository root — git's own spelling. */
+  path: z.string(),
+  absolutePath: z.string(),
+  /** Porcelain status characters: ' ', 'M', 'A', 'D', 'R', 'U', '?'. */
+  indexStatus: z.string(),
+  workingStatus: z.string(),
+  staged: z.boolean(),
+  unstaged: z.boolean(),
+  untracked: z.boolean(),
+  conflicted: z.boolean()
+})
+export type GitFileChange = z.infer<typeof gitFileChangeSchema>
+
+export const gitStatusSchema = z.strictObject({
+  isRepository: z.boolean(),
+  /** Null on an unborn branch — a repository with no commits yet. */
+  branch: z.string().nullable(),
+  tracking: z.string().nullable(),
+  ahead: z.number(),
+  behind: z.number(),
+  changes: z.array(gitFileChangeSchema)
+})
+export type GitStatus = z.infer<typeof gitStatusSchema>
+
+export const gitFileDiffSchema = z.strictObject({
+  path: z.string(),
+  original: z.string(),
+  modified: z.string(),
+  /** What each side represents, e.g. `HEAD` vs `Staged`. */
+  originalLabel: z.string(),
+  modifiedLabel: z.string()
+})
+export type GitFileDiff = z.infer<typeof gitFileDiffSchema>
+
+export const gitCommitSchema = z.strictObject({
+  hash: z.string(),
+  shortHash: z.string(),
+  message: z.string(),
+  author: z.string(),
+  date: z.string(),
+  refs: z.string()
+})
+export type GitCommit = z.infer<typeof gitCommitSchema>
+
+export const gitBranchesSchema = z.strictObject({
+  current: z.string().nullable(),
+  all: z.array(z.string())
+})
+export type GitBranches = z.infer<typeof gitBranchesSchema>
+
+/** Renders a porcelain pair as the single letter the SCM list shows. */
+export function describeChange(change: GitFileChange): string {
+  if (change.conflicted) return 'C'
+  if (change.untracked) return 'U'
+  const status = change.staged ? change.indexStatus : change.workingStatus
+  return status.trim() === '' ? 'M' : status
+}
+
 /* --------------------------------- run ---------------------------------- */
 
 /**

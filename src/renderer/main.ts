@@ -18,6 +18,8 @@ import { mountStatusBar } from './workbench/status-bar'
 import { runActiveFile } from './views/run'
 import { mountActivityBar } from './workbench/activity-bar'
 import { mountSideBar, registerSideBarView, showSideBarView } from './workbench/side-bar'
+import { clearDiffSelection, mountScm, onScmShown } from './views/scm'
+import { mountDiffEditor } from './editor/diff'
 
 declare global {
   interface Window {
@@ -68,6 +70,11 @@ function mountEditor(editorHost: HTMLElement, tabBar: HTMLElement): void {
   const editor = createEditor(surface)
   attachEditor(editor)
   mountTabs(tabBar)
+
+  // The diff surface sits on top of the editor in the same region rather than
+  // becoming a tab: a diff is a transient comparison the user dismisses, not a
+  // document they keep open and switch between.
+  mountDiffEditor(editorHost, clearDiffSelection)
 
   const placeholder = document.getElementById('editor-placeholder')
   const syncPlaceholder = (): void => {
@@ -159,6 +166,7 @@ async function mountSideBarViews(): Promise<void> {
   mountSideBar(requireEl('side-bar-title'), requireEl('side-bar-body'))
 
   registerSideBarView({ id: 'explorer', mount: mountExplorer })
+  registerSideBarView({ id: 'scm', mount: mountScm, onShow: onScmShown })
 
   mountActivityBar(requireEl('activity-bar'), (id) => {
     // The Run icon opens the output console rather than a side-bar view.

@@ -3,6 +3,10 @@ import type { EventChannel, InvokeChannel } from './ipc-channels'
 import {
   fileNodeSchema,
   fsWatchEventSchema,
+  gitBranchesSchema,
+  gitCommitSchema,
+  gitFileDiffSchema,
+  gitStatusSchema,
   runExitSchema,
   runOutputSchema,
   runStartedSchema,
@@ -199,7 +203,39 @@ export const INVOKE_CHANNELS = {
   'run:cancel': {
     request: z.strictObject({ runId: z.string().min(1) }),
     response: z.strictObject({ cancelled: z.boolean() })
+  },
+
+  'git:status': {
+    request: empty,
+    response: z.strictObject({ status: gitStatusSchema })
+  },
+  'git:diff': {
+    // `staged` picks which pair of revisions to compare; see `diff` in
+    // git-service.ts for why the caller has to say.
+    request: z.strictObject({ path: z.string().min(1), staged: z.boolean() }),
+    response: z.strictObject({ diff: gitFileDiffSchema })
+  },
+  'git:stage': {
+    request: z.strictObject({ paths: z.array(z.string().min(1)).min(1) }),
+    response: z.strictObject({ staged: z.literal(true) })
+  },
+  'git:unstage': {
+    request: z.strictObject({ paths: z.array(z.string().min(1)).min(1) }),
+    response: z.strictObject({ unstaged: z.literal(true) })
+  },
+  'git:commit': {
+    request: z.strictObject({ message: z.string().min(1) }),
+    response: z.strictObject({ commit: gitCommitSchema })
+  },
+  'git:branches': {
+    request: empty,
+    response: z.strictObject({ branches: gitBranchesSchema })
+  },
+  'git:log': {
+    request: z.strictObject({ limit: z.number().int().positive().max(500) }),
+    response: z.strictObject({ commits: z.array(gitCommitSchema) })
   }
+
 } as const satisfies Record<InvokeChannel, ChannelSpec>
 
 /** THE event table: main → renderer pushes, one payload schema per channel. */
@@ -209,7 +245,10 @@ export const EVENT_CHANNELS = {
   'terminal:exit': { payload: terminalExitSchema },
   'run:stdout': { payload: runOutputSchema },
   'run:stderr': { payload: runOutputSchema },
-  'run:exit': { payload: runExitSchema }
+  'run:exit': { payload: runExitSchema },
+  // Payload-free: the view re-reads status itself, so the event cannot carry a
+  // snapshot that is already stale by the time it is rendered.
+  'git:changed': { payload: z.strictObject({}) }
 } as const satisfies Record<EventChannel, { readonly payload: z.ZodType }>
 
 export type InvokeChannels = typeof INVOKE_CHANNELS

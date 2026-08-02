@@ -15,6 +15,7 @@ import { setWatchEmitter, setWorkspace, stopWatching } from './fs-service'
 import { createHandlerMap, emitEvent, registerIpcHandlers } from './ipc'
 import { disposeAllSessions, setTerminalEmitters } from './terminal'
 import { cancelAllRuns, setRunEmitters } from './runner'
+import { setGitChangeEmitter, startGitWatch, stopGitWatch } from './git-service'
 import { buildCspHeader, isAllowedExternalUrl, isInternalNavigation } from './security'
 
 /**
@@ -112,6 +113,7 @@ function createWindow(): BrowserWindow {
       emitEvent(win, payload.stream === 'stdout' ? 'run:stdout' : 'run:stderr', payload),
     (payload) => emitEvent(win, 'run:exit', payload)
   )
+  setGitChangeEmitter(() => emitEvent(win, 'git:changed', {}))
 
   // Orphaned shells and half-finished builds outlive the window unless every
   // child is reaped explicitly.
@@ -287,6 +289,7 @@ if (!gotLock) {
     if (requestedFolder !== undefined) {
       try {
         await setWorkspace(requestedFolder)
+        await startGitWatch(requestedFolder)
       } catch (error) {
         console.error(`could not open ${requestedFolder}:`, error)
       }
@@ -304,6 +307,7 @@ if (!gotLock) {
     disposeAllSessions()
     cancelAllRuns()
     void stopWatching()
+    void stopGitWatch()
   })
 
   app.on('window-all-closed', () => {

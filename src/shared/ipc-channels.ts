@@ -34,7 +34,14 @@ export const INVOKE_CHANNEL_NAMES = [
   'toolchain:list',
   'toolchain:rescan',
   'run:start',
-  'run:cancel'
+  'run:cancel',
+  'git:status',
+  'git:diff',
+  'git:stage',
+  'git:unstage',
+  'git:commit',
+  'git:branches',
+  'git:log'
 ] as const
 
 export type InvokeChannel = (typeof INVOKE_CHANNEL_NAMES)[number]
@@ -46,7 +53,8 @@ export const EVENT_CHANNEL_NAMES = [
   'terminal:exit',
   'run:stdout',
   'run:stderr',
-  'run:exit'
+  'run:exit',
+  'git:changed'
 ] as const
 
 export type EventChannel = (typeof EVENT_CHANNEL_NAMES)[number]
