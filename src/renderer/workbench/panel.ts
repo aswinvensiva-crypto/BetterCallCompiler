@@ -145,7 +145,7 @@ export function mountPanel(
   terminalBody.id = 'panel-terminal-view'
 
   const outputBody = document.createElement('div')
-  outputBody.className = 'panel__view'
+  outputBody.className = 'panel__view panel__view--output'
   outputBody.id = 'panel-output-view'
   outputBody.hidden = true
 

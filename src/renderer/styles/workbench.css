@@ -904,7 +904,11 @@
   background: #eec25d;
 }
 
-#panel-output-view {
+/* Styled by class, not by `#panel-output-view`. An id selector (1,0,0) beats
+   `.panel__view[hidden]` (0,2,0), so a `display` declared on the id would win
+   over the hidden rule and the view would never actually hide — it sat
+   invisible over the terminal and swallowed its clicks. */
+.panel__view--output {
   display: flex;
   flex-direction: column;
   padding: 4px 0 4px 8px;
@@ -1159,13 +1163,20 @@
   text-align: left;
 }
 
+/* Always laid out, revealed on hover — the same technique the tab close button
+   uses. Toggling `display` instead would reflow the row on every hover, and
+   would mean the control does not exist until the pointer is over it: a
+   background refresh landing between the hover and the click then replaces the
+   row and the click lands on nothing. */
 .scm-row__actions {
   flex: none;
-  display: none;
+  display: flex;
+  opacity: 0;
 }
 
-.scm-row:hover .scm-row__actions {
-  display: flex;
+.scm-row:hover .scm-row__actions,
+.scm-row__actions:focus-within {
+  opacity: 1;
 }
 
 .scm-row__status {

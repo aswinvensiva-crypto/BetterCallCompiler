@@ -197,11 +197,15 @@ test('revert restores the file byte for byte and appends a second entry', async 
   await openAi()
   await window.locator('.ai-log-row').getByRole('button', { name: 'Revert' }).click()
 
-  await expect
-    .poll(async () => await readFile(join(fixture, 'add.ts'), 'utf8'))
-    .toBe(
-      ["import { z } from 'zod'", '', 'export function add(a: number, b: number) {', '  return a + b', '}', ''].join('\n')
-    )
+  // Gate on the UI, not on the file. `revertAiEdit` writes the file first and
+  // appends to the journal second, so polling the file can succeed while the
+  // append is still in flight; the row only says "reverted" once ai:revert has
+  // resolved, which is after both.
+  await expect(window.locator('.ai-log-row__state')).toHaveText('reverted')
+
+  expect(await readFile(join(fixture, 'add.ts'), 'utf8')).toBe(
+    ["import { z } from 'zod'", '', 'export function add(a: number, b: number) {', '  return a + b', '}', ''].join('\n')
+  )
 
   // Append-only: the original entry stands, and the revert is a second fact.
   const journal = await readFile(join(fixture, '.aperture', 'ai-log.jsonl'), 'utf8')
@@ -213,8 +217,6 @@ test('revert restores the file byte for byte and appends a second entry', async 
   expect(first.applied).toBe(true)
   expect(second.applied).toBe(false)
   expect(second.revertOf).toBe(first.id)
-
-  await expect(window.locator('.ai-log-row__state')).toHaveText('reverted')
 })
 
 test('the bridge exposes no way to read the Anthropic key', async () => {
