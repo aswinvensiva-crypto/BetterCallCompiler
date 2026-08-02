@@ -29,9 +29,9 @@ const fs = require('node:fs')
 const os = require('node:os')
 const { spawn: spawnProcess } = require('node:child_process')
 
-const OUT_FILE = process.env['APERTURE_GC_OUT'] ?? ''
-const ARM = Number(process.env['APERTURE_GC_ARM'] ?? '1')
-const NONCE = process.env['APERTURE_GC_NONCE'] ?? 'nonce'
+const OUT_FILE = process.env['BETTERCALLCOMPILER_GC_OUT'] ?? ''
+const ARM = Number(process.env['BETTERCALLCOMPILER_GC_ARM'] ?? '1')
+const NONCE = process.env['BETTERCALLCOMPILER_GC_NONCE'] ?? 'nonce'
 
 const SPAWN_TIMEOUT_MS = 20_000
 const EXIT_TIMEOUT_MS = 15_000
@@ -103,8 +103,8 @@ function probeShell() {
 /** Same two-line trick as the asar probe: cmd expands %M% before `set` on one line. */
 function markerCommand(tag) {
   return process.platform === 'win32'
-    ? `set M=OK\recho APERTURE-${NONCE}-${tag}-%M%\r`
-    : `M=OK; echo APERTURE-${NONCE}-${tag}-$M\n`
+    ? `set M=OK\recho BETTERCALLCOMPILER-${NONCE}-${tag}-%M%\r`
+    : `M=OK; echo BETTERCALLCOMPILER-${NONCE}-${tag}-$M\n`
 }
 
 function waitForMarker(pty, marker, timeoutMs) {
@@ -194,7 +194,7 @@ async function run() {
   await step('retained survives GC (write 1)', async () => {
     const pty = sessions.get('retained')
     if (pty === undefined) throw new Error('session vanished from the map')
-    const promise = waitForMarker(pty, `APERTURE-${NONCE}-ONE-OK`, SPAWN_TIMEOUT_MS)
+    const promise = waitForMarker(pty, `BETTERCALLCOMPILER-${NONCE}-ONE-OK`, SPAWN_TIMEOUT_MS)
     pty.write(markerCommand('ONE'))
     await promise
     return { alive: isAlive(pty.pid) }
@@ -277,7 +277,7 @@ async function run() {
   // session still a working PTY, or did GC quietly break it?
   await step('retained still works (write 2)', async () => {
     const pty = sessions.get('retained')
-    const promise = waitForMarker(pty, `APERTURE-${NONCE}-TWO-OK`, SPAWN_TIMEOUT_MS)
+    const promise = waitForMarker(pty, `BETTERCALLCOMPILER-${NONCE}-TWO-OK`, SPAWN_TIMEOUT_MS)
     pty.write(markerCommand('TWO'))
     await promise
     return { alive: isAlive(pty.pid) }
@@ -353,6 +353,6 @@ app.whenReady().then(async () => {
       // stdout fallback below.
     }
   }
-  process.stdout.write(`\n---APERTURE-GC---\n${serialised}\n`)
+  process.stdout.write(`\n---BETTERCALLCOMPILER-GC---\n${serialised}\n`)
   app.exit(report.ok ? 0 : 1)
 })

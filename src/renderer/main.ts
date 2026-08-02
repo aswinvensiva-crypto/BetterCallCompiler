@@ -3,10 +3,10 @@
  *
  * Step 1 renders the static workbench shell. Later steps replace each region's
  * placeholder with a real view; nothing here may reach for Node or the network
- * — the renderer's only privileged path is `window.aperture`.
+ * — the renderer's only privileged path is `window.betterCallCompiler`.
  */
 
-import type { ApertureApi } from '../shared/ipc-contract'
+import type { BetterCallCompilerApi } from '../shared/ipc-contract'
 import type { FileNode } from '../shared/types'
 import { mountExplorer, OPEN_FILE_EVENT } from './views/explorer'
 import { createEditor } from './editor/monaco-setup'
@@ -36,7 +36,7 @@ import { mountDiffEditor } from './editor/diff'
 declare global {
   interface Window {
     /** The only privileged surface in the renderer. Installed by the preload. */
-    readonly aperture: ApertureApi
+    readonly betterCallCompiler: BetterCallCompilerApi
   }
 }
 
@@ -60,7 +60,7 @@ function requireEl<T extends HTMLElement>(id: string): T {
 function renderEditorPlaceholder(host: HTMLElement): void {
   const wrap = el('div', 'editor-placeholder')
   wrap.id = 'editor-placeholder'
-  wrap.append(el('div', 'editor-placeholder__mark', 'Aperture'))
+  wrap.append(el('div', 'editor-placeholder__mark', 'BetterCallCompiler'))
   wrap.append(
     el('p', 'editor-placeholder__hint', 'Select a file in the explorer to start editing.')
   )
@@ -108,7 +108,7 @@ function mountEditor(editorHost: HTMLElement, tabBar: HTMLElement): void {
   // Monaco owns Ctrl+S while focused; the document listener covers the case
   // where focus is in the explorer or the tab bar.
   editor.addAction({
-    id: 'aperture.saveFile',
+    id: 'bettercallcompiler.saveFile',
     label: 'Save File',
     keybindings: [2048 /* CtrlCmd */ | 49 /* KeyS */],
     run: () => {
@@ -135,7 +135,7 @@ function mountEditor(editorHost: HTMLElement, tabBar: HTMLElement): void {
 
   // A file changed on disk (git checkout, another editor) is reloaded only when
   // our buffer is clean — never clobbering unsaved work.
-  window.aperture.fs.onWatchEvent((watchEvent) => {
+  window.betterCallCompiler.fs.onWatchEvent((watchEvent) => {
     if (watchEvent.type === 'change') void reloadFromDisk(watchEvent.path)
   })
 
@@ -162,11 +162,11 @@ async function saveThenRun(): Promise<void> {
 async function renderStatusBar(host: HTMLElement): Promise<void> {
   const statusBar = mountStatusBar(host)
 
-  const result = await window.aperture.app.ping({})
+  const result = await window.betterCallCompiler.app.ping({})
 
   if (result.ok) {
     statusBar.setBridge(`Bridge connected · Electron ${result.value.electron}`, 'ok')
-    statusBar.setBuild(`Aperture ${result.value.version} · ${result.value.platform}`)
+    statusBar.setBuild(`BetterCallCompiler ${result.value.version} · ${result.value.platform}`)
   } else {
     statusBar.setBridge(`Bridge error: ${result.error.code}`, 'error')
   }
@@ -316,7 +316,7 @@ async function boot(): Promise<void> {
   // presence says nothing about whether the renderer has booted — a test that
   // waits on `#workbench` can fire input before any listener is attached.
   // This flips only once every view is mounted.
-  document.documentElement.dataset['apertureReady'] = 'true'
+  document.documentElement.dataset['bettercallcompilerReady'] = 'true'
 }
 
 void boot()

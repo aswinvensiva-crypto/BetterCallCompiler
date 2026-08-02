@@ -159,7 +159,7 @@ function togglePopover(): void {
  * popover button uses.
  */
 export async function rescanToolchains(): Promise<void> {
-  const result = await window.aperture.toolchain.rescan({})
+  const result = await window.betterCallCompiler.toolchain.rescan({})
   if (!result.ok) {
     notifyError(`Could not scan toolchains: ${result.error.message}`)
     return
@@ -175,7 +175,7 @@ export async function rescanToolchains(): Promise<void> {
 }
 
 async function loadToolchains(): Promise<void> {
-  const result = await window.aperture.toolchain.list({})
+  const result = await window.betterCallCompiler.toolchain.list({})
   if (!result.ok) {
     if (indicatorLabel !== null) indicatorLabel.textContent = 'Toolchains unavailable'
     return
@@ -218,7 +218,7 @@ export function mountStatusBar(statusBar: HTMLElement): StatusBarHandle {
   })
   host.append(indicator)
 
-  const build = el('span', 'status-bar__item', 'Aperture')
+  const build = el('span', 'status-bar__item', 'BetterCallCompiler')
   host.append(build)
 
   document.addEventListener('click', closePopover)

@@ -1,10 +1,10 @@
 {
-  "name": "aperture",
+  "name": "bettercallcompiler",
   "version": "0.1.0",
-  "description": "Aperture \u2014 a native IDE with transparent AI and zero-install runtimes",
+  "description": "BetterCallCompiler \u2014 a native IDE with transparent AI and zero-install runtimes",
   "private": true,
   "license": "MIT",
-  "author": "Aperture",
+  "author": "BetterCallCompiler",
   "main": "./out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",

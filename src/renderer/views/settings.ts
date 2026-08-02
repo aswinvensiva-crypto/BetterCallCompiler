@@ -90,7 +90,7 @@ function secretField(options: SecretFieldOptions): HTMLElement {
 }
 
 async function storeSecret(key: SecretKeyName, value: string): Promise<void> {
-  const result = await window.aperture.secrets.setKey({ key, value })
+  const result = await window.betterCallCompiler.secrets.setKey({ key, value })
   if (!result.ok) {
     notifyError(result.error.message)
     return
@@ -101,7 +101,7 @@ async function storeSecret(key: SecretKeyName, value: string): Promise<void> {
 }
 
 async function removeSecret(key: SecretKeyName): Promise<void> {
-  const result = await window.aperture.secrets.clearKey({ key })
+  const result = await window.betterCallCompiler.secrets.clearKey({ key })
   if (!result.ok) {
     notifyError(result.error.message)
     return
@@ -113,7 +113,7 @@ async function removeSecret(key: SecretKeyName): Promise<void> {
 /* ------------------------------- preferences ------------------------------ */
 
 async function patchSettings(patch: Partial<Settings>): Promise<void> {
-  const result = await window.aperture.settings.set({ patch })
+  const result = await window.betterCallCompiler.settings.set({ patch })
   if (!result.ok) {
     notifyError(result.error.message)
     return
@@ -218,8 +218,8 @@ function render(): void {
 
 async function load(): Promise<void> {
   const [settingsResult, secretsResult] = await Promise.all([
-    window.aperture.settings.get({}),
-    window.aperture.secrets.hasKey({})
+    window.betterCallCompiler.settings.get({}),
+    window.betterCallCompiler.secrets.hasKey({})
   ])
 
   if (settingsResult.ok) settings = settingsResult.value.settings

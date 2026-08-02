@@ -32,7 +32,7 @@ async function loadFiles(): Promise<FileNode[]> {
   if (cache.length > 0 && Date.now() - cachedAt < MAX_CACHE_AGE_MS) return cache
   if (loading !== null) return await loading
 
-  loading = window.aperture.fs
+  loading = window.betterCallCompiler.fs
     .listFiles({})
     .then((result) => {
       loading = null
@@ -83,7 +83,7 @@ export async function openQuickOpen(): Promise<void> {
 
 /** Wires the cache to the watcher. Called once at boot. */
 export function watchForFileChanges(): void {
-  window.aperture.fs.onWatchEvent((event) => {
+  window.betterCallCompiler.fs.onWatchEvent((event) => {
     if (event.type === 'add' || event.type === 'unlink' || event.type === 'addDir' || event.type === 'unlinkDir') {
       invalidateFileCache()
     }

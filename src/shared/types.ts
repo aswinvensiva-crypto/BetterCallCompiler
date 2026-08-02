@@ -289,7 +289,7 @@ export const aiDoneSchema = z.strictObject({
 export type AiDone = z.infer<typeof aiDoneSchema>
 
 /**
- * One line of `.aperture/ai-log.jsonl`.
+ * One line of `.bettercallcompiler/ai-log.jsonl`.
  *
  * The spec names timestamp, model, mode, promptHash, file, range and applied.
  * `id` and `revertOf` are additions the journal cannot work without: reverting

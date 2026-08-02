@@ -21,9 +21,9 @@ test('app launches and renders the workbench with a clean console', async () => 
     })
     window.on('pageerror', (error) => problems.push(`pageerror: ${error.message}`))
 
-    await window.waitForSelector('html[data-aperture-ready="true"]')
+    await window.waitForSelector('html[data-bettercallcompiler-ready="true"]')
 
-    expect(await window.title()).toBe('Aperture')
+    expect(await window.title()).toBe('BetterCallCompiler')
 
     // Every workbench region declared in index.html is present.
     for (const id of ['activity-bar', 'side-bar', 'editor-area', 'status-bar']) {
@@ -32,7 +32,7 @@ test('app launches and renders the workbench with a clean console', async () => 
 
     // The renderer actually ran: these nodes are created in main.ts, not markup.
     await expect(window.locator('.activity-bar__item')).toHaveCount(7)
-    await expect(window.locator('.editor-placeholder__mark')).toHaveText('Aperture')
+    await expect(window.locator('.editor-placeholder__mark')).toHaveText('BetterCallCompiler')
 
     // With step 12 done, every activity item is live. The bar renders anything
     // not yet built as disabled rather than silently inert, so this doubles as

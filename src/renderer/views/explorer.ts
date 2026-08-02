@@ -12,7 +12,7 @@ import { confirmAction, notifyError } from '../workbench/notifications'
  */
 
 /** Fired when a file row is activated. The editor (step 4) listens for this. */
-export const OPEN_FILE_EVENT = 'aperture:open-file'
+export const OPEN_FILE_EVENT = 'bettercallcompiler:open-file'
 
 interface PendingEdit {
   /** Absolute path of the directory the new entry goes into. */
@@ -71,7 +71,7 @@ function showError(message: string): void {
 /* ------------------------------- data ---------------------------------- */
 
 async function loadChildren(dirAbsolute: string, dirRelative: string): Promise<FileNode[]> {
-  const result = await window.aperture.fs.readDir({ path: dirAbsolute })
+  const result = await window.betterCallCompiler.fs.readDir({ path: dirAbsolute })
   if (!result.ok) {
     showError(result.error.message)
     return []
@@ -303,7 +303,7 @@ async function activate(node: FileNode): Promise<void> {
 }
 
 async function openFolder(): Promise<void> {
-  const result = await window.aperture.fs.openFolder({})
+  const result = await window.betterCallCompiler.fs.openFolder({})
   if (!result.ok) {
     showError(result.error.message)
     return
@@ -364,7 +364,7 @@ async function submitEdit(edit: PendingEdit, value: string): Promise<void> {
   }
 
   const target = childPath(edit.parentPath, value)
-  const api = window.aperture.fs
+  const api = window.betterCallCompiler.fs
 
   const result =
     edit.renaming !== undefined
@@ -390,7 +390,7 @@ async function confirmDelete(node: FileNode): Promise<void> {
   })
   if (choice !== 'confirm') return
 
-  const result = await window.aperture.fs.delete({ path: node.path })
+  const result = await window.betterCallCompiler.fs.delete({ path: node.path })
   if (!result.ok) showError(result.error.message)
   await refreshDirectory(parentRelativeOf(node))
 }
@@ -513,9 +513,9 @@ export async function mountExplorer(title: HTMLElement, body: HTMLElement): Prom
   bodyHost = body
 
   document.addEventListener('click', closeContextMenu)
-  window.aperture.fs.onWatchEvent(onWatchEvent)
+  window.betterCallCompiler.fs.onWatchEvent(onWatchEvent)
 
-  const current = await window.aperture.fs.getWorkspace({})
+  const current = await window.betterCallCompiler.fs.getWorkspace({})
   if (current.ok && current.value.root !== null) {
     await adoptWorkspace(current.value)
   } else {

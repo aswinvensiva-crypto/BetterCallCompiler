@@ -14,7 +14,7 @@ You optimise for **correctness at the trust boundary** and **a repo that builds
 on the first try**, over feature count.
 ---
 ## MISSION
-Build **Aperture**, a native, installable IDE that ships as a Windows `.exe`.
+Build **BetterCallCompiler**, a native, installable IDE that ships as a Windows `.exe`.
 Milestone 1 = a walking skeleton *with* the AI features, producing a real
 installer. This is the foundation of a multi-month product intended to compete
 with VS Code and Cursor on execution ergonomics, AI transparency, and
@@ -44,7 +44,7 @@ Violating any of these is a build-blocking defect. Assert them in tests.
 2. The renderer has **no** Node access. `window.require`, `process`, `module`
    must be `undefined` in the renderer. Write an E2E assertion for this.
 3. All privileged capability crosses via `contextBridge` in `preload/bridge.ts`,
-   exposing a single frozen object `window.aperture` with typed methods. Never
+   exposing a single frozen object `window.betterCallCompiler` with typed methods. Never
    expose `ipcRenderer` itself, and never expose a generic `invoke(channel, ...)`.
 4. Every IPC channel is declared in one table in `src/shared/ipc-contract.ts`
    with a zod request schema and a zod response schema. A channel with no table
@@ -71,7 +71,7 @@ Violating any of these is a build-blocking defect. Assert them in tests.
 ## TARGET REPOSITORY LAYOUT
 Create exactly this. Do not add files not listed without saying why.
 ```
-aperture/
+bettercallcompiler/
   package.json
   tsconfig.json  tsconfig.node.json  tsconfig.web.json
   electron.vite.config.ts
@@ -193,7 +193,7 @@ Requirements:
   went to the model. Transparency is a product requirement, not a nicety.
 - **Every AI edit is a diff, never a silent write.** "Improve" opens a Monaco
   `DiffEditor` (current vs proposed). Applying writes the file, snapshots the
-  prior content for revert, and appends to `.aperture/ai-log.jsonl` in the
+  prior content for revert, and appends to `.bettercallcompiler/ai-log.jsonl` in the
   workspace: `{timestamp, model, mode, promptHash, file, range, applied}`.
   One-click revert restores the snapshot.
 - No key configured → an inline "Add your Anthropic key in Settings" affordance,
@@ -207,7 +207,7 @@ bar, notifications.
 **Step 13 — Packaging.** `electron-builder.yml`:
 `win.target: [nsis, portable]`, `nsis: {oneClick:false, perMachine:false,
 allowToChangeInstallationDirectory:true}`, `asar: true`, `asarUnpack: ["**/node_pty/**"]`,
-output `dist/Aperture-Setup-${version}.exe`. mac/linux targets present but
+output `dist/BetterCallCompiler-Setup-${version}.exe`. mac/linux targets present but
 commented out. `npm run build` must produce the installer.
 **Step 14 — Repo.** `.gitignore`, README with setup prerequisites and the
 verification checklist, initial commit, push.
@@ -249,9 +249,9 @@ Say so up front rather than discovering it midway.
 7. SCM view shows real `git status` and log; stage + commit works from the UI.
 8. Insights shows the real contribution calendar and this repo's commits; degrades to local `git log` without a token.
 9. Select code → Explain / Find bugs / Improve stream a Claude response tied to the exact selection; "Context sent" is inspectable.
-10. Improve → diff preview → apply → entry in `.aperture/ai-log.jsonl` → revert restores byte-for-byte.
+10. Improve → diff preview → apply → entry in `.bettercallcompiler/ai-log.jsonl` → revert restores byte-for-byte.
 11. In devtools, `window.require`, `process`, and `module` are all `undefined`; the IPC-contract completeness test passes; path-confinement tests pass.
-12. `npm run build` → `dist/Aperture-Setup-*.exe` exists and installs per-user with no admin prompt.
+12. `npm run build` → `dist/BetterCallCompiler-Setup-*.exe` exists and installs per-user with no admin prompt.
 ---
 ## EXPLICITLY OUT OF SCOPE FOR M1
 Do not build these; do not scaffold placeholders that imply they work:
@@ -276,7 +276,7 @@ Do not build these; do not scaffold placeholders that imply they work:
   open protocols (DAP/LSP), and is a long tail across M2–M5.
 ---
 ## THE STRATEGIC BET (context for design trade-offs, not M1 work)
-Where Aperture is meant to beat VS Code and Cursor, so you can avoid decisions
+Where BetterCallCompiler is meant to beat VS Code and Cursor, so you can avoid decisions
 that foreclose these:
 1. **Runs with nothing installed, then upgrades silently** when a real toolchain
    appears on PATH. Keep the runtime interface stable so bundled packs and real

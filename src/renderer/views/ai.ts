@@ -63,7 +63,7 @@ async function prepareProposal(): Promise<void> {
   const block = extractCodeBlock(answer)
   if (block === null) return
 
-  const current = await window.aperture.fs.readFile({ path: context.filePath })
+  const current = await window.betterCallCompiler.fs.readFile({ path: context.filePath })
   if (!current.ok) return
 
   proposal = {
@@ -130,7 +130,7 @@ function renderProposal(): HTMLElement {
     el(
       'p',
       'ai-proposal__note',
-      'Applying writes the file, records the edit in .aperture/ai-log.jsonl, and keeps a snapshot you can revert to.'
+      'Applying writes the file, records the edit in .bettercallcompiler/ai-log.jsonl, and keeps a snapshot you can revert to.'
     )
   )
 
@@ -264,12 +264,12 @@ function render(): void {
  * ------------------------------------------------------------------ */
 
 async function refreshKey(): Promise<void> {
-  const result = await window.aperture.secrets.hasKey({})
+  const result = await window.betterCallCompiler.secrets.hasKey({})
   hasKey = result.ok && result.value.secrets.anthropic
 }
 
 async function refreshLog(): Promise<void> {
-  const result = await window.aperture.ai.log({})
+  const result = await window.betterCallCompiler.ai.log({})
   entries = result.ok ? result.value.entries : []
 }
 
@@ -288,7 +288,7 @@ export async function runAiAction(mode: AiMode, next: AiContext): Promise<void> 
   streaming = true
   render()
 
-  const result = await window.aperture.ai.start({ mode, context: next })
+  const result = await window.betterCallCompiler.ai.start({ mode, context: next })
   if (!result.ok) {
     streaming = false
     started = null
@@ -308,13 +308,13 @@ export async function runAiAction(mode: AiMode, next: AiContext): Promise<void> 
 
 async function cancelStream(): Promise<void> {
   if (started === null) return
-  await window.aperture.ai.cancel({ streamId: started.streamId })
+  await window.betterCallCompiler.ai.cancel({ streamId: started.streamId })
 }
 
 async function applyProposal(): Promise<void> {
   if (proposal === null || started === null || context === null) return
 
-  const result = await window.aperture.ai.apply({
+  const result = await window.betterCallCompiler.ai.apply({
     path: context.filePath,
     content: proposal.modified,
     mode: started.mode,
@@ -337,7 +337,7 @@ async function applyProposal(): Promise<void> {
 }
 
 async function revertEntry(id: string): Promise<void> {
-  const result = await window.aperture.ai.revert({ id })
+  const result = await window.betterCallCompiler.ai.revert({ id })
   if (!result.ok) {
     notifyError(result.error.message)
     return
@@ -354,7 +354,7 @@ function bindStreamEvents(): void {
   if (listenersBound) return
   listenersBound = true
 
-  window.aperture.ai.onDelta((payload) => {
+  window.betterCallCompiler.ai.onDelta((payload) => {
     if (started === null || payload.streamId !== started.streamId) return
     answer += payload.text
     const output = document.getElementById('ai-answer')
@@ -368,7 +368,7 @@ function bindStreamEvents(): void {
     }
   })
 
-  window.aperture.ai.onDone((payload) => {
+  window.betterCallCompiler.ai.onDone((payload) => {
     if (started === null || payload.streamId !== started.streamId) return
     streaming = false
     doneError = payload.error

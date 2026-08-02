@@ -62,15 +62,15 @@ function envWithoutGhCli(): Record<string, string> {
 }
 
 test.beforeAll(async () => {
-  fixture = await mkdtemp(join(tmpdir(), 'aperture-insights-'))
-  userData = await mkdtemp(join(tmpdir(), 'aperture-insights-profile-'))
+  fixture = await mkdtemp(join(tmpdir(), 'bettercallcompiler-insights-'))
+  userData = await mkdtemp(join(tmpdir(), 'bettercallcompiler-insights-profile-'))
 
   const git = (...args: string[]): void => {
     execFileSync('git', args, { cwd: fixture, encoding: 'utf8', windowsHide: true })
   }
   git('init', '-b', 'main')
-  git('config', 'user.email', 'aperture@example.com')
-  git('config', 'user.name', 'Aperture Test')
+  git('config', 'user.email', 'bettercallcompiler@example.com')
+  git('config', 'user.name', 'BetterCallCompiler Test')
   git('config', 'commit.gpgsign', 'false')
   await writeFile(join(fixture, 'readme.md'), '# fixture\n')
   git('add', 'readme.md')
@@ -82,7 +82,7 @@ test.beforeAll(async () => {
     env: envWithoutGhCli()
   })
   window = await app.firstWindow()
-  await window.waitForSelector('html[data-aperture-ready="true"]')
+  await window.waitForSelector('html[data-bettercallcompiler-ready="true"]')
 })
 
 test.afterAll(async () => {

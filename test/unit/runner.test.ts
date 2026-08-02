@@ -116,7 +116,7 @@ describe('compiled languages', () => {
       plan.compile?.outputPath ?? ''
     ])
 
-    // The artefact lands under .aperture/, which is git-ignored and unwatched.
+    // The artefact lands under .bettercallcompiler/, which is git-ignored and unwatched.
     expect(plan.compile?.outputPath.startsWith(buildDirectoryFor(ROOT))).toBe(true)
 
     // The run step executes the artefact, not the compiler.

@@ -1,6 +1,6 @@
-appId: com.aperture.ide
-productName: Aperture
-copyright: Aperture
+appId: com.bettercallcompiler.ide
+productName: BetterCallCompiler
+copyright: BetterCallCompiler
 
 directories:
   output: dist
@@ -41,7 +41,7 @@ win:
   target:
     - nsis
     - portable
-  artifactName: Aperture-Setup-${version}.exe
+  artifactName: BetterCallCompiler-Setup-${version}.exe
   icon: resources/icon.ico
 
 nsis:
@@ -53,11 +53,11 @@ nsis:
   allowElevation: false
   createDesktopShortcut: true
   createStartMenuShortcut: true
-  shortcutName: Aperture
+  shortcutName: BetterCallCompiler
   deleteAppDataOnUninstall: false
 
 portable:
-  artifactName: Aperture-Portable-${version}.exe
+  artifactName: BetterCallCompiler-Portable-${version}.exe
 
 # Not built in M1. Left here, commented, because the shape of these entries is
 # the thing worth keeping — reconstructing them later is where the mistakes are.

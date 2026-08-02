@@ -30,9 +30,9 @@ try {
   // Not running under Electron; the plain-directory variant needs no unpatching.
 }
 
-const OUT_FILE = process.env['APERTURE_PROBE_OUT'] ?? ''
-const VARIANT = process.env['APERTURE_PROBE_VARIANT'] ?? '(unset)'
-const NONCE = process.env['APERTURE_PROBE_NONCE'] ?? 'nonce'
+const OUT_FILE = process.env['BETTERCALLCOMPILER_PROBE_OUT'] ?? ''
+const VARIANT = process.env['BETTERCALLCOMPILER_PROBE_VARIANT'] ?? '(unset)'
+const NONCE = process.env['BETTERCALLCOMPILER_PROBE_NONCE'] ?? 'nonce'
 
 /** Long enough for a cold ConPTY on a loaded machine, short enough to fail fast. */
 const SPAWN_TIMEOUT_MS = 20_000
@@ -261,7 +261,7 @@ async function run() {
   // of output rather than of input.
   await step('spawn one-shot command', async () => {
     if (nodePty === null) throw new Error('node-pty did not load')
-    const marker = `APERTURE-${NONCE}-ONESHOT`
+    const marker = `BETTERCALLCOMPILER-${NONCE}-ONESHOT`
     const pty = nodePty.spawn(shell.file, [...shell.oneShot, `echo ${marker}`], {
       name: 'xterm-256color',
       cols: 80,
@@ -294,11 +294,11 @@ async function run() {
     // match its own echo. Building it from a variable makes the echoed line and
     // the output line differ. On cmd this must be two lines: %M% on the same
     // line as the assignment would expand at parse time, before set runs.
-    const marker = `APERTURE-${NONCE}-INTERACTIVE-OK`
+    const marker = `BETTERCALLCOMPILER-${NONCE}-INTERACTIVE-OK`
     const command =
       process.platform === 'win32'
-        ? `set M=OK\recho APERTURE-${NONCE}-INTERACTIVE-%M%\r`
-        : `M=OK; echo APERTURE-${NONCE}-INTERACTIVE-$M\n`
+        ? `set M=OK\recho BETTERCALLCOMPILER-${NONCE}-INTERACTIVE-%M%\r`
+        : `M=OK; echo BETTERCALLCOMPILER-${NONCE}-INTERACTIVE-$M\n`
     pty.write(command)
     await waitForMarker(pty, marker, SPAWN_TIMEOUT_MS)
     return { pid: pty.pid }
@@ -393,7 +393,7 @@ app.whenReady().then(async () => {
       // Fall through to stdout.
     }
   }
-  process.stdout.write(`\n---APERTURE-PROBE---\n${serialised}\n`)
+  process.stdout.write(`\n---BETTERCALLCOMPILER-PROBE---\n${serialised}\n`)
 
   app.exit(report.ok ? 0 : 1)
 })

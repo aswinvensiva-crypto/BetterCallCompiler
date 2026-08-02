@@ -1,4 +1,4 @@
-# Aperture
+# BetterCallCompiler
 
 A native, installable IDE that ships as a Windows `.exe`. Monaco for editing, a
 real PTY for the terminal, real toolchains for running code, and Claude wired in
@@ -65,9 +65,9 @@ The twelve things that have to be true for M1 to be done.
 | 7 | SCM shows real `git status` and log; stage + commit works from the UI | `scm.spec.ts` (drives a real repository) |
 | 8 | Insights shows the contribution calendar and this repo's commits; degrades to local `git log` without a token | `insights.spec.ts` |
 | 9 | Select code → Explain / Find bugs / Improve stream a response tied to the selection; "Context sent" is inspectable | `ai.spec.ts`, `ai.test.ts` |
-| 10 | Improve → diff → apply → entry in `.aperture/ai-log.jsonl` → revert restores byte-for-byte | `ai.spec.ts`, `ai.test.ts` |
+| 10 | Improve → diff → apply → entry in `.bettercallcompiler/ai-log.jsonl` → revert restores byte-for-byte | `ai.spec.ts`, `ai.test.ts` |
 | 11 | `window.require`, `process` and `module` are `undefined` in devtools; contract-completeness and path-confinement tests pass | `no-node-in-renderer.spec.ts`, `ipc-contract.test.ts`, `path-confinement.test.ts` |
-| 12 | `npm run build:win` → `dist/Aperture-Setup-*.exe`, installing per-user with no admin prompt | Both binaries carry `requestedExecutionLevel=asInvoker` |
+| 12 | `npm run build:win` → `dist/BetterCallCompiler-Setup-*.exe`, installing per-user with no admin prompt | Both binaries carry `requestedExecutionLevel=asInvoker` |
 
 ---
 
@@ -105,7 +105,7 @@ These are enforced by tests, not by convention.
 1. **The renderer has no Node.** `contextIsolation: true`, `nodeIntegration: false`,
    `sandbox: true`. An E2E test asserts `window.require`, `process` and `module`
    are all `undefined`.
-2. **One privileged surface.** `window.aperture`, frozen, built from the channel
+2. **One privileged surface.** `window.betterCallCompiler`, frozen, built from the channel
    registry. `ipcRenderer` is never exposed and there is no generic
    `invoke(channel, …)` — renderer code cannot name a channel, only call a
    method that already exists.
@@ -127,7 +127,7 @@ These are enforced by tests, not by convention.
 
 ### The AI edit journal
 
-Every applied AI edit appends a line to `.aperture/ai-log.jsonl` in the
+Every applied AI edit appends a line to `.bettercallcompiler/ai-log.jsonl` in the
 workspace, and the prior file contents are snapshotted beside it. The journal is
 append-only: a revert adds a second entry naming the first rather than amending
 it, because a log you can edit is not evidence of anything.
@@ -136,7 +136,7 @@ it, because a log you can edit is not evidence of anything.
 {"id":"...","timestamp":"...","model":"claude-sonnet-5","mode":"improve","promptHash":"…","file":"src/a.ts","range":"3-5","applied":true,"revertOf":null}
 ```
 
-`.aperture/` is git-ignored by default. It contains your snapshots — do not
+`.bettercallcompiler/` is git-ignored by default. It contains your snapshots — do not
 commit it.
 
 ---

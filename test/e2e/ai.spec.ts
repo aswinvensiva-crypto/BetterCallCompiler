@@ -28,8 +28,8 @@ let window: Page
  * tests against a stub provider.
  */
 test.beforeAll(async () => {
-  fixture = await mkdtemp(join(tmpdir(), 'aperture-ai-'))
-  userData = await mkdtemp(join(tmpdir(), 'aperture-ai-profile-'))
+  fixture = await mkdtemp(join(tmpdir(), 'bettercallcompiler-ai-'))
+  userData = await mkdtemp(join(tmpdir(), 'bettercallcompiler-ai-profile-'))
 
   await writeFile(
     join(fixture, 'add.ts'),
@@ -41,7 +41,7 @@ test.beforeAll(async () => {
     cwd: APP_ROOT
   })
   window = await app.firstWindow()
-  await window.waitForSelector('html[data-aperture-ready="true"]')
+  await window.waitForSelector('html[data-bettercallcompiler-ready="true"]')
 })
 
 test.afterAll(async () => {
@@ -84,9 +84,9 @@ test('the editor exposes the three actions, gated on a selection', async () => {
     const editors = (globalThis as unknown as Record<string, unknown>)['monaco'] as unknown
     void editors
     // The action ids are what the context menu and Ctrl+K bind to.
-    return ['explain', 'find-bugs', 'improve'].map((mode) => `aperture.ai.${mode}`)
+    return ['explain', 'find-bugs', 'improve'].map((mode) => `bettercallcompiler.ai.${mode}`)
   })
-  expect(actions).toEqual(['aperture.ai.explain', 'aperture.ai.find-bugs', 'aperture.ai.improve'])
+  expect(actions).toEqual(['bettercallcompiler.ai.explain', 'bettercallcompiler.ai.find-bugs', 'bettercallcompiler.ai.improve'])
 
   // Invoking with an empty selection must produce nothing at all: no request,
   // no panel switch, no error.
@@ -137,7 +137,7 @@ interface LogEntry {
 
 async function apply(content: string): Promise<LogEntry> {
   return await window.evaluate(async (next: string) => {
-    const bridge = (globalThis as unknown as Record<string, unknown>)['aperture'] as {
+    const bridge = (globalThis as unknown as Record<string, unknown>)['betterCallCompiler'] as {
       fs: { getWorkspace: (r: Record<string, never>) => Promise<{ ok: boolean; value: { root: string } }> }
       ai: { apply: (r: unknown) => Promise<{ ok: boolean; value?: { entry: unknown }; error?: { message: string } }> }
     }
@@ -170,7 +170,7 @@ test('applying an edit writes the file and journals it', async () => {
   )
 
   // The journal is a real file in the workspace, one JSON object per line.
-  const journal = await readFile(join(fixture, '.aperture', 'ai-log.jsonl'), 'utf8')
+  const journal = await readFile(join(fixture, '.bettercallcompiler', 'ai-log.jsonl'), 'utf8')
   const lines = journal.trim().split('\n')
   expect(lines).toHaveLength(1)
 
@@ -208,7 +208,7 @@ test('revert restores the file byte for byte and appends a second entry', async 
   )
 
   // Append-only: the original entry stands, and the revert is a second fact.
-  const journal = await readFile(join(fixture, '.aperture', 'ai-log.jsonl'), 'utf8')
+  const journal = await readFile(join(fixture, '.bettercallcompiler', 'ai-log.jsonl'), 'utf8')
   const lines = journal.trim().split('\n')
   expect(lines).toHaveLength(2)
 
@@ -221,7 +221,7 @@ test('revert restores the file byte for byte and appends a second entry', async 
 
 test('the bridge exposes no way to read the Anthropic key', async () => {
   const surface = await window.evaluate(() => {
-    const bridge = (globalThis as unknown as Record<string, unknown>)['aperture'] as Record<
+    const bridge = (globalThis as unknown as Record<string, unknown>)['betterCallCompiler'] as Record<
       string,
       Record<string, unknown>
     >

@@ -1,5 +1,5 @@
 import { spawn, type IPty } from 'node-pty'
-import { ApertureServiceError } from '../shared/ipc-contract'
+import { BetterCallCompilerServiceError } from '../shared/ipc-contract'
 import type { TerminalExit, TerminalSession } from '../shared/types'
 import { killProcessTree, resolveShell } from './toolchains'
 
@@ -85,7 +85,7 @@ export function createSession(options: {
       // that. Only `useConpty: false` is authoritative, and we want the default.
     })
   } catch (error) {
-    throw new ApertureServiceError(
+    throw new BetterCallCompilerServiceError(
       'IO_ERROR',
       `could not start ${shell.name}: ${error instanceof Error ? error.message : 'unknown error'}`
     )
@@ -126,7 +126,7 @@ export function createSession(options: {
 function requireSession(id: string): Session {
   const session = sessions.get(id)
   if (session === undefined) {
-    throw new ApertureServiceError('NOT_FOUND', `no terminal session ${id}`)
+    throw new BetterCallCompilerServiceError('NOT_FOUND', `no terminal session ${id}`)
   }
   return session
 }

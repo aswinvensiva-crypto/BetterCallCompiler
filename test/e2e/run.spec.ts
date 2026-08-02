@@ -20,7 +20,7 @@ let window: Page
 let toolchains: Array<{ id: string; kind: string }> = []
 
 test.beforeAll(async () => {
-  fixture = await mkdtemp(join(tmpdir(), 'aperture-run-'))
+  fixture = await mkdtemp(join(tmpdir(), 'bettercallcompiler-run-'))
 
   await writeFile(
     join(fixture, 'hello.py'),
@@ -35,10 +35,10 @@ test.beforeAll(async () => {
 
   app = await electron.launch({ args: [MAIN_ENTRY, `--folder=${fixture}`], cwd: APP_ROOT })
   window = await app.firstWindow()
-  await window.waitForSelector('html[data-aperture-ready="true"]')
+  await window.waitForSelector('html[data-bettercallcompiler-ready="true"]')
 
   toolchains = await window.evaluate(async () => {
-    const bridge = (globalThis as unknown as Record<string, unknown>)['aperture'] as {
+    const bridge = (globalThis as unknown as Record<string, unknown>)['betterCallCompiler'] as {
       toolchain: { list: (r: Record<string, never>) => Promise<unknown> }
     }
     const result = (await bridge.toolchain.list({})) as {

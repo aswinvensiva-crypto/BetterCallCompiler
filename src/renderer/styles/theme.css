@@ -1,4 +1,4 @@
-/* Aperture near-black theme, in the IntelliJ IDEA idiom.
+/* BetterCallCompiler near-black theme, in the IntelliJ IDEA idiom.
    Single source of colour truth; components reference these variables and never
    hard-code a hex value.
 
@@ -9,7 +9,7 @@
 
        Darcula      editor #2B2B2B  L = 0.02416
        New UI Dark  editor #1E1F22  L = 0.01371
-       Aperture     editor #121314  L = 0.00645   ← 2.1x darker than New UI Dark
+       BetterCallCompiler     editor #121314  L = 0.00645   ← 2.1x darker than New UI Dark
 
    Anything at or above L 0.01371 would not actually be darker than the New UI
    baseline, whatever it looks like at a glance.
@@ -38,110 +38,110 @@
   /* ── the ramp ──────────────────────────────────────────────────────────
      New UI Dark's named 14-step gray ramp, shifted down onto near-black. The
      *relationships* are IntelliJ's; only the ground is darker. */
-  --ap-gray-1: #0e0f10; /* borders, deepest wells */
-  --ap-gray-2: #121314; /* editor canvas */
-  --ap-gray-3: #1a1c1e; /* tool windows, panels, toolbar */
-  --ap-gray-4: #232629; /* separators, hover */
-  --ap-gray-5: #2c2f33; /* pressed / active */
-  --ap-gray-6: #3a3e43;
-  --ap-gray-7: #6f737a; /* subtle text */
-  --ap-gray-8: #868a91;
-  --ap-gray-9: #9da0a8; /* muted text, status-bar widgets */
-  --ap-gray-10: #b4b8bf;
-  --ap-gray-11: #bcbec4; /* primary text — New UI Dark's editor foreground */
-  --ap-gray-12: #dfe1e5;
-  --ap-gray-13: #f0f1f2;
-  --ap-gray-14: #ffffff;
+  --bcc-gray-1: #0e0f10; /* borders, deepest wells */
+  --bcc-gray-2: #121314; /* editor canvas */
+  --bcc-gray-3: #1a1c1e; /* tool windows, panels, toolbar */
+  --bcc-gray-4: #232629; /* separators, hover */
+  --bcc-gray-5: #2c2f33; /* pressed / active */
+  --bcc-gray-6: #3a3e43;
+  --bcc-gray-7: #6f737a; /* subtle text */
+  --bcc-gray-8: #868a91;
+  --bcc-gray-9: #9da0a8; /* muted text, status-bar widgets */
+  --bcc-gray-10: #b4b8bf;
+  --bcc-gray-11: #bcbec4; /* primary text — New UI Dark's editor foreground */
+  --bcc-gray-12: #dfe1e5;
+  --bcc-gray-13: #f0f1f2;
+  --bcc-gray-14: #ffffff;
 
   /* ── surfaces ──────────────────────────────────────────────────────────
      The editor is the darkest surface and chrome sits above it, exactly as in
      IntelliJ. VS Code does the opposite; that inversion is most of why a
      recoloured VS Code layout still reads as VS Code. */
-  --ap-bg: var(--ap-gray-2);
-  --ap-bg-elevated: var(--ap-gray-3);
-  --ap-bg-inset: var(--ap-gray-1);
-  --ap-bg-hover: var(--ap-gray-4);
-  --ap-bg-active: var(--ap-gray-5);
-  --ap-bg-selected: #214283; /* IntelliJ's documented selection blue */
+  --bcc-bg: var(--bcc-gray-2);
+  --bcc-bg-elevated: var(--bcc-gray-3);
+  --bcc-bg-inset: var(--bcc-gray-1);
+  --bcc-bg-hover: var(--bcc-gray-4);
+  --bcc-bg-active: var(--bcc-gray-5);
+  --bcc-bg-selected: #214283; /* IntelliJ's documented selection blue */
 
   /* Borders are the darkest step, never a lighter one — the New UI signature. */
-  --ap-border: var(--ap-gray-1);
-  --ap-border-strong: var(--ap-gray-4);
+  --bcc-border: var(--bcc-gray-1);
+  --bcc-border-strong: var(--bcc-gray-4);
 
-  --ap-fg: var(--ap-gray-11);
-  --ap-fg-muted: var(--ap-gray-9);
-  --ap-fg-subtle: var(--ap-gray-7);
-  --ap-fg-inverse: var(--ap-gray-1);
+  --bcc-fg: var(--bcc-gray-11);
+  --bcc-fg-muted: var(--bcc-gray-9);
+  --bcc-fg-subtle: var(--bcc-gray-7);
+  --bcc-fg-inverse: var(--bcc-gray-1);
 
   /* Blue6 from the New UI palette — IntelliJ's accent. */
-  --ap-accent: #3574f0;
-  --ap-accent-hover: #4a82f2;
-  --ap-accent-fg: #ffffff;
+  --bcc-accent: #3574f0;
+  --bcc-accent-hover: #4a82f2;
+  --bcc-accent-fg: #ffffff;
 
-  --ap-success: #549159;
-  --ap-warning: #d9a343;
-  --ap-warning-hover: #e8b95c;
-  --ap-danger: #db5c5c;
+  --bcc-success: #549159;
+  --bcc-warning: #d9a343;
+  --bcc-warning-hover: #e8b95c;
+  --bcc-danger: #db5c5c;
 
   /* VCS colours are New UI Dark's, and deliberately not the generic
      green/amber/red: IntelliJ renders *deleted* as grey, not red. */
-  --ap-modified: #375fad;
-  --ap-added: #549159;
-  --ap-deleted: #868a91;
+  --bcc-modified: #375fad;
+  --bcc-added: #549159;
+  --bcc-deleted: #868a91;
 
   /* Gutter change bars — same three values, named for the editor chrome that
      will consume them in the VCS-gutter stage. */
-  --ap-vcs-added: #549159;
-  --ap-vcs-modified: #375fad;
-  --ap-vcs-deleted: #868a91;
-  --ap-vcs-whitespace: #52433d;
+  --bcc-vcs-added: #549159;
+  --bcc-vcs-modified: #375fad;
+  --bcc-vcs-deleted: #868a91;
+  --bcc-vcs-whitespace: #52433d;
 
-  --ap-status-bg: var(--ap-gray-3);
-  --ap-status-fg: var(--ap-gray-9);
+  --bcc-status-bg: var(--bcc-gray-3);
+  --bcc-status-fg: var(--bcc-gray-9);
 
   /* ── editor chrome ─────────────────────────────────────────────────────── */
-  --ap-editor-bg: var(--ap-gray-2);
-  --ap-editor-caret: #ced0d6;
-  --ap-editor-caret-row: #1a1c1f;
-  --ap-editor-gutter-bg: #141517;
-  --ap-editor-line-number: #4b5059;
-  --ap-editor-line-number-active: #a1a3ab;
-  --ap-editor-indent-guide: #26292d;
-  --ap-editor-indent-guide-active: #5a5d63;
+  --bcc-editor-bg: var(--bcc-gray-2);
+  --bcc-editor-caret: #ced0d6;
+  --bcc-editor-caret-row: #1a1c1f;
+  --bcc-editor-gutter-bg: #141517;
+  --bcc-editor-line-number: #4b5059;
+  --bcc-editor-line-number-active: #a1a3ab;
+  --bcc-editor-indent-guide: #26292d;
+  --bcc-editor-indent-guide-active: #5a5d63;
 
   /* ── tool windows ──────────────────────────────────────────────────────── */
-  --ap-toolwindow-bg: var(--ap-gray-3);
-  --ap-toolwindow-header-bg: var(--ap-gray-3);
-  --ap-toolwindow-header-fg: var(--ap-gray-10);
-  --ap-stripe-bg: var(--ap-gray-3);
-  --ap-stripe-selected-bg: var(--ap-accent);
-  --ap-splitter: var(--ap-gray-1);
-  --ap-splitter-hover: var(--ap-accent);
+  --bcc-toolwindow-bg: var(--bcc-gray-3);
+  --bcc-toolwindow-header-bg: var(--bcc-gray-3);
+  --bcc-toolwindow-header-fg: var(--bcc-gray-10);
+  --bcc-stripe-bg: var(--bcc-gray-3);
+  --bcc-stripe-selected-bg: var(--bcc-accent);
+  --bcc-splitter: var(--bcc-gray-1);
+  --bcc-splitter-hover: var(--bcc-accent);
 
   /* ── typography ────────────────────────────────────────────────────────── */
-  --ap-font-ui:
+  --bcc-font-ui:
     'Segoe UI Variable Text', 'Segoe UI', system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif;
-  --ap-font-mono: 'JetBrains Mono', 'Cascadia Code', 'Cascadia Mono', Consolas, 'Courier New', monospace;
+  --bcc-font-mono: 'JetBrains Mono', 'Cascadia Code', 'Cascadia Mono', Consolas, 'Courier New', monospace;
 
-  --ap-font-size: 13px;
-  --ap-font-size-sm: 11px;
-  --ap-line-height: 1.5;
+  --bcc-font-size: 13px;
+  --bcc-font-size-sm: 11px;
+  --bcc-line-height: 1.5;
 
   /* ── metrics ───────────────────────────────────────────────────────────── */
-  --ap-activity-bar-width: 48px;
-  --ap-side-bar-width: 260px;
-  --ap-status-bar-height: 24px;
-  --ap-tab-height: 35px;
+  --bcc-activity-bar-width: 48px;
+  --bcc-side-bar-width: 260px;
+  --bcc-status-bar-height: 24px;
+  --bcc-tab-height: 35px;
 
   /* Docking metrics, consumed by the tool-window manager. */
-  --ap-stripe-width: 26px;
-  --ap-toolbar-height: 36px;
-  --ap-splitter-size: 1px;
-  --ap-splitter-grab: 5px;
+  --bcc-stripe-width: 26px;
+  --bcc-toolbar-height: 36px;
+  --bcc-splitter-size: 1px;
+  --bcc-splitter-grab: 5px;
 
   /* IntelliJ's chrome is squarer than VS Code's. */
-  --ap-radius: 3px;
-  --ap-shadow-overlay: 0 10px 32px rgba(0, 0, 0, 0.62);
+  --bcc-radius: 3px;
+  --bcc-shadow-overlay: 0 10px 32px rgba(0, 0, 0, 0.62);
 }
 
 *,
@@ -159,18 +159,18 @@ body {
 }
 
 body {
-  background: var(--ap-bg);
-  color: var(--ap-fg);
-  font-family: var(--ap-font-ui);
-  font-size: var(--ap-font-size);
-  line-height: var(--ap-line-height);
+  background: var(--bcc-bg);
+  color: var(--bcc-fg);
+  font-family: var(--bcc-font-ui);
+  font-size: var(--bcc-font-size);
+  line-height: var(--bcc-line-height);
   -webkit-font-smoothing: antialiased;
   user-select: none;
   cursor: default;
 }
 
 :focus-visible {
-  outline: 1px solid var(--ap-accent);
+  outline: 1px solid var(--bcc-accent);
   outline-offset: -1px;
 }
 

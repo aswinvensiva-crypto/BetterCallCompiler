@@ -12,7 +12,7 @@ let window: Page
 const consoleProblems: string[] = []
 
 test.beforeAll(async () => {
-  fixture = await mkdtemp(join(tmpdir(), 'aperture-editor-'))
+  fixture = await mkdtemp(join(tmpdir(), 'bettercallcompiler-editor-'))
   await mkdir(join(fixture, 'src'), { recursive: true })
   await writeFile(join(fixture, 'src', 'index.js'), 'const answer = 42\n')
   await writeFile(join(fixture, 'notes.md'), '# notes\n')
@@ -25,7 +25,7 @@ test.beforeAll(async () => {
   })
   window.on('pageerror', (error) => consoleProblems.push(error.message))
 
-  await window.waitForSelector('html[data-aperture-ready="true"]')
+  await window.waitForSelector('html[data-bettercallcompiler-ready="true"]')
 })
 
 test.afterAll(async () => {

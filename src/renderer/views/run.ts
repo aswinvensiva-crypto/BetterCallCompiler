@@ -259,10 +259,10 @@ function bindRunEvents(): void {
     parkedFor(payload.runId).output.push(payload.data)
   }
 
-  window.aperture.run.onStdout(onOutput)
-  window.aperture.run.onStderr(onOutput)
+  window.betterCallCompiler.run.onStdout(onOutput)
+  window.betterCallCompiler.run.onStderr(onOutput)
 
-  window.aperture.run.onExit((payload) => {
+  window.betterCallCompiler.run.onExit((payload) => {
     if (payload.runId === currentRunId) {
       completeRun(payload)
       return
@@ -272,7 +272,7 @@ function bindRunEvents(): void {
 }
 
 async function refreshWorkspace(): Promise<void> {
-  const result = await window.aperture.fs.getWorkspace({})
+  const result = await window.betterCallCompiler.fs.getWorkspace({})
   if (result.ok) workspace = result.value
 }
 
@@ -303,7 +303,7 @@ export async function runFile(node: FileNode): Promise<void> {
   parked.clear()
 
   const languageId = languageForFile(node.name)
-  const started = await window.aperture.run.start({ path: node.path, languageId })
+  const started = await window.betterCallCompiler.run.start({ path: node.path, languageId })
 
   if (!started.ok) {
     setBusy(false)
@@ -371,7 +371,7 @@ export async function runActiveFile(): Promise<void> {
 
 export async function cancelActiveRun(): Promise<void> {
   if (currentRunId === null) return
-  await window.aperture.run.cancel({ runId: currentRunId })
+  await window.betterCallCompiler.run.cancel({ runId: currentRunId })
 }
 
 export function isRunning(): boolean {

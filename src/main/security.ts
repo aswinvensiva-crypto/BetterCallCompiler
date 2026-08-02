@@ -58,7 +58,7 @@ export function isAllowedExternalUrl(raw: string): boolean {
 export interface NavigationContext {
   /** Origin of the Vite dev server, e.g. `http://localhost:5173`. Dev only. */
   devServerOrigin?: string | undefined
-  /** Origin the packaged renderer is served from, e.g. `app://aperture`. */
+  /** Origin the packaged renderer is served from, e.g. `app://bettercallcompiler`. */
   appOrigin?: string | undefined
   /** Absolute path of the directory holding the built renderer. */
   rendererRoot?: string | undefined
@@ -67,7 +67,7 @@ export interface NavigationContext {
 /**
  * Compares scheme + host rather than `origin`.
  *
- * `new URL('app://aperture/x').origin` serialises to the string `"null"` for
+ * `new URL('app://bettercallcompiler/x').origin` serialises to the string `"null"` for
  * any non-special scheme, so an origin equality test would either reject every
  * app:// navigation or — worse — treat two different opaque origins as equal.
  */

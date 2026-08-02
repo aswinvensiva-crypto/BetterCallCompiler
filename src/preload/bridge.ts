@@ -6,7 +6,7 @@ import {
   splitChannel
 } from '../shared/ipc-channels'
 // Type-only: erased at build time, so no zod reaches the sandboxed preload.
-import type { ApertureApi } from '../shared/ipc-contract'
+import type { BetterCallCompilerApi } from '../shared/ipc-contract'
 
 /**
  * The single privileged surface exposed to the renderer.
@@ -27,7 +27,7 @@ import type { ApertureApi } from '../shared/ipc-contract'
  */
 type Namespace = Record<string, unknown>
 
-function buildApi(): ApertureApi {
+function buildApi(): BetterCallCompilerApi {
   const namespaces = new Map<string, Namespace>()
 
   const groupFor = (namespace: string): Namespace => {
@@ -60,7 +60,7 @@ function buildApi(): ApertureApi {
     api[namespace] = Object.freeze(group)
   }
 
-  return Object.freeze(api) as ApertureApi
+  return Object.freeze(api) as BetterCallCompilerApi
 }
 
-contextBridge.exposeInMainWorld('aperture', buildApi())
+contextBridge.exposeInMainWorld('betterCallCompiler', buildApi())

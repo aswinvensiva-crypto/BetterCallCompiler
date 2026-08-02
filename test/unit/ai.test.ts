@@ -383,7 +383,7 @@ describe('the AI edit journal', () => {
   let workspace = ''
 
   beforeEach(async () => {
-    workspace = await mkdtemp(join(tmpdir(), 'aperture-ailog-'))
+    workspace = await mkdtemp(join(tmpdir(), 'bettercallcompiler-ailog-'))
     await setWorkspace(workspace)
     resetAiLogForTests()
   })
@@ -508,7 +508,7 @@ describe('the AI edit journal', () => {
       range: '1-1'
     })
 
-    const logFile = join(workspace, '.aperture', 'ai-log.jsonl')
+    const logFile = join(workspace, '.bettercallcompiler', 'ai-log.jsonl')
     const existing = await readFile(logFile, 'utf8')
     await writeFile(logFile, `not json\n${existing}{"partial":true}\n`, 'utf8')
 

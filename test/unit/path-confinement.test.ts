@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { confinePath, isWithin } from '../../src/main/fs-service'
-import { ApertureServiceError } from '../../src/shared/ipc-contract'
+import { BetterCallCompilerServiceError } from '../../src/shared/ipc-contract'
 
 /**
  * Fixture layout:
@@ -21,7 +21,7 @@ let outside = ''
 let junctionCreated = false
 
 beforeAll(async () => {
-  base = await realpath(await mkdtemp(join(tmpdir(), 'aperture-confine-')))
+  base = await realpath(await mkdtemp(join(tmpdir(), 'bettercallcompiler-confine-')))
   root = join(base, 'workspace')
   outside = join(base, 'outside')
 
@@ -49,9 +49,9 @@ afterAll(async () => {
 })
 
 async function expectRejection(promise: Promise<unknown>, code: string): Promise<void> {
-  await expect(promise).rejects.toBeInstanceOf(ApertureServiceError)
+  await expect(promise).rejects.toBeInstanceOf(BetterCallCompilerServiceError)
   await promise.catch((error: unknown) => {
-    expect((error as ApertureServiceError).code).toBe(code)
+    expect((error as BetterCallCompilerServiceError).code).toBe(code)
   })
 }
 

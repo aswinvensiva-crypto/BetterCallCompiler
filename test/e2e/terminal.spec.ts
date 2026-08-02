@@ -11,10 +11,10 @@ let app: ElectronApplication
 let window: Page
 
 test.beforeAll(async () => {
-  fixture = await mkdtemp(join(tmpdir(), 'aperture-terminal-'))
+  fixture = await mkdtemp(join(tmpdir(), 'bettercallcompiler-terminal-'))
   app = await electron.launch({ args: [MAIN_ENTRY, `--folder=${fixture}`], cwd: APP_ROOT })
   window = await app.firstWindow()
-  await window.waitForSelector('html[data-aperture-ready="true"]')
+  await window.waitForSelector('html[data-bettercallcompiler-ready="true"]')
 })
 
 test.afterAll(async () => {
@@ -66,7 +66,7 @@ test('opens a second session and switches between them', async () => {
 
 test('reports the shell it chose', async () => {
   const sessions = await window.evaluate(async () => {
-    const bridge = (globalThis as unknown as Record<string, unknown>)['aperture'] as {
+    const bridge = (globalThis as unknown as Record<string, unknown>)['betterCallCompiler'] as {
       terminal: { list: (r: Record<string, never>) => Promise<unknown> }
     }
     return (await bridge.terminal.list({})) as {
@@ -90,7 +90,7 @@ test('closes a session and disposes its PTY', async () => {
   await expect(window.locator('.panel-tab')).toHaveCount(1)
 
   const remaining = await window.evaluate(async () => {
-    const bridge = (globalThis as unknown as Record<string, unknown>)['aperture'] as {
+    const bridge = (globalThis as unknown as Record<string, unknown>)['betterCallCompiler'] as {
       terminal: { list: (r: Record<string, never>) => Promise<unknown> }
     }
     return (await bridge.terminal.list({})) as { ok: boolean; value?: { sessions: unknown[] } }

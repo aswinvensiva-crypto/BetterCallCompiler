@@ -1,7 +1,7 @@
 import type { ChildProcess } from 'node:child_process'
 import { promises as fsp } from 'node:fs'
 import { basename, dirname, extname, join, relative, sep } from 'node:path'
-import { ApertureServiceError } from '../shared/ipc-contract'
+import { BetterCallCompilerServiceError } from '../shared/ipc-contract'
 import { isRunnable, type RunExit, type RunOutput, type RunStarted, type Toolchain } from '../shared/types'
 import { confinePath, getWorkspace } from './fs-service'
 import { killProcessTree, listToolchains, spawnExecutable } from './toolchains'
@@ -99,7 +99,7 @@ const RECIPES: Readonly<Record<string, LanguageRecipe>> = {
 
 /** Where compiled artefacts go. Already git-ignored and never watched. */
 export function buildDirectoryFor(workspaceRoot: string): string {
-  return join(workspaceRoot, '.aperture', 'build')
+  return join(workspaceRoot, '.bettercallcompiler', 'build')
 }
 
 function artefactName(filePath: string): string {
@@ -129,7 +129,7 @@ export function planRun(
       command: null,
       args: [],
       pack: null,
-      reason: `Aperture cannot run .${extname(filePath).replace(/^\./, '') || 'this'} files yet.`,
+      reason: `BetterCallCompiler cannot run .${extname(filePath).replace(/^\./, '') || 'this'} files yet.`,
       compile: null
     }
   }
@@ -200,7 +200,7 @@ export function planRun(
     command: null,
     args: [],
     pack: null,
-    reason: `${why} Aperture has no bundled ${recipe.humanName} runtime yet — ${recipe.installHint}`,
+    reason: `${why} BetterCallCompiler has no bundled ${recipe.humanName} runtime yet — ${recipe.installHint}`,
     compile: null
   }
 }
@@ -303,7 +303,7 @@ function runProcess(
 export async function startRun(requestedPath: string, languageId: string): Promise<RunStarted> {
   const workspace = getWorkspace()
   if (workspace.root === null) {
-    throw new ApertureServiceError('NO_WORKSPACE', 'open a folder before running a file')
+    throw new BetterCallCompilerServiceError('NO_WORKSPACE', 'open a folder before running a file')
   }
   // Captured so the async body below keeps the narrowing.
   const workspaceRoot = workspace.root

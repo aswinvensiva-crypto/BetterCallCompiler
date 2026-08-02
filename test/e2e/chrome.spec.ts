@@ -18,7 +18,7 @@ let window: Page
 
 /** Step 12: command palette, quick open, and workspace search. */
 test.beforeAll(async () => {
-  fixture = await mkdtemp(join(tmpdir(), 'aperture-chrome-'))
+  fixture = await mkdtemp(join(tmpdir(), 'bettercallcompiler-chrome-'))
   await mkdir(join(fixture, 'src', 'views'), { recursive: true })
 
   await writeFile(join(fixture, 'readme.md'), '# Fixture\n\nthe needle is here\n')
@@ -33,7 +33,7 @@ test.beforeAll(async () => {
 
   app = await electron.launch({ args: [MAIN_ENTRY, `--folder=${fixture}`], cwd: APP_ROOT })
   window = await app.firstWindow()
-  await window.waitForSelector('html[data-aperture-ready="true"]')
+  await window.waitForSelector('html[data-bettercallcompiler-ready="true"]')
 })
 
 test.afterAll(async () => {
