@@ -46,6 +46,8 @@ import {
 import { clearInsightsCache, fetchInsights } from './github-service'
 import { clearSecret, hasSecret, isEncryptionAvailable, setSecret } from './secrets'
 import { loadSettings, saveSettings } from './settings'
+import { cancelAiStream, startAiStream } from './ai-service'
+import { applyAiEdit, readAiLog, revertAiEdit } from './ai-log'
 
 export type InvokeHandler<C extends InvokeChannel> = (
   request: RequestOf<C>,
@@ -192,7 +194,28 @@ export function createHandlerMap(): HandlerMap {
       // the previous user would survive the change otherwise.
       clearInsightsCache()
       return { settings }
-    }
+    },
+
+    'ai:start': async (request) => ({
+      started: await startAiStream(request.mode, request.context)
+    }),
+
+    'ai:cancel': (request) => ({ cancelled: cancelAiStream(request.streamId) }),
+
+    'ai:apply': async (request) => ({
+      entry: await applyAiEdit({
+        path: request.path,
+        content: request.content,
+        mode: request.mode,
+        model: request.model,
+        promptHash: request.promptHash,
+        range: request.range
+      })
+    }),
+
+    'ai:revert': async (request) => ({ entry: await revertAiEdit(request.id) }),
+
+    'ai:log': async () => ({ entries: await readAiLog() })
   }
 }
 

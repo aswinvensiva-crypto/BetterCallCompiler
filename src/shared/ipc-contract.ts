@@ -1,6 +1,12 @@
 import { z } from 'zod'
 import type { EventChannel, InvokeChannel } from './ipc-channels'
 import {
+  aiContextSchema,
+  aiDoneSchema,
+  aiLogEntrySchema,
+  aiModeSchema,
+  aiStartedSchema,
+  aiStreamDeltaSchema,
   fileNodeSchema,
   fsWatchEventSchema,
   gitBranchesSchema,
@@ -54,7 +60,10 @@ export const ERROR_CODES = [
   'ALREADY_EXISTS',
   'IO_ERROR',
   'CANCELLED',
-  'UNSUPPORTED'
+  'UNSUPPORTED',
+  // Distinct from a failure: the renderer turns this into an inline
+  // "Add your Anthropic key in Settings" affordance, never an error dialog.
+  'NO_API_KEY'
 ] as const
 
 export type ErrorCode = (typeof ERROR_CODES)[number]
@@ -269,6 +278,39 @@ export const INVOKE_CHANNELS = {
   'settings:set': {
     request: z.strictObject({ patch: settingsSchema.partial() }),
     response: z.strictObject({ settings: settingsSchema })
+  },
+
+  // The response carries the exact prompt and context, so the panel can render
+  // "Context sent" before the first token arrives rather than after the answer.
+  'ai:start': {
+    request: z.strictObject({ mode: aiModeSchema, context: aiContextSchema }),
+    response: z.strictObject({ started: aiStartedSchema })
+  },
+  'ai:cancel': {
+    request: z.strictObject({ streamId: z.string().min(1) }),
+    response: z.strictObject({ cancelled: z.boolean() })
+  },
+  // `content` is the whole proposed file, not a patch: the renderer already
+  // spliced the block into the selection range, and sending the result means
+  // main never has to reconstruct an edit it did not compute.
+  'ai:apply': {
+    request: z.strictObject({
+      path: z.string().min(1),
+      content: z.string(),
+      mode: aiModeSchema,
+      model: z.string().min(1),
+      promptHash: z.string().min(1),
+      range: z.string().min(1)
+    }),
+    response: z.strictObject({ entry: aiLogEntrySchema })
+  },
+  'ai:revert': {
+    request: z.strictObject({ id: z.string().min(1) }),
+    response: z.strictObject({ entry: aiLogEntrySchema })
+  },
+  'ai:log': {
+    request: empty,
+    response: z.strictObject({ entries: z.array(aiLogEntrySchema) })
   }
 } as const satisfies Record<InvokeChannel, ChannelSpec>
 
@@ -282,7 +324,9 @@ export const EVENT_CHANNELS = {
   'run:exit': { payload: runExitSchema },
   // Payload-free: the view re-reads status itself, so the event cannot carry a
   // snapshot that is already stale by the time it is rendered.
-  'git:changed': { payload: z.strictObject({}) }
+  'git:changed': { payload: z.strictObject({}) },
+  'ai:delta': { payload: aiStreamDeltaSchema },
+  'ai:done': { payload: aiDoneSchema }
 } as const satisfies Record<EventChannel, { readonly payload: z.ZodType }>
 
 export type InvokeChannels = typeof INVOKE_CHANNELS

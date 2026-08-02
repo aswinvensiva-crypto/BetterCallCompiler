@@ -217,6 +217,86 @@ export const githubInsightsSchema = z.strictObject({
 })
 export type GithubInsights = z.infer<typeof githubInsightsSchema>
 
+/* ----------------------------------- ai ---------------------------------- */
+
+export const aiModeSchema = z.enum(['explain', 'find-bugs', 'improve'])
+export type AiMode = z.infer<typeof aiModeSchema>
+
+export const aiSelectionSchema = z.strictObject({
+  text: z.string(),
+  /** 1-based, matching Monaco and every compiler diagnostic. */
+  startLine: z.number().int().positive(),
+  startColumn: z.number().int().positive(),
+  endLine: z.number().int().positive(),
+  endColumn: z.number().int().positive()
+})
+export type AiSelection = z.infer<typeof aiSelectionSchema>
+
+/**
+ * Everything the model is told, assembled in the renderer where the language
+ * services live, and rendered verbatim into the "Context sent" panel.
+ */
+export const aiContextSchema = z.strictObject({
+  filePath: z.string(),
+  relativePath: z.string(),
+  languageId: z.string(),
+  selection: aiSelectionSchema,
+  /** The function or class containing the selection, via Monaco's symbols. */
+  enclosingSymbol: z
+    .strictObject({ name: z.string(), kind: z.string(), text: z.string() })
+    .nullable(),
+  imports: z.array(z.string())
+})
+export type AiContext = z.infer<typeof aiContextSchema>
+
+export const aiStartedSchema = z.strictObject({
+  streamId: z.string(),
+  mode: aiModeSchema,
+  model: z.string(),
+  provider: z.string(),
+  promptHash: z.string(),
+  /** The exact strings sent. Transparency is a product requirement. */
+  systemPrompt: z.string(),
+  contextSent: z.string()
+})
+export type AiStarted = z.infer<typeof aiStartedSchema>
+
+export const aiStreamDeltaSchema = z.strictObject({
+  streamId: z.string(),
+  text: z.string()
+})
+export type AiStreamDelta = z.infer<typeof aiStreamDeltaSchema>
+
+export const aiDoneSchema = z.strictObject({
+  streamId: z.string(),
+  stopReason: z.string().nullable(),
+  /** Human-readable; already mapped from 401/429/network by the service. */
+  error: z.string().nullable(),
+  cancelled: z.boolean()
+})
+export type AiDone = z.infer<typeof aiDoneSchema>
+
+/**
+ * One line of `.aperture/ai-log.jsonl`.
+ *
+ * The spec names timestamp, model, mode, promptHash, file, range and applied.
+ * `id` and `revertOf` are additions the journal cannot work without: reverting
+ * needs to name a specific edit, and an append-only log records a revert as a
+ * second entry rather than by mutating the first.
+ */
+export const aiLogEntrySchema = z.strictObject({
+  id: z.string(),
+  timestamp: z.string(),
+  model: z.string(),
+  mode: aiModeSchema,
+  promptHash: z.string(),
+  file: z.string(),
+  range: z.string(),
+  applied: z.boolean(),
+  revertOf: z.string().nullable()
+})
+export type AiLogEntry = z.infer<typeof aiLogEntrySchema>
+
 /* --------------------------------- run ---------------------------------- */
 
 /**

@@ -21,6 +21,8 @@ import { mountSideBar, registerSideBarView, showSideBarView } from './workbench/
 import { clearDiffSelection, mountScm, onScmShown } from './views/scm'
 import { mountInsights, onInsightsShown } from './views/insights'
 import { mountSettings, onSettingsShown } from './views/settings'
+import { listenForAiActions, mountAi, onAiShown } from './views/ai'
+import { registerAiActions } from './editor/ai-actions'
 import { mountDiffEditor } from './editor/diff'
 
 declare global {
@@ -77,6 +79,10 @@ function mountEditor(editorHost: HTMLElement, tabBar: HTMLElement): void {
   // becoming a tab: a diff is a transient comparison the user dismisses, not a
   // document they keep open and switch between.
   mountDiffEditor(editorHost, clearDiffSelection)
+
+  // Explain / Find bugs / Improve, on the context menu and Ctrl+K. Enabled only
+  // when there is a selection — `precondition` in ai-actions.ts.
+  registerAiActions(editor)
 
   const placeholder = document.getElementById('editor-placeholder')
   const syncPlaceholder = (): void => {
@@ -171,6 +177,7 @@ async function mountSideBarViews(): Promise<void> {
   registerSideBarView({ id: 'scm', mount: mountScm, onShow: onScmShown })
   registerSideBarView({ id: 'insights', mount: mountInsights, onShow: onInsightsShown })
   registerSideBarView({ id: 'settings', mount: mountSettings, onShow: onSettingsShown })
+  registerSideBarView({ id: 'ai', mount: mountAi, onShow: onAiShown })
 
   mountActivityBar(requireEl('activity-bar'), (id) => {
     // The Run icon opens the output console rather than a side-bar view.
@@ -187,6 +194,7 @@ async function boot(): Promise<void> {
   mountEditor(requireEl('editor-host'), requireEl('tab-bar'))
   mountPanel(requireEl('panel'), requireEl('panel-tabs'), requireEl('panel-body'))
   await mountSideBarViews()
+  listenForAiActions()
 
   // Readiness marker. The workbench regions are static markup, so their mere
   // presence says nothing about whether the renderer has booted — a test that

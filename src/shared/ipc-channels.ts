@@ -47,7 +47,12 @@ export const INVOKE_CHANNEL_NAMES = [
   'secrets:hasKey',
   'secrets:clearKey',
   'settings:get',
-  'settings:set'
+  'settings:set',
+  'ai:start',
+  'ai:cancel',
+  'ai:apply',
+  'ai:revert',
+  'ai:log'
 ] as const
 
 export type InvokeChannel = (typeof INVOKE_CHANNEL_NAMES)[number]
@@ -60,7 +65,9 @@ export const EVENT_CHANNEL_NAMES = [
   'run:stdout',
   'run:stderr',
   'run:exit',
-  'git:changed'
+  'git:changed',
+  'ai:delta',
+  'ai:done'
 ] as const
 
 export type EventChannel = (typeof EVENT_CHANNEL_NAMES)[number]

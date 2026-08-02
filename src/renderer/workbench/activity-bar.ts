@@ -38,8 +38,7 @@ export const ACTIVITY_ITEMS: readonly ActivityItem[] = [
     id: 'ai',
     label: 'Assistant',
     icon: 'M12 3l2.2 5.6L20 10.8l-5.8 2.2L12 19l-2.2-6L4 10.8l5.8-2.2z',
-    // Step 11.
-    enabled: false
+    enabled: true
   },
   {
     id: 'settings',
@@ -51,7 +50,7 @@ export const ACTIVITY_ITEMS: readonly ActivityItem[] = [
 ]
 
 /** Views that live in the side bar, as opposed to the panel. */
-const SIDE_BAR_VIEWS = new Set(['explorer', 'scm', 'insights', 'settings'])
+const SIDE_BAR_VIEWS = new Set(['explorer', 'scm', 'insights', 'settings', 'ai'])
 
 let host: HTMLElement | null = null
 const buttons = new Map<string, HTMLButtonElement>()

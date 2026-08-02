@@ -16,6 +16,7 @@ import { createHandlerMap, emitEvent, registerIpcHandlers } from './ipc'
 import { disposeAllSessions, setTerminalEmitters } from './terminal'
 import { cancelAllRuns, setRunEmitters } from './runner'
 import { setGitChangeEmitter, startGitWatch, stopGitWatch } from './git-service'
+import { cancelAllAiStreams, setAiEmitters } from './ai-service'
 import { buildCspHeader, isAllowedExternalUrl, isInternalNavigation } from './security'
 
 /**
@@ -114,12 +115,17 @@ function createWindow(): BrowserWindow {
     (payload) => emitEvent(win, 'run:exit', payload)
   )
   setGitChangeEmitter(() => emitEvent(win, 'git:changed', {}))
+  setAiEmitters(
+    (payload) => emitEvent(win, 'ai:delta', payload),
+    (payload) => emitEvent(win, 'ai:done', payload)
+  )
 
   // Orphaned shells and half-finished builds outlive the window unless every
   // child is reaped explicitly.
   win.on('closed', () => {
     disposeAllSessions()
     cancelAllRuns()
+    cancelAllAiStreams()
   })
 
   const devUrl = devServerUrl()
@@ -306,6 +312,7 @@ if (!gotLock) {
   app.on('will-quit', () => {
     disposeAllSessions()
     cancelAllRuns()
+    cancelAllAiStreams()
     void stopWatching()
     void stopGitWatch()
   })
