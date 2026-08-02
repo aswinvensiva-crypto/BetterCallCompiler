@@ -1253,3 +1253,80 @@
   min-height: 0;
 }
 
+/* ---------- settings ---------- */
+
+.settings-group {
+  margin: 14px 12px 6px;
+  font-size: var(--ap-font-size-sm);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ap-fg-muted);
+}
+
+.settings-field {
+  padding: 8px 12px;
+}
+
+.settings-field__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.settings-field__label {
+  font-weight: 600;
+}
+
+.settings-field__hint {
+  margin: 3px 0 7px;
+  color: var(--ap-fg-subtle);
+  font-size: var(--ap-font-size-sm);
+}
+
+.settings-field__row {
+  display: flex;
+  gap: 6px;
+}
+
+.settings-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--ap-border-strong);
+  border-radius: var(--ap-radius);
+  background: var(--ap-bg-inset);
+  color: var(--ap-fg);
+  font: inherit;
+  outline: none;
+  user-select: text;
+}
+
+.settings-input:focus {
+  border-color: var(--ap-accent);
+}
+
+.settings-input:disabled {
+  opacity: 0.5;
+}
+
+.settings-badge {
+  flex: none;
+  padding: 1px 7px;
+  border-radius: 8px;
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.settings-badge--set {
+  background: rgba(78, 201, 122, 0.18);
+  color: var(--ap-success);
+}
+
+.settings-badge--unset {
+  background: var(--ap-bg-active);
+  color: var(--ap-fg-subtle);
+}

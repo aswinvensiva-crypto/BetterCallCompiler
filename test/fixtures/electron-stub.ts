@@ -62,6 +62,21 @@ export const shell = {
   openExternal: async (): Promise<void> => undefined
 }
 
+/**
+ * Reversible, not encrypted — the point is to prove that `secrets.ts` never
+ * hands a value back over IPC, not to test DPAPI. A test that could read a
+ * secret through the bridge would fail regardless of what this does.
+ */
+export const safeStorage = {
+  isEncryptionAvailable: (): boolean => true,
+  encryptString: (plain: string): Buffer => Buffer.from(`stub:${plain}`, 'utf8'),
+  decryptString: (blob: Buffer): string => {
+    const text = blob.toString('utf8')
+    if (!text.startsWith('stub:')) throw new Error('not encrypted by this stub')
+    return text.slice('stub:'.length)
+  }
+}
+
 export const dialog = {
   showOpenDialog: async (): Promise<{ canceled: boolean; filePaths: string[] }> => ({
     canceled: true,

@@ -7,6 +7,9 @@ import {
   gitCommitSchema,
   gitFileDiffSchema,
   gitStatusSchema,
+  secretKeySchema,
+  secretsStateSchema,
+  settingsSchema,
   runExitSchema,
   runOutputSchema,
   runStartedSchema,
@@ -234,8 +237,32 @@ export const INVOKE_CHANNELS = {
   'git:log': {
     request: z.strictObject({ limit: z.number().int().positive().max(500) }),
     response: z.strictObject({ commits: z.array(gitCommitSchema) })
-  }
+  },
 
+  // Three channels, and deliberately no fourth. There is no `secrets:getKey`:
+  // nothing in this table can return a stored secret in plaintext, so a
+  // compromised renderer has no code path to exfiltrate one.
+  'secrets:setKey': {
+    request: z.strictObject({ key: secretKeySchema, value: z.string() }),
+    response: z.strictObject({ secrets: secretsStateSchema })
+  },
+  'secrets:hasKey': {
+    request: empty,
+    response: z.strictObject({ secrets: secretsStateSchema })
+  },
+  'secrets:clearKey': {
+    request: z.strictObject({ key: secretKeySchema }),
+    response: z.strictObject({ secrets: secretsStateSchema })
+  },
+
+  'settings:get': {
+    request: empty,
+    response: z.strictObject({ settings: settingsSchema })
+  },
+  'settings:set': {
+    request: z.strictObject({ patch: settingsSchema.partial() }),
+    response: z.strictObject({ settings: settingsSchema })
+  }
 } as const satisfies Record<InvokeChannel, ChannelSpec>
 
 /** THE event table: main → renderer pushes, one payload schema per channel. */

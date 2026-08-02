@@ -82,6 +82,34 @@ export function isRunnable(toolchain: Toolchain): boolean {
   return toolchain.kind === 'real' && toolchain.path !== null
 }
 
+/* ------------------------------ secrets ---------------------------------- */
+
+/**
+ * Note what is absent: there is no schema for *reading* a secret, because there
+ * is no channel that returns one. The renderer can learn that a key exists and
+ * nothing more.
+ */
+export const secretKeySchema = z.enum(['anthropic', 'github'])
+export type SecretKeyName = z.infer<typeof secretKeySchema>
+
+export const secretsStateSchema = z.strictObject({
+  anthropic: z.boolean(),
+  github: z.boolean(),
+  /** False on a Linux box with no keyring; the UI must say so, not pretend. */
+  encryptionAvailable: z.boolean()
+})
+export type SecretsState = z.infer<typeof secretsStateSchema>
+
+/* ------------------------------ settings --------------------------------- */
+
+export const settingsSchema = z.strictObject({
+  aiModel: z.string().min(1),
+  /** Whose contribution calendar to show when no token names one. */
+  githubUser: z.string(),
+  telemetry: z.boolean()
+})
+export type Settings = z.infer<typeof settingsSchema>
+
 /* --------------------------------- git ---------------------------------- */
 
 export const gitFileChangeSchema = z.strictObject({

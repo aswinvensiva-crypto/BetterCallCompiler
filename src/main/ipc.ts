@@ -43,6 +43,8 @@ import {
   status as gitStatus,
   unstage as gitUnstage
 } from './git-service'
+import { clearSecret, hasSecret, isEncryptionAvailable, setSecret } from './secrets'
+import { loadSettings, saveSettings } from './settings'
 
 export type InvokeHandler<C extends InvokeChannel> = (
   request: RequestOf<C>,
@@ -159,8 +161,42 @@ export function createHandlerMap(): HandlerMap {
 
     'git:branches': async () => ({ branches: await gitBranches() }),
 
-    'git:log': async (request) => ({ commits: await gitLog(request.limit) })
+    'git:log': async (request) => ({ commits: await gitLog(request.limit) }),
 
+    'secrets:setKey': async (request) => {
+      await setSecret(request.key, request.value)
+      return { secrets: await secretsState() }
+    },
+
+    'secrets:hasKey': async () => ({ secrets: await secretsState() }),
+
+    'secrets:clearKey': async (request) => {
+      await clearSecret(request.key)
+      return { secrets: await secretsState() }
+    },
+
+    'settings:get': async () => ({ settings: await loadSettings() }),
+
+    'settings:set': async (request) => {
+      const settings = await saveSettings(request.patch)
+      return { settings }
+    }
+  }
+}
+
+/**
+ * Presence only — never the values. This is the shape the renderer is allowed
+ * to know about secrets.
+ */
+async function secretsState(): Promise<{
+  anthropic: boolean
+  github: boolean
+  encryptionAvailable: boolean
+}> {
+  return {
+    anthropic: await hasSecret('anthropic'),
+    github: await hasSecret('github'),
+    encryptionAvailable: isEncryptionAvailable()
   }
 }
 

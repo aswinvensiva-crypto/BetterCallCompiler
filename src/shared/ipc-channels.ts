@@ -41,7 +41,12 @@ export const INVOKE_CHANNEL_NAMES = [
   'git:unstage',
   'git:commit',
   'git:branches',
-  'git:log'
+  'git:log',
+  'secrets:setKey',
+  'secrets:hasKey',
+  'secrets:clearKey',
+  'settings:get',
+  'settings:set'
 ] as const
 
 export type InvokeChannel = (typeof INVOKE_CHANNEL_NAMES)[number]

@@ -19,6 +19,7 @@ import { runActiveFile } from './views/run'
 import { mountActivityBar } from './workbench/activity-bar'
 import { mountSideBar, registerSideBarView, showSideBarView } from './workbench/side-bar'
 import { clearDiffSelection, mountScm, onScmShown } from './views/scm'
+import { mountSettings, onSettingsShown } from './views/settings'
 import { mountDiffEditor } from './editor/diff'
 
 declare global {
@@ -167,6 +168,7 @@ async function mountSideBarViews(): Promise<void> {
 
   registerSideBarView({ id: 'explorer', mount: mountExplorer })
   registerSideBarView({ id: 'scm', mount: mountScm, onShow: onScmShown })
+  registerSideBarView({ id: 'settings', mount: mountSettings, onShow: onSettingsShown })
 
   mountActivityBar(requireEl('activity-bar'), (id) => {
     // The Run icon opens the output console rather than a side-bar view.
