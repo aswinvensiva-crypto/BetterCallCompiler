@@ -26,11 +26,35 @@ export const INVOKE_CHANNEL_NAMES = [
   'fs:createDir',
   'fs:rename',
   'fs:delete',
+  'fs:listFiles',
+  'fs:search',
   'terminal:create',
   'terminal:write',
   'terminal:resize',
   'terminal:dispose',
-  'terminal:list'
+  'terminal:list',
+  'toolchain:list',
+  'toolchain:rescan',
+  'run:start',
+  'run:cancel',
+  'git:status',
+  'git:diff',
+  'git:stage',
+  'git:unstage',
+  'git:commit',
+  'git:branches',
+  'git:log',
+  'github:insights',
+  'secrets:setKey',
+  'secrets:hasKey',
+  'secrets:clearKey',
+  'settings:get',
+  'settings:set',
+  'ai:start',
+  'ai:cancel',
+  'ai:apply',
+  'ai:revert',
+  'ai:log'
 ] as const
 
 export type InvokeChannel = (typeof INVOKE_CHANNEL_NAMES)[number]
@@ -39,7 +63,13 @@ export type InvokeChannel = (typeof INVOKE_CHANNEL_NAMES)[number]
 export const EVENT_CHANNEL_NAMES = [
   'fs:watchEvent',
   'terminal:data',
-  'terminal:exit'
+  'terminal:exit',
+  'run:stdout',
+  'run:stderr',
+  'run:exit',
+  'git:changed',
+  'ai:delta',
+  'ai:done'
 ] as const
 
 export type EventChannel = (typeof EVENT_CHANNEL_NAMES)[number]

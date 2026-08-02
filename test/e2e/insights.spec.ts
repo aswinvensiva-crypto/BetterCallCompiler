@@ -1,0 +1,102 @@
+import {
+  test,
+  expect,
+  _electron as electron,
+  type ElectronApplication,
+  type Page
+} from '@playwright/test'
+import { execFileSync } from 'node:child_process'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
+const APP_ROOT = join(__dirname, '..', '..')
+const MAIN_ENTRY = join(APP_ROOT, 'out', 'main', 'index.js')
+
+let fixture = ''
+let userData = ''
+let app: ElectronApplication
+let window: Page
+
+/**
+ * Insights against a repository with local history and no GitHub token.
+ *
+ * That is the degraded path, and it is the one worth guarding: the acceptance
+ * criterion is that the view "degrades to local `git log` without a token", and
+ * a degraded view that looks healthy is worse than an empty one.
+ *
+ * `--user-data-dir` keeps any stored token out of the real profile of whoever
+ * runs the suite.
+ */
+test.beforeAll(async () => {
+  fixture = await mkdtemp(join(tmpdir(), 'aperture-insights-'))
+  userData = await mkdtemp(join(tmpdir(), 'aperture-insights-profile-'))
+
+  const git = (...args: string[]): void => {
+    execFileSync('git', args, { cwd: fixture, encoding: 'utf8', windowsHide: true })
+  }
+  git('init', '-b', 'main')
+  git('config', 'user.email', 'aperture@example.com')
+  git('config', 'user.name', 'Aperture Test')
+  git('config', 'commit.gpgsign', 'false')
+  await writeFile(join(fixture, 'readme.md'), '# fixture\n')
+  git('add', 'readme.md')
+  git('commit', '-m', 'Local history only')
+
+  app = await electron.launch({
+    args: [MAIN_ENTRY, `--folder=${fixture}`, `--user-data-dir=${userData}`],
+    cwd: APP_ROOT
+  })
+  window = await app.firstWindow()
+  await window.waitForSelector('html[data-aperture-ready="true"]')
+})
+
+test.afterAll(async () => {
+  await app?.close()
+  for (const dir of [fixture, userData]) {
+    if (dir !== '') await rm(dir, { recursive: true, force: true })
+  }
+})
+
+async function openView(id: string): Promise<void> {
+  await window.locator(`.activity-bar__item[data-view-id="${id}"]`).click()
+  await expect(window.locator(`.side-bar__view[data-view-id="${id}"]`)).toBeVisible()
+}
+
+test('degrades to local git history with no token, and says so', async () => {
+  await openView('insights')
+
+  const badge = window.locator('.insights-badge')
+  await expect(badge).toBeVisible({ timeout: 20_000 })
+
+  // No `gh` on the machine and no PAT stored, so the honest answer is local.
+  await expect(badge).toHaveText('local git')
+
+  // Degradation is stated, never implied by an empty panel.
+  await expect(window.locator('.insights-notice')).toContainText('No GitHub token')
+
+  // The local commit really is listed.
+  await expect(window.locator('.scm-commit-row__message').first()).toHaveText('Local history only')
+
+  // And no calendar is drawn, because there is no data for one.
+  await expect(window.locator('.calendar__grid')).toHaveCount(0)
+})
+
+test('the renderer makes no network requests of its own', async () => {
+  // Security invariant 6: connect-src 'none'. All GitHub traffic goes through
+  // main, so the renderer must not have issued a single external request.
+  const external: string[] = []
+  window.on('request', (request) => {
+    const url = request.url()
+    if (!url.startsWith('app://') && !url.startsWith('devtools://') && !url.startsWith('data:')) {
+      external.push(url)
+    }
+  })
+
+  await openView('explorer')
+  await openView('insights')
+  await window.locator('.side-bar__title-slot[data-view-id="insights"] .icon-button').click()
+  await expect(window.locator('.insights-badge')).toBeVisible()
+
+  expect(external).toEqual([])
+})

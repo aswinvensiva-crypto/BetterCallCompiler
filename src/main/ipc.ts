@@ -18,8 +18,10 @@ import {
   createFile,
   getWorkspace,
   openFolder,
+  listFiles,
   readDirectory,
   readFile,
+  searchWorkspace,
   remove,
   rename,
   writeFile
@@ -31,6 +33,23 @@ import {
   resizeSession,
   writeToSession
 } from './terminal'
+import { listToolchains, rescanToolchains } from './toolchains'
+import { cancelRun, startRun } from './runner'
+import {
+  branches as gitBranches,
+  commit as gitCommit,
+  diff as gitDiff,
+  log as gitLog,
+  stage as gitStage,
+  startGitWatch,
+  status as gitStatus,
+  unstage as gitUnstage
+} from './git-service'
+import { clearInsightsCache, fetchInsights } from './github-service'
+import { clearSecret, hasSecret, isEncryptionAvailable, setSecret } from './secrets'
+import { loadSettings, saveSettings } from './settings'
+import { cancelAiStream, startAiStream } from './ai-service'
+import { applyAiEdit, readAiLog, revertAiEdit } from './ai-log'
 
 export type InvokeHandler<C extends InvokeChannel> = (
   request: RequestOf<C>,
@@ -63,8 +82,14 @@ export function createHandlerMap(): HandlerMap {
       electron: process.versions['electron'] ?? 'unknown'
     }),
 
-    'fs:openFolder': async (_request, event) =>
-      await openFolder(BrowserWindow.fromWebContents(event.sender)),
+    // The `.git` watch is started here rather than inside `setWorkspace`,
+    // because git-service already imports fs-service and the reverse import
+    // would close the cycle.
+    'fs:openFolder': async (_request, event) => {
+      const workspace = await openFolder(BrowserWindow.fromWebContents(event.sender))
+      if (workspace.root !== null) await startGitWatch(workspace.root)
+      return workspace
+    },
 
     'fs:getWorkspace': () => getWorkspace(),
 
@@ -87,6 +112,16 @@ export function createHandlerMap(): HandlerMap {
       await remove(request.path)
       return { deleted: true }
     },
+
+    'fs:listFiles': async () => ({ files: await listFiles() }),
+
+    'fs:search': async (request) => ({
+      matches: await searchWorkspace({
+        query: request.query,
+        caseSensitive: request.caseSensitive,
+        isRegex: request.isRegex
+      })
+    }),
 
     // A terminal opens in the workspace when there is one, so `ls` shows the
     // project rather than wherever the app happened to be launched from.
@@ -113,7 +148,102 @@ export function createHandlerMap(): HandlerMap {
       return { disposed: true }
     },
 
-    'terminal:list': () => ({ sessions: listSessions() })
+    'terminal:list': () => ({ sessions: listSessions() }),
+
+    'toolchain:list': async () => ({ toolchains: [...(await listToolchains())] }),
+
+    'toolchain:rescan': async () => ({ toolchains: [...(await rescanToolchains())] }),
+
+    'run:start': async (request) => ({ run: await startRun(request.path, request.languageId) }),
+
+    'run:cancel': (request) => ({ cancelled: cancelRun(request.runId) }),
+
+    'git:status': async () => ({ status: await gitStatus() }),
+
+    'git:diff': async (request) => ({ diff: await gitDiff(request.path, request.staged) }),
+
+    'git:stage': async (request) => {
+      await gitStage(request.paths)
+      return { staged: true }
+    },
+
+    'git:unstage': async (request) => {
+      await gitUnstage(request.paths)
+      return { unstaged: true }
+    },
+
+    'git:commit': async (request) => ({ commit: await gitCommit(request.message) }),
+
+    'git:branches': async () => ({ branches: await gitBranches() }),
+
+    'git:log': async (request) => ({ commits: await gitLog(request.limit) }),
+
+    'github:insights': async (request) => {
+      if (request.force) clearInsightsCache()
+      return { insights: await fetchInsights(request.force) }
+    },
+
+    'secrets:setKey': async (request) => {
+      await setSecret(request.key, request.value)
+      // A new GitHub PAT invalidates whatever the previous token fetched.
+      if (request.key === 'github') clearInsightsCache()
+      return { secrets: await secretsState() }
+    },
+
+    'secrets:hasKey': async () => ({ secrets: await secretsState() }),
+
+    'secrets:clearKey': async (request) => {
+      await clearSecret(request.key)
+      if (request.key === 'github') clearInsightsCache()
+      return { secrets: await secretsState() }
+    },
+
+    'settings:get': async () => ({ settings: await loadSettings() }),
+
+    'settings:set': async (request) => {
+      const settings = await saveSettings(request.patch)
+      // `githubUser` decides whose calendar is shown, so a cached response for
+      // the previous user would survive the change otherwise.
+      clearInsightsCache()
+      return { settings }
+    },
+
+    'ai:start': async (request) => ({
+      started: await startAiStream(request.mode, request.context)
+    }),
+
+    'ai:cancel': (request) => ({ cancelled: cancelAiStream(request.streamId) }),
+
+    'ai:apply': async (request) => ({
+      entry: await applyAiEdit({
+        path: request.path,
+        content: request.content,
+        mode: request.mode,
+        model: request.model,
+        promptHash: request.promptHash,
+        range: request.range
+      })
+    }),
+
+    'ai:revert': async (request) => ({ entry: await revertAiEdit(request.id) }),
+
+    'ai:log': async () => ({ entries: await readAiLog() })
+  }
+}
+
+/**
+ * Presence only — never the values. This is the shape the renderer is allowed
+ * to know about secrets.
+ */
+async function secretsState(): Promise<{
+  anthropic: boolean
+  github: boolean
+  encryptionAvailable: boolean
+}> {
+  return {
+    anthropic: await hasSecret('anthropic'),
+    github: await hasSecret('github'),
+    encryptionAvailable: isEncryptionAvailable()
   }
 }
 

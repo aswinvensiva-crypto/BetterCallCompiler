@@ -13,7 +13,25 @@ import { createEditor } from './editor/monaco-setup'
 import { attachEditor, activeDocument, openFile, reloadFromDisk, saveActive } from './editor/models'
 import { mountTabs } from './editor/tabs'
 import { notifyError } from './workbench/notifications'
-import { mountPanel } from './workbench/panel'
+import { mountPanel, showOutput } from './workbench/panel'
+import { mountStatusBar } from './workbench/status-bar'
+import { runActiveFile } from './views/run'
+import { mountActivityBar, setSelected } from './workbench/activity-bar'
+import { mountSideBar, registerSideBarView, showSideBarView } from './workbench/side-bar'
+import { clearDiffSelection, mountScm, onScmShown } from './views/scm'
+import { mountInsights, onInsightsShown } from './views/insights'
+import { mountSettings, onSettingsShown } from './views/settings'
+import { listenForAiActions, mountAi, onAiShown } from './views/ai'
+import { registerAiActions } from './editor/ai-actions'
+import { mountSearch, onSearchShown, setSearchQuery } from './views/search'
+import { openCommandPalette, registerCommands } from './workbench/command-palette'
+import { openQuickOpen, watchForFileChanges } from './workbench/quick-open'
+import { isQuickPickOpen } from './workbench/quick-pick'
+import { openFolderCommand } from './views/explorer'
+import { rescanToolchains } from './workbench/status-bar'
+import { cancelActiveRun, isRunning } from './views/run'
+import { showPanelView } from './workbench/panel'
+import { mountDiffEditor } from './editor/diff'
 
 declare global {
   interface Window {
@@ -21,22 +39,6 @@ declare global {
     readonly aperture: ApertureApi
   }
 }
-
-interface ActivityItem {
-  readonly id: string
-  readonly label: string
-  /** 24x24 stroke-only path data. */
-  readonly icon: string
-}
-
-const ACTIVITY_ITEMS: readonly ActivityItem[] = [
-  { id: 'explorer', label: 'Explorer', icon: 'M3 5h6l2 2h10v12H3z' },
-  { id: 'search', label: 'Search', icon: 'M10.5 4a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13zM20 20l-4.9-4.9' },
-  { id: 'scm', label: 'Source Control', icon: 'M6 3v12M6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6zm0 0v3a5 5 0 0 1-5 5H9' },
-  { id: 'run', label: 'Run', icon: 'M8 5v14l11-7z' },
-  { id: 'insights', label: 'Insights', icon: 'M4 20V10M10 20V4M16 20v-7M22 20H2' },
-  { id: 'ai', label: 'Assistant', icon: 'M12 3l2.2 5.6L20 10.8l-5.8 2.2L12 19l-2.2-6L4 10.8l5.8-2.2z' }
-]
 
 function el<K extends keyof HTMLElementTagNameMap>(
   tag: K,
@@ -53,22 +55,6 @@ function requireEl<T extends HTMLElement>(id: string): T {
   const found = document.getElementById(id)
   if (found === null) throw new Error(`workbench region #${id} is missing from index.html`)
   return found as T
-}
-
-function renderActivityBar(host: HTMLElement): void {
-  for (const item of ACTIVITY_ITEMS) {
-    const button = el('button', 'activity-bar__item')
-    button.type = 'button'
-    button.title = item.label
-    button.setAttribute('role', 'tab')
-    button.setAttribute('aria-label', item.label)
-    button.setAttribute('aria-selected', String(item.id === 'explorer'))
-    button.dataset['viewId'] = item.id
-    button.innerHTML =
-      `<svg viewBox="0 0 24 24" aria-hidden="true">` +
-      `<path d="${item.icon}" stroke-linecap="round" stroke-linejoin="round" /></svg>`
-    host.append(button)
-  }
 }
 
 function renderEditorPlaceholder(host: HTMLElement): void {
@@ -96,6 +82,15 @@ function mountEditor(editorHost: HTMLElement, tabBar: HTMLElement): void {
   const editor = createEditor(surface)
   attachEditor(editor)
   mountTabs(tabBar)
+
+  // The diff surface sits on top of the editor in the same region rather than
+  // becoming a tab: a diff is a transient comparison the user dismisses, not a
+  // document they keep open and switch between.
+  mountDiffEditor(editorHost, clearDiffSelection)
+
+  // Explain / Find bugs / Improve, on the context menu and Ctrl+K. Enabled only
+  // when there is a selection — `precondition` in ai-actions.ts.
+  registerAiActions(editor)
 
   const placeholder = document.getElementById('editor-placeholder')
   const syncPlaceholder = (): void => {
@@ -130,6 +125,14 @@ function mountEditor(editorHost: HTMLElement, tabBar: HTMLElement): void {
     }
   })
 
+  // Ctrl+F5 — VS Code's "Run Without Debugging". Plain F5 is deliberately left
+  // alone: it means "start debugging", and there is no debugger until M2.
+  document.addEventListener('keydown', (event) => {
+    if (event.key !== 'F5' || !event.ctrlKey) return
+    event.preventDefault()
+    void saveThenRun()
+  })
+
   // A file changed on disk (git checkout, another editor) is reloaded only when
   // our buffer is clean — never clobbering unsaved work.
   window.aperture.fs.onWatchEvent((watchEvent) => {
@@ -141,42 +144,173 @@ function mountEditor(editorHost: HTMLElement, tabBar: HTMLElement): void {
 }
 
 /**
- * Renders the status bar, then proves the whole boundary works by calling
+ * Saves first, then runs. Running the file the user is looking at while the
+ * on-disk copy is a version behind is the single most confusing thing a run
+ * button can do.
+ */
+async function saveThenRun(): Promise<void> {
+  await saveActive()
+  await showOutput()
+  await runActiveFile()
+}
+
+/**
+ * Mounts the status bar, then proves the whole boundary works by calling
  * `app:ping` — preload bridge, zod-validated request, main handler, and a
  * `Result` all the way back.
  */
 async function renderStatusBar(host: HTMLElement): Promise<void> {
-  const bridge = el('span', 'status-bar__item')
-  const dot = el('span', 'status-bar__dot')
-  const label = document.createTextNode('Connecting…')
-  bridge.append(dot, label)
-
-  const build = el('span', 'status-bar__item', 'Aperture')
-
-  host.append(bridge)
-  host.append(el('span', 'status-bar__spacer'))
-  host.append(build)
+  const statusBar = mountStatusBar(host)
 
   const result = await window.aperture.app.ping({})
 
   if (result.ok) {
-    dot.classList.add('status-bar__dot--ok')
-    label.textContent = `Bridge connected · Electron ${result.value.electron}`
-    build.textContent = `Aperture ${result.value.version} · ${result.value.platform}`
+    statusBar.setBridge(`Bridge connected · Electron ${result.value.electron}`, 'ok')
+    statusBar.setBuild(`Aperture ${result.value.version} · ${result.value.platform}`)
   } else {
-    dot.classList.add('status-bar__dot--error')
-    label.textContent = `Bridge error: ${result.error.code}`
+    statusBar.setBridge(`Bridge error: ${result.error.code}`, 'error')
   }
 }
 
+/**
+ * Registers every side-bar view and wires the activity bar to them.
+ *
+ * Views are registered eagerly but *mounted* lazily on first show, so opening
+ * the app does not shell out to git or reach for the network.
+ */
+async function mountSideBarViews(): Promise<void> {
+  mountSideBar(requireEl('side-bar-title'), requireEl('side-bar-body'))
+
+  registerSideBarView({ id: 'explorer', mount: mountExplorer })
+  registerSideBarView({ id: 'search', mount: mountSearch, onShow: onSearchShown })
+  registerSideBarView({ id: 'scm', mount: mountScm, onShow: onScmShown })
+  registerSideBarView({ id: 'insights', mount: mountInsights, onShow: onInsightsShown })
+  registerSideBarView({ id: 'settings', mount: mountSettings, onShow: onSettingsShown })
+  registerSideBarView({ id: 'ai', mount: mountAi, onShow: onAiShown })
+
+  mountActivityBar(requireEl('activity-bar'), (id) => {
+    // The Run icon opens the output console rather than a side-bar view.
+    if (id === 'run') void showOutput()
+  })
+
+  await showSideBarView('explorer')
+}
+
+/**
+ * Every command the palette offers.
+ *
+ * Registered centrally rather than by each view because the views mount
+ * lazily — a command that only exists once you have visited its view is a
+ * command the palette cannot be used to reach it by.
+ */
+function registerWorkbenchCommands(): void {
+  const showView = (id: string) => () => {
+    setSelected(id)
+    void showSideBarView(id)
+  }
+
+  registerCommands([
+    { id: 'file.openFolder', title: 'File: Open Folder…', run: () => void openFolderCommand() },
+    {
+      id: 'file.save',
+      title: 'File: Save',
+      keybinding: 'Ctrl+S',
+      when: () => activeDocument() !== null,
+      run: () => void saveActive()
+    },
+    { id: 'file.quickOpen', title: 'Go to File…', keybinding: 'Ctrl+P', run: () => void openQuickOpen() },
+
+    { id: 'view.explorer', title: 'View: Explorer', run: showView('explorer') },
+    { id: 'view.search', title: 'View: Search', keybinding: 'Ctrl+Shift+F', run: showView('search') },
+    { id: 'view.scm', title: 'View: Source Control', run: showView('scm') },
+    { id: 'view.insights', title: 'View: Insights', run: showView('insights') },
+    { id: 'view.ai', title: 'View: Assistant', run: showView('ai') },
+    { id: 'view.settings', title: 'View: Settings', run: showView('settings') },
+
+    {
+      id: 'view.terminal',
+      title: 'View: Toggle Terminal',
+      keybinding: 'Ctrl+`',
+      run: () => void showPanelView('terminal')
+    },
+    { id: 'view.output', title: 'View: Output', run: () => void showOutput() },
+
+    {
+      id: 'run.file',
+      title: 'Run: Run Active File',
+      keybinding: 'Ctrl+F5',
+      when: () => activeDocument() !== null,
+      run: () => void saveThenRun()
+    },
+    {
+      id: 'run.cancel',
+      title: 'Run: Cancel',
+      when: () => isRunning(),
+      run: () => void cancelActiveRun()
+    },
+
+    { id: 'toolchains.rescan', title: 'Toolchains: Rescan', run: () => void rescanToolchains() }
+  ])
+}
+
+/**
+ * Workbench-level keys.
+ *
+ * All bound in the capture phase and all no-ops while a quick pick is open, so
+ * the picker owns the keyboard for as long as it is showing rather than having
+ * Ctrl+P reopen it underneath itself.
+ */
+function bindGlobalKeys(): void {
+  document.addEventListener(
+    'keydown',
+    (event) => {
+      if (!(event.ctrlKey || event.metaKey) || event.altKey) return
+      if (isQuickPickOpen()) return
+
+      const key = event.key.toLowerCase()
+
+      if (event.shiftKey && key === 'p') {
+        event.preventDefault()
+        openCommandPalette()
+        return
+      }
+      if (!event.shiftKey && key === 'p') {
+        event.preventDefault()
+        void openQuickOpen()
+        return
+      }
+      if (event.shiftKey && key === 'f') {
+        event.preventDefault()
+        // Seed from the editor selection, which is what makes this feel like
+        // "search for what I am looking at" rather than an empty box.
+        const doc = activeDocument()
+        const selected = doc?.model.getValueInRange(
+          // A multi-line selection is a poor query; take the first line only.
+          doc.model.getFullModelRange()
+        )
+        setSelected('search')
+        void showSideBarView('search').then(() => {
+          const fromEditor = window.getSelection()?.toString() ?? ''
+          if (fromEditor.trim() !== '' && !fromEditor.includes('\n')) setSearchQuery(fromEditor)
+          else if (selected === undefined) setSearchQuery('')
+        })
+      }
+    },
+    true
+  )
+}
+
 async function boot(): Promise<void> {
-  renderActivityBar(requireEl('activity-bar'))
   renderEditorPlaceholder(requireEl('editor-host'))
   await renderStatusBar(requireEl('status-bar'))
 
   mountEditor(requireEl('editor-host'), requireEl('tab-bar'))
   mountPanel(requireEl('panel'), requireEl('panel-tabs'), requireEl('panel-body'))
-  await mountExplorer(requireEl('side-bar-title'), requireEl('side-bar-body'))
+  await mountSideBarViews()
+  listenForAiActions()
+  registerWorkbenchCommands()
+  bindGlobalKeys()
+  watchForFileChanges()
 
   // Readiness marker. The workbench regions are static markup, so their mere
   // presence says nothing about whether the renderer has booted — a test that

@@ -1,11 +1,30 @@
 import { z } from 'zod'
 import type { EventChannel, InvokeChannel } from './ipc-channels'
 import {
+  aiContextSchema,
+  aiDoneSchema,
+  aiLogEntrySchema,
+  aiModeSchema,
+  aiStartedSchema,
+  aiStreamDeltaSchema,
   fileNodeSchema,
   fsWatchEventSchema,
+  searchMatchSchema,
+  gitBranchesSchema,
+  gitCommitSchema,
+  gitFileDiffSchema,
+  githubInsightsSchema,
+  gitStatusSchema,
+  secretKeySchema,
+  secretsStateSchema,
+  settingsSchema,
+  runExitSchema,
+  runOutputSchema,
+  runStartedSchema,
   terminalDataSchema,
   terminalExitSchema,
   terminalSessionSchema,
+  toolchainSchema,
   workspaceSchema
 } from './types'
 
@@ -42,7 +61,10 @@ export const ERROR_CODES = [
   'ALREADY_EXISTS',
   'IO_ERROR',
   'CANCELLED',
-  'UNSUPPORTED'
+  'UNSUPPORTED',
+  // Distinct from a failure: the renderer turns this into an inline
+  // "Add your Anthropic key in Settings" affordance, never an error dialog.
+  'NO_API_KEY'
 ] as const
 
 export type ErrorCode = (typeof ERROR_CODES)[number]
@@ -141,6 +163,20 @@ export const INVOKE_CHANNELS = {
     request: pathRequest,
     response: z.strictObject({ deleted: z.literal(true) })
   },
+  // Quick open needs the whole list once and filters it in the renderer;
+  // round-tripping per keystroke would make typing feel like network latency.
+  'fs:listFiles': {
+    request: empty,
+    response: z.strictObject({ files: z.array(fileNodeSchema) })
+  },
+  'fs:search': {
+    request: z.strictObject({
+      query: z.string(),
+      caseSensitive: z.boolean(),
+      isRegex: z.boolean()
+    }),
+    response: z.strictObject({ matches: z.array(searchMatchSchema) })
+  },
 
   'terminal:create': {
     request: z.strictObject({
@@ -168,6 +204,128 @@ export const INVOKE_CHANNELS = {
   'terminal:list': {
     request: empty,
     response: z.strictObject({ sessions: z.array(terminalSessionSchema) })
+  },
+
+  // `list` serves the session cache; `rescan` drops it first. Two channels
+  // rather than one with a `force` flag, so a caller cannot invalidate a cache
+  // it only meant to read.
+  'toolchain:list': {
+    request: empty,
+    response: z.strictObject({ toolchains: z.array(toolchainSchema) })
+  },
+  'toolchain:rescan': {
+    request: empty,
+    response: z.strictObject({ toolchains: z.array(toolchainSchema) })
+  },
+
+  // The decision — real toolchain, bundled pack, or neither — comes back on the
+  // invoke rather than as an event. The renderer has to know which console to
+  // open and which banner to draw *before* the first byte of output arrives.
+  'run:start': {
+    request: z.strictObject({
+      path: z.string().min(1),
+      languageId: z.string().min(1)
+    }),
+    response: z.strictObject({ run: runStartedSchema })
+  },
+  'run:cancel': {
+    request: z.strictObject({ runId: z.string().min(1) }),
+    response: z.strictObject({ cancelled: z.boolean() })
+  },
+
+  'git:status': {
+    request: empty,
+    response: z.strictObject({ status: gitStatusSchema })
+  },
+  'git:diff': {
+    // `staged` picks which pair of revisions to compare; see `diff` in
+    // git-service.ts for why the caller has to say.
+    request: z.strictObject({ path: z.string().min(1), staged: z.boolean() }),
+    response: z.strictObject({ diff: gitFileDiffSchema })
+  },
+  'git:stage': {
+    request: z.strictObject({ paths: z.array(z.string().min(1)).min(1) }),
+    response: z.strictObject({ staged: z.literal(true) })
+  },
+  'git:unstage': {
+    request: z.strictObject({ paths: z.array(z.string().min(1)).min(1) }),
+    response: z.strictObject({ unstaged: z.literal(true) })
+  },
+  'git:commit': {
+    request: z.strictObject({ message: z.string().min(1) }),
+    response: z.strictObject({ commit: gitCommitSchema })
+  },
+  'git:branches': {
+    request: empty,
+    response: z.strictObject({ branches: gitBranchesSchema })
+  },
+  'git:log': {
+    request: z.strictObject({ limit: z.number().int().positive().max(500) }),
+    response: z.strictObject({ commits: z.array(gitCommitSchema) })
+  },
+
+  'github:insights': {
+    // `force` bypasses the 10-minute cache; the view's Refresh button sets it.
+    request: z.strictObject({ force: z.boolean() }),
+    response: z.strictObject({ insights: githubInsightsSchema })
+  },
+
+  // Three channels, and deliberately no fourth. There is no `secrets:getKey`:
+  // nothing in this table can return a stored secret in plaintext, so a
+  // compromised renderer has no code path to exfiltrate one.
+  'secrets:setKey': {
+    request: z.strictObject({ key: secretKeySchema, value: z.string() }),
+    response: z.strictObject({ secrets: secretsStateSchema })
+  },
+  'secrets:hasKey': {
+    request: empty,
+    response: z.strictObject({ secrets: secretsStateSchema })
+  },
+  'secrets:clearKey': {
+    request: z.strictObject({ key: secretKeySchema }),
+    response: z.strictObject({ secrets: secretsStateSchema })
+  },
+
+  'settings:get': {
+    request: empty,
+    response: z.strictObject({ settings: settingsSchema })
+  },
+  'settings:set': {
+    request: z.strictObject({ patch: settingsSchema.partial() }),
+    response: z.strictObject({ settings: settingsSchema })
+  },
+
+  // The response carries the exact prompt and context, so the panel can render
+  // "Context sent" before the first token arrives rather than after the answer.
+  'ai:start': {
+    request: z.strictObject({ mode: aiModeSchema, context: aiContextSchema }),
+    response: z.strictObject({ started: aiStartedSchema })
+  },
+  'ai:cancel': {
+    request: z.strictObject({ streamId: z.string().min(1) }),
+    response: z.strictObject({ cancelled: z.boolean() })
+  },
+  // `content` is the whole proposed file, not a patch: the renderer already
+  // spliced the block into the selection range, and sending the result means
+  // main never has to reconstruct an edit it did not compute.
+  'ai:apply': {
+    request: z.strictObject({
+      path: z.string().min(1),
+      content: z.string(),
+      mode: aiModeSchema,
+      model: z.string().min(1),
+      promptHash: z.string().min(1),
+      range: z.string().min(1)
+    }),
+    response: z.strictObject({ entry: aiLogEntrySchema })
+  },
+  'ai:revert': {
+    request: z.strictObject({ id: z.string().min(1) }),
+    response: z.strictObject({ entry: aiLogEntrySchema })
+  },
+  'ai:log': {
+    request: empty,
+    response: z.strictObject({ entries: z.array(aiLogEntrySchema) })
   }
 } as const satisfies Record<InvokeChannel, ChannelSpec>
 
@@ -175,7 +333,15 @@ export const INVOKE_CHANNELS = {
 export const EVENT_CHANNELS = {
   'fs:watchEvent': { payload: fsWatchEventSchema },
   'terminal:data': { payload: terminalDataSchema },
-  'terminal:exit': { payload: terminalExitSchema }
+  'terminal:exit': { payload: terminalExitSchema },
+  'run:stdout': { payload: runOutputSchema },
+  'run:stderr': { payload: runOutputSchema },
+  'run:exit': { payload: runExitSchema },
+  // Payload-free: the view re-reads status itself, so the event cannot carry a
+  // snapshot that is already stale by the time it is rendered.
+  'git:changed': { payload: z.strictObject({}) },
+  'ai:delta': { payload: aiStreamDeltaSchema },
+  'ai:done': { payload: aiDoneSchema }
 } as const satisfies Record<EventChannel, { readonly payload: z.ZodType }>
 
 export type InvokeChannels = typeof INVOKE_CHANNELS

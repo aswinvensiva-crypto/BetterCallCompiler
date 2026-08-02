@@ -180,6 +180,13 @@ function buildEditRow(edit: PendingEdit, depth: number): HTMLElement {
     }
   })
   input.addEventListener('blur', () => {
+    // A re-render detaches this node, and detaching fires `blur`. That is not
+    // the user clicking away — treating it as such meant any watch event
+    // landing mid-rename silently cancelled the rename, taking whatever had
+    // been typed with it. By the time the event fires the node is already out
+    // of the document, which is exactly what distinguishes the two cases.
+    if (!input.isConnected) return
+
     if (pendingEdit !== null && !input.disabled) {
       pendingEdit = null
       render()
@@ -435,6 +442,17 @@ function onWatchEvent(event: FsWatchEvent): void {
   if (refreshTimer !== null) clearTimeout(refreshTimer)
   refreshTimer = setTimeout(() => {
     refreshTimer = null
+
+    // Never rebuild the tree while the user is naming something. A refresh
+    // replaces every row, including the input being typed into, so an
+    // unrelated file changing on disk would detach the field and take the
+    // half-typed name with it. The events stay queued and land the moment the
+    // edit finishes.
+    if (pendingEdit !== null) {
+      onWatchEvent(event)
+      return
+    }
+
     const pending = [...dirtyDirectories]
     dirtyDirectories.clear()
     void (async () => {
