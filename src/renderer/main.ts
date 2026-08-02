@@ -16,6 +16,8 @@ import { notifyError } from './workbench/notifications'
 import { mountPanel, showOutput } from './workbench/panel'
 import { mountStatusBar } from './workbench/status-bar'
 import { runActiveFile } from './views/run'
+import { mountActivityBar } from './workbench/activity-bar'
+import { mountSideBar, registerSideBarView, showSideBarView } from './workbench/side-bar'
 
 declare global {
   interface Window {
@@ -23,22 +25,6 @@ declare global {
     readonly aperture: ApertureApi
   }
 }
-
-interface ActivityItem {
-  readonly id: string
-  readonly label: string
-  /** 24x24 stroke-only path data. */
-  readonly icon: string
-}
-
-const ACTIVITY_ITEMS: readonly ActivityItem[] = [
-  { id: 'explorer', label: 'Explorer', icon: 'M3 5h6l2 2h10v12H3z' },
-  { id: 'search', label: 'Search', icon: 'M10.5 4a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13zM20 20l-4.9-4.9' },
-  { id: 'scm', label: 'Source Control', icon: 'M6 3v12M6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6zm0 0v3a5 5 0 0 1-5 5H9' },
-  { id: 'run', label: 'Run', icon: 'M8 5v14l11-7z' },
-  { id: 'insights', label: 'Insights', icon: 'M4 20V10M10 20V4M16 20v-7M22 20H2' },
-  { id: 'ai', label: 'Assistant', icon: 'M12 3l2.2 5.6L20 10.8l-5.8 2.2L12 19l-2.2-6L4 10.8l5.8-2.2z' }
-]
 
 function el<K extends keyof HTMLElementTagNameMap>(
   tag: K,
@@ -55,22 +41,6 @@ function requireEl<T extends HTMLElement>(id: string): T {
   const found = document.getElementById(id)
   if (found === null) throw new Error(`workbench region #${id} is missing from index.html`)
   return found as T
-}
-
-function renderActivityBar(host: HTMLElement): void {
-  for (const item of ACTIVITY_ITEMS) {
-    const button = el('button', 'activity-bar__item')
-    button.type = 'button'
-    button.title = item.label
-    button.setAttribute('role', 'tab')
-    button.setAttribute('aria-label', item.label)
-    button.setAttribute('aria-selected', String(item.id === 'explorer'))
-    button.dataset['viewId'] = item.id
-    button.innerHTML =
-      `<svg viewBox="0 0 24 24" aria-hidden="true">` +
-      `<path d="${item.icon}" stroke-linecap="round" stroke-linejoin="round" /></svg>`
-    host.append(button)
-  }
 }
 
 function renderEditorPlaceholder(host: HTMLElement): void {
@@ -179,14 +149,32 @@ async function renderStatusBar(host: HTMLElement): Promise<void> {
   }
 }
 
+/**
+ * Registers every side-bar view and wires the activity bar to them.
+ *
+ * Views are registered eagerly but *mounted* lazily on first show, so opening
+ * the app does not shell out to git or reach for the network.
+ */
+async function mountSideBarViews(): Promise<void> {
+  mountSideBar(requireEl('side-bar-title'), requireEl('side-bar-body'))
+
+  registerSideBarView({ id: 'explorer', mount: mountExplorer })
+
+  mountActivityBar(requireEl('activity-bar'), (id) => {
+    // The Run icon opens the output console rather than a side-bar view.
+    if (id === 'run') void showOutput()
+  })
+
+  await showSideBarView('explorer')
+}
+
 async function boot(): Promise<void> {
-  renderActivityBar(requireEl('activity-bar'))
   renderEditorPlaceholder(requireEl('editor-host'))
   await renderStatusBar(requireEl('status-bar'))
 
   mountEditor(requireEl('editor-host'), requireEl('tab-bar'))
   mountPanel(requireEl('panel'), requireEl('panel-tabs'), requireEl('panel-body'))
-  await mountExplorer(requireEl('side-bar-title'), requireEl('side-bar-body'))
+  await mountSideBarViews()
 
   // Readiness marker. The workbench regions are static markup, so their mere
   // presence says nothing about whether the renderer has booted — a test that
