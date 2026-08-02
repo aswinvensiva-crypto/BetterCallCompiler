@@ -1,53 +1,147 @@
-/* Aperture dark theme. Single source of colour truth; components reference
-   these variables and never hard-code a hex value. */
+/* Aperture near-black theme, in the IntelliJ IDEA idiom.
+   Single source of colour truth; components reference these variables and never
+   hard-code a hex value.
+
+   ── Why these numbers ──────────────────────────────────────────────────────
+   The brief asks for a theme darker than IntelliJ's own darkest built-in. That
+   is a measurable claim, so it is met with measured values (sRGB relative
+   luminance, 0.2126R + 0.7152G + 0.0722B on linearised channels):
+
+       Darcula      editor #2B2B2B  L = 0.02416
+       New UI Dark  editor #1E1F22  L = 0.01371
+       Aperture     editor #121314  L = 0.00645   ← 2.1x darker than New UI Dark
+
+   Anything at or above L 0.01371 would not actually be darker than the New UI
+   baseline, whatever it looks like at a glance.
+
+   Colours are taken from the IntelliJ Community sources rather than from
+   memory — DefaultColorSchemesManager.xml (editor schemes), expUI_darkScheme.xml
+   and expUI_dark.theme.json (New UI Dark). Two traps that came out of reading
+   them, recorded so nobody 'fixes' this file back into being wrong:
+
+   1. darcula.theme.json's `Editor.background` (#282828) is the *Swing widget*
+      default, NOT the editor canvas. The canvas is #2b2b2b, and it lives in the
+      colour scheme, not the theme JSON. Mixing the two produces a canvas that
+      is subtly the wrong shade.
+   2. Darcula and New UI Dark ship deliberately different syntax palettes. This
+      file follows New UI Dark throughout (keyword #cf8e6d, not Darcula's
+      #cc7832). Mixing the two is a well-known way to get a theme that reads as
+      almost-right and never quite lands.
+
+   Structural detail carried over from New UI Dark: every border is the *darkest*
+   value in the ramp, not a lighter one, and the editor canvas is darker than the
+   surrounding chrome. Inverting either relationship stops it reading as IntelliJ. */
 
 :root {
   color-scheme: dark;
 
-  --ap-bg: #1b1d23;
-  --ap-bg-elevated: #22252c;
-  --ap-bg-inset: #16181d;
-  --ap-bg-hover: #2a2e37;
-  --ap-bg-active: #313742;
-  --ap-bg-selected: #2d3b52;
+  /* ── the ramp ──────────────────────────────────────────────────────────
+     New UI Dark's named 14-step gray ramp, shifted down onto near-black. The
+     *relationships* are IntelliJ's; only the ground is darker. */
+  --ap-gray-1: #0e0f10; /* borders, deepest wells */
+  --ap-gray-2: #121314; /* editor canvas */
+  --ap-gray-3: #1a1c1e; /* tool windows, panels, toolbar */
+  --ap-gray-4: #232629; /* separators, hover */
+  --ap-gray-5: #2c2f33; /* pressed / active */
+  --ap-gray-6: #3a3e43;
+  --ap-gray-7: #6f737a; /* subtle text */
+  --ap-gray-8: #868a91;
+  --ap-gray-9: #9da0a8; /* muted text, status-bar widgets */
+  --ap-gray-10: #b4b8bf;
+  --ap-gray-11: #bcbec4; /* primary text — New UI Dark's editor foreground */
+  --ap-gray-12: #dfe1e5;
+  --ap-gray-13: #f0f1f2;
+  --ap-gray-14: #ffffff;
 
-  --ap-border: #2e323b;
-  --ap-border-strong: #3d434f;
+  /* ── surfaces ──────────────────────────────────────────────────────────
+     The editor is the darkest surface and chrome sits above it, exactly as in
+     IntelliJ. VS Code does the opposite; that inversion is most of why a
+     recoloured VS Code layout still reads as VS Code. */
+  --ap-bg: var(--ap-gray-2);
+  --ap-bg-elevated: var(--ap-gray-3);
+  --ap-bg-inset: var(--ap-gray-1);
+  --ap-bg-hover: var(--ap-gray-4);
+  --ap-bg-active: var(--ap-gray-5);
+  --ap-bg-selected: #214283; /* IntelliJ's documented selection blue */
 
-  --ap-fg: #d7dae0;
-  --ap-fg-muted: #9aa1ad;
-  --ap-fg-subtle: #6d7481;
-  --ap-fg-inverse: #16181d;
+  /* Borders are the darkest step, never a lighter one — the New UI signature. */
+  --ap-border: var(--ap-gray-1);
+  --ap-border-strong: var(--ap-gray-4);
 
-  --ap-accent: #4c9df3;
-  --ap-accent-hover: #6bb0f7;
+  --ap-fg: var(--ap-gray-11);
+  --ap-fg-muted: var(--ap-gray-9);
+  --ap-fg-subtle: var(--ap-gray-7);
+  --ap-fg-inverse: var(--ap-gray-1);
+
+  /* Blue6 from the New UI palette — IntelliJ's accent. */
+  --ap-accent: #3574f0;
+  --ap-accent-hover: #4a82f2;
   --ap-accent-fg: #ffffff;
 
-  --ap-success: #4ec97a;
-  --ap-warning: #e0b341;
-  --ap-danger: #f0616d;
-  --ap-modified: #e0b341;
-  --ap-added: #4ec97a;
-  --ap-deleted: #f0616d;
+  --ap-success: #549159;
+  --ap-warning: #d9a343;
+  --ap-warning-hover: #e8b95c;
+  --ap-danger: #db5c5c;
 
-  --ap-status-bg: #1e252f;
-  --ap-status-fg: #b9c0cc;
+  /* VCS colours are New UI Dark's, and deliberately not the generic
+     green/amber/red: IntelliJ renders *deleted* as grey, not red. */
+  --ap-modified: #375fad;
+  --ap-added: #549159;
+  --ap-deleted: #868a91;
 
+  /* Gutter change bars — same three values, named for the editor chrome that
+     will consume them in the VCS-gutter stage. */
+  --ap-vcs-added: #549159;
+  --ap-vcs-modified: #375fad;
+  --ap-vcs-deleted: #868a91;
+  --ap-vcs-whitespace: #52433d;
+
+  --ap-status-bg: var(--ap-gray-3);
+  --ap-status-fg: var(--ap-gray-9);
+
+  /* ── editor chrome ─────────────────────────────────────────────────────── */
+  --ap-editor-bg: var(--ap-gray-2);
+  --ap-editor-caret: #ced0d6;
+  --ap-editor-caret-row: #1a1c1f;
+  --ap-editor-gutter-bg: #141517;
+  --ap-editor-line-number: #4b5059;
+  --ap-editor-line-number-active: #a1a3ab;
+  --ap-editor-indent-guide: #26292d;
+  --ap-editor-indent-guide-active: #5a5d63;
+
+  /* ── tool windows ──────────────────────────────────────────────────────── */
+  --ap-toolwindow-bg: var(--ap-gray-3);
+  --ap-toolwindow-header-bg: var(--ap-gray-3);
+  --ap-toolwindow-header-fg: var(--ap-gray-10);
+  --ap-stripe-bg: var(--ap-gray-3);
+  --ap-stripe-selected-bg: var(--ap-accent);
+  --ap-splitter: var(--ap-gray-1);
+  --ap-splitter-hover: var(--ap-accent);
+
+  /* ── typography ────────────────────────────────────────────────────────── */
   --ap-font-ui:
     'Segoe UI Variable Text', 'Segoe UI', system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif;
-  --ap-font-mono: 'Cascadia Code', 'Cascadia Mono', Consolas, 'Courier New', monospace;
+  --ap-font-mono: 'JetBrains Mono', 'Cascadia Code', 'Cascadia Mono', Consolas, 'Courier New', monospace;
 
   --ap-font-size: 13px;
   --ap-font-size-sm: 11px;
   --ap-line-height: 1.5;
 
+  /* ── metrics ───────────────────────────────────────────────────────────── */
   --ap-activity-bar-width: 48px;
   --ap-side-bar-width: 260px;
   --ap-status-bar-height: 24px;
   --ap-tab-height: 35px;
 
-  --ap-radius: 4px;
-  --ap-shadow-overlay: 0 8px 28px rgba(0, 0, 0, 0.45);
+  /* Docking metrics, consumed by the tool-window manager. */
+  --ap-stripe-width: 26px;
+  --ap-toolbar-height: 36px;
+  --ap-splitter-size: 1px;
+  --ap-splitter-grab: 5px;
+
+  /* IntelliJ's chrome is squarer than VS Code's. */
+  --ap-radius: 3px;
+  --ap-shadow-overlay: 0 10px 32px rgba(0, 0, 0, 0.62);
 }
 
 *,
@@ -86,14 +180,14 @@ body {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #414753;
+  background: #2f3338;
   border: 2px solid transparent;
   background-clip: content-box;
   border-radius: 6px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #525a68;
+  background: #3f444b;
   background-clip: content-box;
 }
 
