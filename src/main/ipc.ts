@@ -18,8 +18,10 @@ import {
   createFile,
   getWorkspace,
   openFolder,
+  listFiles,
   readDirectory,
   readFile,
+  searchWorkspace,
   remove,
   rename,
   writeFile
@@ -110,6 +112,16 @@ export function createHandlerMap(): HandlerMap {
       await remove(request.path)
       return { deleted: true }
     },
+
+    'fs:listFiles': async () => ({ files: await listFiles() }),
+
+    'fs:search': async (request) => ({
+      matches: await searchWorkspace({
+        query: request.query,
+        caseSensitive: request.caseSensitive,
+        isRegex: request.isRegex
+      })
+    }),
 
     // A terminal opens in the workspace when there is one, so `ls` shows the
     // project rather than wherever the app happened to be launched from.

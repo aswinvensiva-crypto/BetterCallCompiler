@@ -34,14 +34,11 @@ test('app launches and renders the workbench with a clean console', async () => 
     await expect(window.locator('.activity-bar__item')).toHaveCount(7)
     await expect(window.locator('.editor-placeholder__mark')).toHaveText('Aperture')
 
-    // Views that are not in this milestone are rendered disabled rather than
-    // silently inert — a button that looks live and does nothing is worse than
-    // one that admits it is not ready.
-    for (const id of ['explorer', 'scm', 'run', 'insights', 'settings']) {
+    // With step 12 done, every activity item is live. The bar renders anything
+    // not yet built as disabled rather than silently inert, so this doubles as
+    // the check that nothing was left half-wired.
+    for (const id of ['explorer', 'search', 'scm', 'run', 'insights', 'ai', 'settings']) {
       await expect(window.locator(`.activity-bar__item[data-view-id="${id}"]`)).toBeEnabled()
-    }
-    for (const id of ['search', 'ai']) {
-      await expect(window.locator(`.activity-bar__item[data-view-id="${id}"]`)).toBeDisabled()
     }
 
     // The preload bridge was installed and reached the renderer.

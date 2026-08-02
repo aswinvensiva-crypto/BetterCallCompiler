@@ -26,6 +26,8 @@ export const INVOKE_CHANNEL_NAMES = [
   'fs:createDir',
   'fs:rename',
   'fs:delete',
+  'fs:listFiles',
+  'fs:search',
   'terminal:create',
   'terminal:write',
   'terminal:resize',

@@ -9,6 +9,7 @@ import {
   aiStreamDeltaSchema,
   fileNodeSchema,
   fsWatchEventSchema,
+  searchMatchSchema,
   gitBranchesSchema,
   gitCommitSchema,
   gitFileDiffSchema,
@@ -161,6 +162,20 @@ export const INVOKE_CHANNELS = {
   'fs:delete': {
     request: pathRequest,
     response: z.strictObject({ deleted: z.literal(true) })
+  },
+  // Quick open needs the whole list once and filters it in the renderer;
+  // round-tripping per keystroke would make typing feel like network latency.
+  'fs:listFiles': {
+    request: empty,
+    response: z.strictObject({ files: z.array(fileNodeSchema) })
+  },
+  'fs:search': {
+    request: z.strictObject({
+      query: z.string(),
+      caseSensitive: z.boolean(),
+      isRegex: z.boolean()
+    }),
+    response: z.strictObject({ matches: z.array(searchMatchSchema) })
   },
 
   'terminal:create': {

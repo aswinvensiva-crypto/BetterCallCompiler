@@ -3,7 +3,7 @@ import { watch, type FSWatcher } from 'chokidar'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { promises as fsp } from 'node:fs'
 import { ApertureServiceError } from '../shared/ipc-contract'
-import type { FileNode, FsWatchEvent, FsWatchEventType, Workspace } from '../shared/types'
+import type { FileNode, FsWatchEvent, FsWatchEventType, SearchMatch, Workspace } from '../shared/types'
 
 /** Directories never walked by the watcher — cheap to skip, ruinous to watch. */
 const UNWATCHED = new Set(['node_modules', '.git', '.aperture', 'dist', 'out', '.next'])
@@ -197,6 +197,144 @@ export async function stopWatching(): Promise<void> {
 /* ------------------------------------------------------------------ *
  * Operations — every one of them confined
  * ------------------------------------------------------------------ */
+
+/* ------------------------------------------------------------------ *
+ * Whole-workspace operations (step 12)
+ * ------------------------------------------------------------------ */
+
+/** Quick open needs the whole list; a monorepo must not hang the window. */
+const MAX_LISTED_FILES = 20_000
+/** Search reads file contents, so it is bounded more tightly than listing. */
+const MAX_SEARCHED_BYTES = 2 * 1024 * 1024
+const MAX_SEARCH_RESULTS = 500
+
+/**
+ * Every file under the workspace, breadth-first.
+ *
+ * Breadth-first rather than depth-first on purpose: when the cap is hit, what
+ * survives is the shallow files — `src/index.ts`, `README.md` — rather than
+ * whatever happened to be deepest in the first directory walked. Quick open
+ * with a truncated list should still contain the files people actually open.
+ */
+export async function listFiles(): Promise<FileNode[]> {
+  const root = requireRoot()
+  const found: FileNode[] = []
+  let queue: string[] = [root]
+
+  while (queue.length > 0 && found.length < MAX_LISTED_FILES) {
+    const next: string[] = []
+    for (const dir of queue) {
+      let entries
+      try {
+        entries = await fsp.readdir(dir, { withFileTypes: true })
+      } catch {
+        continue
+      }
+
+      for (const entry of entries) {
+        if (UNWATCHED.has(entry.name) || HIDDEN.has(entry.name)) continue
+        const absolute = join(dir, entry.name)
+
+        if (entry.isDirectory()) {
+          next.push(absolute)
+        } else if (entry.isFile()) {
+          found.push(toNode(root, absolute, 'file'))
+          if (found.length >= MAX_LISTED_FILES) break
+        }
+      }
+      if (found.length >= MAX_LISTED_FILES) break
+    }
+    queue = next
+  }
+
+  return found
+}
+
+/**
+ * True when a buffer looks like a binary file.
+ *
+ * A NUL byte in the first few KB is the same heuristic git uses, and it is
+ * enough: searching a PNG produces garbage matches and megabytes of nonsense
+ * preview text.
+ */
+function looksBinary(buffer: Buffer): boolean {
+  const limit = Math.min(buffer.length, 8000)
+  for (let i = 0; i < limit; i += 1) {
+    if (buffer[i] === 0) return true
+  }
+  return false
+}
+
+export interface SearchOptions {
+  readonly query: string
+  readonly caseSensitive: boolean
+  readonly isRegex: boolean
+}
+
+/**
+ * Plain text or regex search across the workspace.
+ *
+ * A user-supplied regex is compiled inside a try/catch and reported as a bad
+ * request rather than thrown: half-typed patterns are the normal state of a
+ * search box, not an error condition.
+ */
+export async function searchWorkspace(options: SearchOptions): Promise<SearchMatch[]> {
+  // `listFiles` enforces the workspace requirement and the confinement.
+  if (options.query === '') return []
+
+  let pattern: RegExp
+  try {
+    const source = options.isRegex ? options.query : escapeRegExp(options.query)
+    pattern = new RegExp(source, options.caseSensitive ? 'g' : 'gi')
+  } catch {
+    throw new ApertureServiceError('BAD_REQUEST', `invalid regular expression: ${options.query}`)
+  }
+
+  const files = await listFiles()
+  const matches: SearchMatch[] = []
+
+  for (const file of files) {
+    if (matches.length >= MAX_SEARCH_RESULTS) break
+
+    let buffer: Buffer
+    try {
+      const stats = await fsp.stat(file.path)
+      if (stats.size > MAX_SEARCHED_BYTES) continue
+      buffer = await fsp.readFile(file.path)
+    } catch {
+      continue
+    }
+    if (looksBinary(buffer)) continue
+
+    const lines = buffer.toString('utf8').split('\n')
+    for (let index = 0; index < lines.length; index += 1) {
+      const line = lines[index]
+      if (line === undefined) continue
+
+      pattern.lastIndex = 0
+      const found = pattern.exec(line)
+      if (found === null || found[0] === '') continue
+
+      matches.push({
+        path: file.path,
+        relativePath: file.relativePath,
+        line: index + 1,
+        column: found.index + 1,
+        // Long minified lines would otherwise dominate the result list.
+        preview: line.length > 400 ? `${line.slice(0, 400)}…` : line,
+        matchLength: found[0].length
+      })
+
+      if (matches.length >= MAX_SEARCH_RESULTS) break
+    }
+  }
+
+  return matches
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
 
 export async function readDirectory(requestedPath: string): Promise<FileNode[]> {
   const root = requireRoot()

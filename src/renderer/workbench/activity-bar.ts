@@ -23,8 +23,7 @@ export const ACTIVITY_ITEMS: readonly ActivityItem[] = [
     id: 'search',
     label: 'Search',
     icon: 'M10.5 4a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13zM20 20l-4.9-4.9',
-    // Step 12.
-    enabled: false
+    enabled: true
   },
   {
     id: 'scm',
@@ -50,7 +49,7 @@ export const ACTIVITY_ITEMS: readonly ActivityItem[] = [
 ]
 
 /** Views that live in the side bar, as opposed to the panel. */
-const SIDE_BAR_VIEWS = new Set(['explorer', 'scm', 'insights', 'settings', 'ai'])
+const SIDE_BAR_VIEWS = new Set(['explorer', 'search', 'scm', 'insights', 'settings', 'ai'])
 
 let host: HTMLElement | null = null
 const buttons = new Map<string, HTMLButtonElement>()

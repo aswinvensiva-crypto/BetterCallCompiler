@@ -43,6 +43,30 @@ function el<K extends keyof HTMLElementTagNameMap>(
 
 /* --------------------------------- data ---------------------------------- */
 
+/**
+ * Cheap identity of what is on screen.
+ *
+ * The `.git` watch fires for reasons that change nothing the view shows — a
+ * `git status` run in the terminal touches the index mtime, a fetch rewrites
+ * refs. Re-rendering anyway replaces the DOM under the user's cursor, so a
+ * hovered row's Stage button can vanish mid-click.
+ */
+let renderedSignature = ''
+
+function signatureOf(): string {
+  return JSON.stringify([
+    status.isRepository,
+    status.branch,
+    status.ahead,
+    status.behind,
+    status.changes.map((change) => [change.path, change.indexStatus, change.workingStatus]),
+    commits.map((commit) => commit.hash),
+    openDiffPath,
+    message,
+    busy
+  ])
+}
+
 export async function refresh(): Promise<void> {
   const result = await window.aperture.git.status({})
   if (!result.ok) {
@@ -60,6 +84,7 @@ export async function refresh(): Promise<void> {
     commits = []
   }
 
+  if (signatureOf() === renderedSignature) return
   render()
 }
 
@@ -213,6 +238,7 @@ function renderHistory(): HTMLElement {
 
 function render(): void {
   if (bodyHost === null) return
+  renderedSignature = signatureOf()
   renderTitle()
   bodyHost.replaceChildren()
 

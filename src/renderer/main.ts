@@ -16,13 +16,21 @@ import { notifyError } from './workbench/notifications'
 import { mountPanel, showOutput } from './workbench/panel'
 import { mountStatusBar } from './workbench/status-bar'
 import { runActiveFile } from './views/run'
-import { mountActivityBar } from './workbench/activity-bar'
+import { mountActivityBar, setSelected } from './workbench/activity-bar'
 import { mountSideBar, registerSideBarView, showSideBarView } from './workbench/side-bar'
 import { clearDiffSelection, mountScm, onScmShown } from './views/scm'
 import { mountInsights, onInsightsShown } from './views/insights'
 import { mountSettings, onSettingsShown } from './views/settings'
 import { listenForAiActions, mountAi, onAiShown } from './views/ai'
 import { registerAiActions } from './editor/ai-actions'
+import { mountSearch, onSearchShown, setSearchQuery } from './views/search'
+import { openCommandPalette, registerCommands } from './workbench/command-palette'
+import { openQuickOpen, watchForFileChanges } from './workbench/quick-open'
+import { isQuickPickOpen } from './workbench/quick-pick'
+import { openFolderCommand } from './views/explorer'
+import { rescanToolchains } from './workbench/status-bar'
+import { cancelActiveRun, isRunning } from './views/run'
+import { showPanelView } from './workbench/panel'
 import { mountDiffEditor } from './editor/diff'
 
 declare global {
@@ -174,6 +182,7 @@ async function mountSideBarViews(): Promise<void> {
   mountSideBar(requireEl('side-bar-title'), requireEl('side-bar-body'))
 
   registerSideBarView({ id: 'explorer', mount: mountExplorer })
+  registerSideBarView({ id: 'search', mount: mountSearch, onShow: onSearchShown })
   registerSideBarView({ id: 'scm', mount: mountScm, onShow: onScmShown })
   registerSideBarView({ id: 'insights', mount: mountInsights, onShow: onInsightsShown })
   registerSideBarView({ id: 'settings', mount: mountSettings, onShow: onSettingsShown })
@@ -187,6 +196,110 @@ async function mountSideBarViews(): Promise<void> {
   await showSideBarView('explorer')
 }
 
+/**
+ * Every command the palette offers.
+ *
+ * Registered centrally rather than by each view because the views mount
+ * lazily — a command that only exists once you have visited its view is a
+ * command the palette cannot be used to reach it by.
+ */
+function registerWorkbenchCommands(): void {
+  const showView = (id: string) => () => {
+    setSelected(id)
+    void showSideBarView(id)
+  }
+
+  registerCommands([
+    { id: 'file.openFolder', title: 'File: Open Folder…', run: () => void openFolderCommand() },
+    {
+      id: 'file.save',
+      title: 'File: Save',
+      keybinding: 'Ctrl+S',
+      when: () => activeDocument() !== null,
+      run: () => void saveActive()
+    },
+    { id: 'file.quickOpen', title: 'Go to File…', keybinding: 'Ctrl+P', run: () => void openQuickOpen() },
+
+    { id: 'view.explorer', title: 'View: Explorer', run: showView('explorer') },
+    { id: 'view.search', title: 'View: Search', keybinding: 'Ctrl+Shift+F', run: showView('search') },
+    { id: 'view.scm', title: 'View: Source Control', run: showView('scm') },
+    { id: 'view.insights', title: 'View: Insights', run: showView('insights') },
+    { id: 'view.ai', title: 'View: Assistant', run: showView('ai') },
+    { id: 'view.settings', title: 'View: Settings', run: showView('settings') },
+
+    {
+      id: 'view.terminal',
+      title: 'View: Toggle Terminal',
+      keybinding: 'Ctrl+`',
+      run: () => void showPanelView('terminal')
+    },
+    { id: 'view.output', title: 'View: Output', run: () => void showOutput() },
+
+    {
+      id: 'run.file',
+      title: 'Run: Run Active File',
+      keybinding: 'Ctrl+F5',
+      when: () => activeDocument() !== null,
+      run: () => void saveThenRun()
+    },
+    {
+      id: 'run.cancel',
+      title: 'Run: Cancel',
+      when: () => isRunning(),
+      run: () => void cancelActiveRun()
+    },
+
+    { id: 'toolchains.rescan', title: 'Toolchains: Rescan', run: () => void rescanToolchains() }
+  ])
+}
+
+/**
+ * Workbench-level keys.
+ *
+ * All bound in the capture phase and all no-ops while a quick pick is open, so
+ * the picker owns the keyboard for as long as it is showing rather than having
+ * Ctrl+P reopen it underneath itself.
+ */
+function bindGlobalKeys(): void {
+  document.addEventListener(
+    'keydown',
+    (event) => {
+      if (!(event.ctrlKey || event.metaKey) || event.altKey) return
+      if (isQuickPickOpen()) return
+
+      const key = event.key.toLowerCase()
+
+      if (event.shiftKey && key === 'p') {
+        event.preventDefault()
+        openCommandPalette()
+        return
+      }
+      if (!event.shiftKey && key === 'p') {
+        event.preventDefault()
+        void openQuickOpen()
+        return
+      }
+      if (event.shiftKey && key === 'f') {
+        event.preventDefault()
+        // Seed from the editor selection, which is what makes this feel like
+        // "search for what I am looking at" rather than an empty box.
+        const doc = activeDocument()
+        const selected = doc?.model.getValueInRange(
+          // A multi-line selection is a poor query; take the first line only.
+          doc.model.getFullModelRange()
+        )
+        setSelected('search')
+        void showSideBarView('search').then(() => {
+          const fromEditor = window.getSelection()?.toString() ?? ''
+          if (fromEditor.trim() !== '' && !fromEditor.includes('\n')) setSearchQuery(fromEditor)
+          else if (selected === undefined) setSearchQuery('')
+        })
+      }
+    },
+    true
+  )
+}
+
 async function boot(): Promise<void> {
   renderEditorPlaceholder(requireEl('editor-host'))
   await renderStatusBar(requireEl('status-bar'))
@@ -195,6 +308,9 @@ async function boot(): Promise<void> {
   mountPanel(requireEl('panel'), requireEl('panel-tabs'), requireEl('panel-body'))
   await mountSideBarViews()
   listenForAiActions()
+  registerWorkbenchCommands()
+  bindGlobalKeys()
+  watchForFileChanges()
 
   // Readiness marker. The workbench regions are static markup, so their mere
   // presence says nothing about whether the renderer has booted — a test that

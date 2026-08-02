@@ -45,6 +45,18 @@ export const fsWatchEventSchema = z.strictObject({
 })
 export type FsWatchEvent = z.infer<typeof fsWatchEventSchema>
 
+export const searchMatchSchema = z.strictObject({
+  path: z.string(),
+  relativePath: z.string(),
+  /** 1-based, matching the editor and every diagnostic. */
+  line: z.number().int().positive(),
+  column: z.number().int().positive(),
+  /** The whole line, truncated; the view highlights the match within it. */
+  preview: z.string(),
+  matchLength: z.number().int().nonnegative()
+})
+export type SearchMatch = z.infer<typeof searchMatchSchema>
+
 /* ------------------------------ toolchains ------------------------------ */
 
 /**
