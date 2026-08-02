@@ -6,9 +6,10 @@ import {
   type Page
 } from '@playwright/test'
 import { execFileSync } from 'node:child_process'
+import { existsSync } from 'node:fs'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { delimiter, join } from 'node:path'
 
 const APP_ROOT = join(__dirname, '..', '..')
 const MAIN_ENTRY = join(APP_ROOT, 'out', 'main', 'index.js')
@@ -28,6 +29,38 @@ let window: Page
  * `--user-data-dir` keeps any stored token out of the real profile of whoever
  * runs the suite.
  */
+/**
+ * Launch environment with the GitHub CLI removed from PATH.
+ *
+ * `--user-data-dir` isolates a *stored* PAT, but `resolveToken()` asks the `gh`
+ * CLI first, so on a machine where `gh` is authenticated this suite took the
+ * healthy path and never exercised the degradation it exists to guard — it
+ * failed asserting "No GitHub token" while the app was, correctly, showing real
+ * data. Dropping gh from PATH makes the degraded path deterministic on every
+ * machine without adding a test-only backdoor to production code.
+ *
+ * The PATH key is rebuilt rather than overridden: Windows environment variables
+ * are case-insensitive, so spreading `process.env` (which may carry `Path`) and
+ * then setting `PATH` would leave two competing entries.
+ */
+function envWithoutGhCli(): Record<string, string> {
+  const ghExecutable = process.platform === 'win32' ? 'gh.exe' : 'gh'
+
+  // Playwright's `env` takes Record<string, string>; `process.env` values are
+  // `string | undefined`, so unset keys are dropped rather than passed through.
+  const env: Record<string, string> = {}
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value !== undefined && key.toUpperCase() !== 'PATH') env[key] = value
+  }
+
+  env['PATH'] = (process.env['PATH'] ?? process.env['Path'] ?? '')
+    .split(delimiter)
+    .filter((dir) => dir !== '' && !existsSync(join(dir, ghExecutable)))
+    .join(delimiter)
+
+  return env
+}
+
 test.beforeAll(async () => {
   fixture = await mkdtemp(join(tmpdir(), 'aperture-insights-'))
   userData = await mkdtemp(join(tmpdir(), 'aperture-insights-profile-'))
@@ -45,7 +78,8 @@ test.beforeAll(async () => {
 
   app = await electron.launch({
     args: [MAIN_ENTRY, `--folder=${fixture}`, `--user-data-dir=${userData}`],
-    cwd: APP_ROOT
+    cwd: APP_ROOT,
+    env: envWithoutGhCli()
   })
   window = await app.firstWindow()
   await window.waitForSelector('html[data-aperture-ready="true"]')

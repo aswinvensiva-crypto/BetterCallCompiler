@@ -901,7 +901,7 @@
 }
 
 .run-action--cancel:hover {
-  background: #eec25d;
+  background: var(--ap-warning-hover);
 }
 
 /* Styled by class, not by `#panel-output-view`. An id selector (1,0,0) beats
@@ -1357,10 +1357,15 @@
   width: 9px;
   height: 9px;
   border-radius: 2px;
-  background: #21252c;
+  /* Tokenised: the old #21252c was chosen against the previous lighter
+     background and is brighter than the near-black panel, which made an empty
+     day read as a filled one. */
+  background: var(--ap-gray-4);
   flex: none;
 }
 
+/* GitHub's own contribution-graph greens, deliberately left as literals: this
+   is GitHub's data and its palette is the recognisable part of the chart. */
 .calendar__day--1 { background: #0e4429; }
 .calendar__day--2 { background: #006d32; }
 .calendar__day--3 { background: #26a641; }
