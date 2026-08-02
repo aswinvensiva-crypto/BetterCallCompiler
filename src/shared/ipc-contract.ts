@@ -6,6 +6,7 @@ import {
   gitBranchesSchema,
   gitCommitSchema,
   gitFileDiffSchema,
+  githubInsightsSchema,
   gitStatusSchema,
   secretKeySchema,
   secretsStateSchema,
@@ -237,6 +238,12 @@ export const INVOKE_CHANNELS = {
   'git:log': {
     request: z.strictObject({ limit: z.number().int().positive().max(500) }),
     response: z.strictObject({ commits: z.array(gitCommitSchema) })
+  },
+
+  'github:insights': {
+    // `force` bypasses the 10-minute cache; the view's Refresh button sets it.
+    request: z.strictObject({ force: z.boolean() }),
+    response: z.strictObject({ insights: githubInsightsSchema })
   },
 
   // Three channels, and deliberately no fourth. There is no `secrets:getKey`:

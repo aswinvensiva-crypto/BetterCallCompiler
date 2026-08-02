@@ -43,6 +43,7 @@ import {
   status as gitStatus,
   unstage as gitUnstage
 } from './git-service'
+import { clearInsightsCache, fetchInsights } from './github-service'
 import { clearSecret, hasSecret, isEncryptionAvailable, setSecret } from './secrets'
 import { loadSettings, saveSettings } from './settings'
 
@@ -163,8 +164,15 @@ export function createHandlerMap(): HandlerMap {
 
     'git:log': async (request) => ({ commits: await gitLog(request.limit) }),
 
+    'github:insights': async (request) => {
+      if (request.force) clearInsightsCache()
+      return { insights: await fetchInsights(request.force) }
+    },
+
     'secrets:setKey': async (request) => {
       await setSecret(request.key, request.value)
+      // A new GitHub PAT invalidates whatever the previous token fetched.
+      if (request.key === 'github') clearInsightsCache()
       return { secrets: await secretsState() }
     },
 
@@ -172,6 +180,7 @@ export function createHandlerMap(): HandlerMap {
 
     'secrets:clearKey': async (request) => {
       await clearSecret(request.key)
+      if (request.key === 'github') clearInsightsCache()
       return { secrets: await secretsState() }
     },
 
@@ -179,6 +188,9 @@ export function createHandlerMap(): HandlerMap {
 
     'settings:set': async (request) => {
       const settings = await saveSettings(request.patch)
+      // `githubUser` decides whose calendar is shown, so a cached response for
+      // the previous user would survive the change otherwise.
+      clearInsightsCache()
       return { settings }
     }
   }

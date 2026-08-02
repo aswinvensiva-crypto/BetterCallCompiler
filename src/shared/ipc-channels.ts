@@ -42,6 +42,7 @@ export const INVOKE_CHANNEL_NAMES = [
   'git:commit',
   'git:branches',
   'git:log',
+  'github:insights',
   'secrets:setKey',
   'secrets:hasKey',
   'secrets:clearKey',

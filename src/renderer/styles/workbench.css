@@ -1253,6 +1253,121 @@
   min-height: 0;
 }
 
+/* ---------- insights ---------- */
+
+.insights-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px 4px;
+}
+
+.insights-header__login {
+  color: var(--ap-fg-muted);
+  font-size: var(--ap-font-size-sm);
+}
+
+.insights-badge {
+  padding: 1px 7px;
+  border-radius: 8px;
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  background: var(--ap-bg-active);
+  color: var(--ap-fg-muted);
+}
+
+.insights-badge--github {
+  background: rgba(78, 201, 122, 0.18);
+  color: var(--ap-success);
+}
+
+.insights-badge--local {
+  background: rgba(224, 179, 65, 0.18);
+  color: var(--ap-warning);
+}
+
+.insights-notice {
+  margin: 4px 12px 8px;
+  padding: 7px 9px;
+  border-left: 2px solid var(--ap-warning);
+  border-radius: 0 var(--ap-radius) var(--ap-radius) 0;
+  background: rgba(224, 179, 65, 0.09);
+  font-size: var(--ap-font-size-sm);
+  color: var(--ap-fg);
+  user-select: text;
+}
+
+.insights-quota {
+  margin: 8px 12px 0;
+  color: var(--ap-fg-subtle);
+  font-size: var(--ap-font-size-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- contribution calendar ---------- */
+
+.calendar {
+  padding: 4px 12px 10px;
+}
+
+.calendar__heading {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.calendar__total {
+  font-weight: 600;
+}
+
+.calendar__period {
+  color: var(--ap-fg-subtle);
+  font-size: var(--ap-font-size-sm);
+}
+
+/* 53 columns of 7 days. Overflow scrolls rather than squashing the cells. */
+.calendar__grid {
+  display: flex;
+  gap: 2px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+
+.calendar__week {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: none;
+}
+
+.calendar__day {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  background: #21252c;
+  flex: none;
+}
+
+.calendar__day--1 { background: #0e4429; }
+.calendar__day--2 { background: #006d32; }
+.calendar__day--3 { background: #26a641; }
+.calendar__day--4 { background: #39d353; }
+
+.calendar__legend {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  margin-top: 6px;
+}
+
+.calendar__legend-label {
+  color: var(--ap-fg-subtle);
+  font-size: 10px;
+  margin: 0 3px;
+}
+
 /* ---------- settings ---------- */
 
 .settings-group {

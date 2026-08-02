@@ -171,6 +171,52 @@ export function describeChange(change: GitFileChange): string {
   return status.trim() === '' ? 'M' : status
 }
 
+/* ------------------------------- github ---------------------------------- */
+
+export const contributionDaySchema = z.strictObject({
+  date: z.string(),
+  count: z.number()
+})
+export type ContributionDay = z.infer<typeof contributionDaySchema>
+
+export const contributionCalendarSchema = z.strictObject({
+  totalContributions: z.number(),
+  /** 53 weeks × 7 days, oldest first — the shape GitHub's GraphQL returns. */
+  weeks: z.array(z.array(contributionDaySchema))
+})
+export type ContributionCalendar = z.infer<typeof contributionCalendarSchema>
+
+export const rateLimitSchema = z.strictObject({
+  remaining: z.number(),
+  limit: z.number(),
+  /** ISO timestamp; null when the API did not say. */
+  resetAt: z.string().nullable()
+})
+export type RateLimit = z.infer<typeof rateLimitSchema>
+
+/**
+ * Where the data came from. The view must never look identical whether it is
+ * showing GitHub's answer or a local `git log` fallback.
+ */
+export const insightsSourceSchema = z.enum(['github', 'local', 'none'])
+export type InsightsSource = z.infer<typeof insightsSourceSchema>
+
+export const githubInsightsSchema = z.strictObject({
+  source: insightsSourceSchema,
+  /** How the token was found: `gh` CLI, stored PAT, or nothing. */
+  tokenSource: z.enum(['gh-cli', 'settings', 'none']),
+  login: z.string().nullable(),
+  repository: z.string().nullable(),
+  calendar: contributionCalendarSchema.nullable(),
+  commits: z.array(gitCommitSchema),
+  rateLimit: rateLimitSchema.nullable(),
+  /** Populated whenever the view is degraded, so it can say why. */
+  notice: z.string().nullable(),
+  /** ISO timestamp of the cached response being served. */
+  fetchedAt: z.string()
+})
+export type GithubInsights = z.infer<typeof githubInsightsSchema>
+
 /* --------------------------------- run ---------------------------------- */
 
 /**
