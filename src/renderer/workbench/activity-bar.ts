@@ -40,6 +40,20 @@ export const ACTIVITY_ITEMS: readonly ActivityItem[] = [
     enabled: true
   },
   {
+    // "Assist" is the local static-analysis panel; "Assistant" above is the AI
+    // one. Distinct names, distinct icons, and no shared code between them.
+    id: 'assist',
+    label: 'Assist',
+    icon: 'M9 18h6M10 21h4M12 3a6 6 0 0 0-3.5 10.9V16h7v-2.1A6 6 0 0 0 12 3z',
+    enabled: true
+  },
+  {
+    id: 'visualizer',
+    label: 'Visualizer',
+    icon: 'M12 3v4M12 17v4M5.6 7.6l2.8 2.8M15.6 13.6l2.8 2.8M4 12h4M16 12h4M12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6z',
+    enabled: true
+  },
+  {
     id: 'settings',
     label: 'Settings',
     icon:
@@ -49,7 +63,16 @@ export const ACTIVITY_ITEMS: readonly ActivityItem[] = [
 ]
 
 /** Views that live in the side bar, as opposed to the panel. */
-const SIDE_BAR_VIEWS = new Set(['explorer', 'search', 'scm', 'insights', 'settings', 'ai'])
+const SIDE_BAR_VIEWS = new Set([
+  'explorer',
+  'search',
+  'scm',
+  'insights',
+  'settings',
+  'ai',
+  'assist',
+  'visualizer'
+])
 
 let host: HTMLElement | null = null
 const buttons = new Map<string, HTMLButtonElement>()
