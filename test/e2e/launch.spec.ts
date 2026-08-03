@@ -31,13 +31,24 @@ test('app launches and renders the workbench with a clean console', async () => 
     }
 
     // The renderer actually ran: these nodes are created in main.ts, not markup.
-    await expect(window.locator('.activity-bar__item')).toHaveCount(7)
+    // Assist and Visualizer bring this to 9.
+    await expect(window.locator('.activity-bar__item')).toHaveCount(9)
     await expect(window.locator('.editor-placeholder__mark')).toHaveText('BetterCallCompiler')
 
     // With step 12 done, every activity item is live. The bar renders anything
     // not yet built as disabled rather than silently inert, so this doubles as
     // the check that nothing was left half-wired.
-    for (const id of ['explorer', 'search', 'scm', 'run', 'insights', 'ai', 'settings']) {
+    for (const id of [
+      'explorer',
+      'search',
+      'scm',
+      'run',
+      'insights',
+      'ai',
+      'assist',
+      'visualizer',
+      'settings'
+    ]) {
       await expect(window.locator(`.activity-bar__item[data-view-id="${id}"]`)).toBeEnabled()
     }
 

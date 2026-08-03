@@ -15,6 +15,8 @@ import {
   gitFileDiffSchema,
   githubInsightsSchema,
   gitStatusSchema,
+  languageBreakdownSchema,
+  repositoryStatsSchema,
   secretKeySchema,
   secretsStateSchema,
   settingsSchema,
@@ -169,6 +171,11 @@ export const INVOKE_CHANNELS = {
     request: empty,
     response: z.strictObject({ files: z.array(fileNodeSchema) })
   },
+  /** Bytes per language; aggregated in main because it needs a stat per file. */
+  'fs:languageBreakdown': {
+    request: empty,
+    response: z.strictObject({ breakdown: languageBreakdownSchema })
+  },
   'fs:search': {
     request: z.strictObject({
       query: z.string(),
@@ -262,6 +269,16 @@ export const INVOKE_CHANNELS = {
   'git:log': {
     request: z.strictObject({ limit: z.number().int().positive().max(500) }),
     response: z.strictObject({ commits: z.array(gitCommitSchema) })
+  },
+
+  /**
+   * One call per Insights refresh, mirroring `github:insights` — but derived
+   * from the local `git log`, so it answers on a repository with no remote and
+   * no token.
+   */
+  'git:stats': {
+    request: empty,
+    response: z.strictObject({ stats: repositoryStatsSchema })
   },
 
   'github:insights': {

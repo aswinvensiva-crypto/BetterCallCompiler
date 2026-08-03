@@ -3,7 +3,15 @@ import { watch, type FSWatcher } from 'chokidar'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { promises as fsp } from 'node:fs'
 import { BetterCallCompilerServiceError } from '../shared/ipc-contract'
-import type { FileNode, FsWatchEvent, FsWatchEventType, SearchMatch, Workspace } from '../shared/types'
+import type {
+  FileNode,
+  FsWatchEvent,
+  FsWatchEventType,
+  LanguageBreakdown,
+  LanguageStat,
+  SearchMatch,
+  Workspace
+} from '../shared/types'
 
 /** Directories never walked by the watcher — cheap to skip, ruinous to watch. */
 const UNWATCHED = new Set(['node_modules', '.git', '.bettercallcompiler', 'dist', 'out', '.next'])
@@ -216,6 +224,184 @@ const MAX_SEARCH_RESULTS = 500
  * whatever happened to be deepest in the first directory walked. Quick open
  * with a truncated list should still contain the files people actually open.
  */
+/**
+ * Extension to display name. Only languages worth naming appear here; anything
+ * else is aggregated under its bare extension, so an unknown filetype still
+ * shows up honestly rather than being silently dropped.
+ */
+const LANGUAGE_NAMES: Readonly<Record<string, string>> = {
+  ts: 'TypeScript',
+  tsx: 'TypeScript',
+  mts: 'TypeScript',
+  cts: 'TypeScript',
+  js: 'JavaScript',
+  jsx: 'JavaScript',
+  mjs: 'JavaScript',
+  cjs: 'JavaScript',
+  py: 'Python',
+  pyw: 'Python',
+  c: 'C',
+  h: 'C',
+  cpp: 'C++',
+  cc: 'C++',
+  cxx: 'C++',
+  hpp: 'C++',
+  cs: 'C#',
+  go: 'Go',
+  rs: 'Rust',
+  java: 'Java',
+  rb: 'Ruby',
+  php: 'PHP',
+  swift: 'Swift',
+  kt: 'Kotlin',
+  html: 'HTML',
+  htm: 'HTML',
+  css: 'CSS',
+  scss: 'SCSS',
+  less: 'Less',
+  json: 'JSON',
+  yml: 'YAML',
+  yaml: 'YAML',
+  toml: 'TOML',
+  md: 'Markdown',
+  sh: 'Shell',
+  bash: 'Shell',
+  ps1: 'PowerShell',
+  sql: 'SQL',
+  tf: 'Terraform',
+  dockerfile: 'Dockerfile'
+}
+
+/**
+ * Checked in, but not source. Binary assets are the ones that matter here: a
+ * single 200 kB icon outweighs every stylesheet in the repository and would
+ * appear in the bar as though `ico` were a programming language. SVG is kept —
+ * it is text, it is edited by hand, and GitHub counts it too.
+ */
+const NOT_SOURCE = new Set([
+  'lock',
+  'log',
+  'map',
+  'snap',
+  'png',
+  'jpg',
+  'jpeg',
+  'gif',
+  'bmp',
+  'ico',
+  'icns',
+  'webp',
+  'avif',
+  'mp3',
+  'mp4',
+  'wav',
+  'mov',
+  'woff',
+  'woff2',
+  'ttf',
+  'otf',
+  'eot',
+  'pdf',
+  'zip',
+  'gz',
+  'tar',
+  '7z',
+  'exe',
+  'dll',
+  'node',
+  'pdb',
+  'bin',
+  'wasm'
+])
+
+/**
+ * Bytes per language across the workspace.
+ *
+ * Aggregated here rather than in the renderer because it needs a `stat` per
+ * file, and shipping a full sized file list across IPC just to sum it there
+ * would be strictly more work for the same four numbers. Shares `listFiles`'
+ * ignore set and ceiling so both views agree on what "the workspace" means.
+ */
+export async function languageBreakdown(): Promise<LanguageBreakdown> {
+  const root = requireRoot()
+  const byExtension = new Map<string, { bytes: number; files: number }>()
+
+  let seen = 0
+  let truncated = false
+  let queue: string[] = [root]
+
+  while (queue.length > 0 && !truncated) {
+    const next: string[] = []
+    for (const dir of queue) {
+      let entries
+      try {
+        entries = await fsp.readdir(dir, { withFileTypes: true })
+      } catch {
+        continue
+      }
+
+      for (const entry of entries) {
+        if (UNWATCHED.has(entry.name) || HIDDEN.has(entry.name)) continue
+        const absolute = join(dir, entry.name)
+
+        if (entry.isDirectory()) {
+          next.push(absolute)
+          continue
+        }
+        if (!entry.isFile()) continue
+
+        if (seen >= MAX_LISTED_FILES) {
+          truncated = true
+          break
+        }
+        seen++
+
+        const dot = entry.name.lastIndexOf('.')
+        const extension =
+          entry.name.toLowerCase() === 'dockerfile'
+            ? 'dockerfile'
+            : dot > 0
+              ? entry.name.slice(dot + 1).toLowerCase()
+              : ''
+        if (extension === '' || NOT_SOURCE.has(extension)) continue
+
+        let size: number
+        try {
+          size = (await fsp.stat(absolute)).size
+        } catch {
+          continue
+        }
+
+        const bucket = byExtension.get(extension) ?? { bytes: 0, files: 0 }
+        bucket.bytes += size
+        bucket.files++
+        byExtension.set(extension, bucket)
+      }
+      if (truncated) break
+    }
+    queue = next
+  }
+
+  // Extensions that share a language are summed, so TypeScript is one bar
+  // rather than four (.ts/.tsx/.mts/.cts).
+  const byLanguage = new Map<string, LanguageStat>()
+  for (const [extension, bucket] of byExtension) {
+    const language = LANGUAGE_NAMES[extension] ?? extension
+    const existing = byLanguage.get(language)
+    if (existing === undefined) {
+      byLanguage.set(language, { language, extension, bytes: bucket.bytes, files: bucket.files })
+    } else {
+      existing.bytes += bucket.bytes
+      existing.files += bucket.files
+    }
+  }
+
+  const languages = [...byLanguage.values()].sort((a, b) => b.bytes - a.bytes).slice(0, 12)
+  const totalBytes = [...byLanguage.values()].reduce((sum, entry) => sum + entry.bytes, 0)
+
+  return { languages, totalBytes, truncated }
+}
+
 export async function listFiles(): Promise<FileNode[]> {
   const root = requireRoot()
   const found: FileNode[] = []

@@ -6,6 +6,7 @@
  * — the renderer's only privileged path is `window.betterCallCompiler`.
  */
 
+import type * as monacoNs from 'monaco-editor'
 import type { BetterCallCompilerApi } from '../shared/ipc-contract'
 import type { FileNode } from '../shared/types'
 import { mountExplorer, OPEN_FILE_EVENT } from './views/explorer'
@@ -23,6 +24,20 @@ import { mountInsights, onInsightsShown } from './views/insights'
 import { mountSettings, onSettingsShown } from './views/settings'
 import { listenForAiActions, mountAi, onAiShown } from './views/ai'
 import { registerAiActions } from './editor/ai-actions'
+import {
+  listenForAssistActions,
+  mountAssist,
+  onAssistShown,
+  setAssistViewActivator
+} from './views/assist'
+import { registerAssistActions } from './editor/assist-popup'
+import {
+  mountTopography,
+  onTopographyShown,
+  renderTopography,
+  setTopographyRevealHandler
+} from './views/topography'
+import { findEnclosingSymbol } from './editor/code-context'
 import { mountSearch, onSearchShown, setSearchQuery } from './views/search'
 import { openCommandPalette, registerCommands } from './workbench/command-palette'
 import { openQuickOpen, watchForFileChanges } from './workbench/quick-open'
@@ -92,6 +107,18 @@ function mountEditor(editorHost: HTMLElement, tabBar: HTMLElement): void {
   // when there is a selection — `precondition` in ai-actions.ts.
   registerAiActions(editor)
 
+  // Assist is a separate feature with its own event, its own context-menu group
+  // and no shared state with the AI actions above.
+  registerAssistActions(editor)
+
+  // Visualizer: a live topography of whatever the cursor is in.
+  setTopographyRevealHandler((line) => {
+    editor.revealLineInCenter(line)
+    editor.setPosition({ lineNumber: line, column: 1 })
+    editor.focus()
+  })
+  registerTopographyFeed(editor)
+
   const placeholder = document.getElementById('editor-placeholder')
   const syncPlaceholder = (): void => {
     const hasDocument = activeDocument() !== null
@@ -144,6 +171,53 @@ function mountEditor(editorHost: HTMLElement, tabBar: HTMLElement): void {
 }
 
 /**
+ * Feeds the Visualizer from the editor selection.
+ *
+ * Debounced at 300ms because this parses on every cursor move, and the cost is
+ * a full Babel parse plus a Mermaid render. With a live selection the selected
+ * text is diagrammed; without one it falls back to the enclosing function, so
+ * simply putting the caret in a function shows its shape — which is the common
+ * case and requires no selecting at all.
+ */
+function registerTopographyFeed(editor: monacoNs.editor.IStandaloneCodeEditor): void {
+  let timer: number | null = null
+
+  const update = (): void => {
+    const model = editor.getModel()
+    const selection = editor.getSelection()
+    if (model === null || selection === null) return
+
+    if (!selection.isEmpty()) {
+      void renderTopography(model.getValueInRange(selection), selection.startLineNumber)
+      return
+    }
+
+    // `findEnclosingSymbol` is imported from code-context.ts and not modified —
+    // the same reuse the Assist feature makes of it. It reports a line range
+    // rather than text, so the source comes back out of the model.
+    const enclosing = findEnclosingSymbol(
+      model.getValue(),
+      model.getLanguageId(),
+      selection.startLineNumber
+    )
+    if (enclosing === null) return
+
+    const text = model.getValueInRange({
+      startLineNumber: enclosing.startLine,
+      startColumn: 1,
+      endLineNumber: enclosing.endLine,
+      endColumn: model.getLineMaxColumn(enclosing.endLine)
+    })
+    void renderTopography(text, enclosing.startLine)
+  }
+
+  editor.onDidChangeCursorSelection(() => {
+    if (timer !== null) window.clearTimeout(timer)
+    timer = window.setTimeout(update, 300)
+  })
+}
+
+/**
  * Saves first, then runs. Running the file the user is looking at while the
  * on-disk copy is a version behind is the single most confusing thing a run
  * button can do.
@@ -187,10 +261,19 @@ async function mountSideBarViews(): Promise<void> {
   registerSideBarView({ id: 'insights', mount: mountInsights, onShow: onInsightsShown })
   registerSideBarView({ id: 'settings', mount: mountSettings, onShow: onSettingsShown })
   registerSideBarView({ id: 'ai', mount: mountAi, onShow: onAiShown })
+  registerSideBarView({ id: 'assist', mount: mountAssist, onShow: onAssistShown })
+  registerSideBarView({ id: 'visualizer', mount: mountTopography, onShow: onTopographyShown })
 
   mountActivityBar(requireEl('activity-bar'), (id) => {
     // The Run icon opens the output console rather than a side-bar view.
     if (id === 'run') void showOutput()
+  })
+
+  // Assist results surface in its panel the way AI answers surface in theirs.
+  listenForAssistActions()
+  setAssistViewActivator(() => {
+    setSelected('assist')
+    return showSideBarView('assist')
   })
 
   await showSideBarView('explorer')

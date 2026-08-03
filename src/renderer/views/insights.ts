@@ -1,6 +1,18 @@
-import type { ContributionCalendar, GithubInsights } from '../../shared/types'
+import type {
+  ContributionCalendar,
+  GithubInsights,
+  LanguageBreakdown,
+  RepositoryStats
+} from '../../shared/types'
 import { notifyError } from '../workbench/notifications'
 import { emptyState } from '../workbench/side-bar'
+import {
+  colourForLanguage,
+  evaluateRepoHealth,
+  formatBytes,
+  toLanguageSlices,
+  type HealthCheck
+} from './repo-analysis'
 
 /**
  * GitHub insights.
@@ -15,6 +27,18 @@ let titleHost: HTMLElement | null = null
 let bodyHost: HTMLElement | null = null
 let insights: GithubInsights | null = null
 let loading = false
+
+/**
+ * Locally-derived state, kept deliberately separate from `insights`.
+ *
+ * These sections come from the workspace and `git log`, so they are the parts
+ * that still answer when there is no token, no remote and no network. They must
+ * therefore render even when the GitHub half fails outright.
+ */
+let stats: RepositoryStats | null = null
+let breakdown: LanguageBreakdown | null = null
+let health: HealthCheck[] | null = null
+let localLoading = false
 
 function el<K extends keyof HTMLElementTagNameMap>(
   tag: K,
@@ -98,6 +122,158 @@ function sourceBadge(value: GithubInsights): HTMLElement {
   return badge
 }
 
+/* ------------------------- locally-computed sections ---------------------- */
+
+function section(label: string, count?: string): { wrap: HTMLElement; header: HTMLElement } {
+  const wrap = el('div', 'scm-section')
+  const header = el('div', 'scm-section__header')
+  header.append(el('span', 'scm-section__label', label))
+  if (count !== undefined) header.append(el('span', 'scm-section__count', count))
+  wrap.append(header)
+  return { wrap, header }
+}
+
+function renderLanguages(value: LanguageBreakdown): HTMLElement {
+  const slices = toLanguageSlices(value.languages, value.totalBytes)
+  const { wrap } = section('Languages', formatBytes(value.totalBytes))
+
+  if (slices.length === 0) {
+    wrap.append(el('p', 'explorer__empty-text', 'No source files found.'))
+    return wrap
+  }
+
+  // One stacked bar, GitHub-style, then a legend with the real numbers.
+  const bar = el('div', 'langbar')
+  slices.forEach((slice, index) => {
+    const part = el('span', 'langbar__part')
+    part.style.width = `${slice.percent}%`
+    part.style.background = colourForLanguage(slice.language, index)
+    part.title = `${slice.language} — ${slice.percent}% (${formatBytes(slice.bytes)})`
+    bar.append(part)
+  })
+  wrap.append(bar)
+
+  const legend = el('div', 'langlegend')
+  slices.forEach((slice, index) => {
+    const row = el('span', 'langlegend__item')
+    const dot = el('span', 'langlegend__dot')
+    dot.style.background = colourForLanguage(slice.language, index)
+    row.append(dot)
+    row.append(el('span', 'langlegend__name', slice.language))
+    row.append(el('span', 'langlegend__percent', `${slice.percent}%`))
+    legend.append(row)
+  })
+  wrap.append(legend)
+
+  if (value.truncated) {
+    wrap.append(
+      el('p', 'insights-notice', 'Sampled: the workspace exceeded the file scan limit.')
+    )
+  }
+  return wrap
+}
+
+function renderHealth(checks: readonly HealthCheck[]): HTMLElement {
+  const passed = checks.filter((c) => c.passed).length
+  const { wrap } = section('Repository health', `${passed}/${checks.length}`)
+
+  for (const item of checks) {
+    const row = el('div', `health-row${item.passed ? ' health-row--pass' : ''}`)
+    row.append(el('span', 'health-row__mark', item.passed ? '✓' : '✗'))
+    row.append(el('span', 'health-row__label', item.label))
+    row.append(el('span', 'health-row__detail', item.detail))
+    row.title = item.detail
+    wrap.append(row)
+  }
+  return wrap
+}
+
+function renderCodeFrequency(value: RepositoryStats): HTMLElement {
+  const weeks = value.codeFrequency.slice(-26)
+  const { wrap } = section('Code frequency', `${weeks.length} wks`)
+
+  if (weeks.length === 0) {
+    wrap.append(el('p', 'explorer__empty-text', 'No commit history yet.'))
+    return wrap
+  }
+
+  // Scaled against the busiest week so the shape is readable regardless of
+  // whether this repo churns tens or tens of thousands of lines.
+  const peak = Math.max(...weeks.map((w) => Math.max(w.added, w.deleted)), 1)
+  const chart = el('div', 'freq')
+  for (const week of weeks) {
+    const column = el('div', 'freq__week')
+    column.title = `${week.weekStart}: +${week.added} / −${week.deleted}`
+    const added = el('span', 'freq__bar freq__bar--added')
+    added.style.height = `${Math.round((week.added / peak) * 100)}%`
+    const deleted = el('span', 'freq__bar freq__bar--deleted')
+    deleted.style.height = `${Math.round((week.deleted / peak) * 100)}%`
+    column.append(added, deleted)
+    chart.append(column)
+  }
+  wrap.append(chart)
+  return wrap
+}
+
+function renderChurn(value: RepositoryStats): HTMLElement {
+  const top = value.churn.slice(0, 8)
+  const { wrap } = section('Most-changed files', String(value.churn.length))
+
+  if (top.length === 0) {
+    wrap.append(el('p', 'explorer__empty-text', 'No file history yet.'))
+    return wrap
+  }
+
+  const peak = Math.max(...top.map((f) => f.added + f.deleted), 1)
+  for (const file of top) {
+    const row = el('div', 'churn-row')
+    row.title = `${file.path}\n${file.commits} commits, +${file.added} / −${file.deleted}`
+    row.append(el('span', 'churn-row__path', file.path))
+    const meter = el('span', 'churn-row__meter')
+    const fill = el('span', 'churn-row__fill')
+    fill.style.width = `${Math.round(((file.added + file.deleted) / peak) * 100)}%`
+    meter.append(fill)
+    row.append(meter)
+    row.append(el('span', 'churn-row__count', String(file.commits)))
+    wrap.append(row)
+  }
+  return wrap
+}
+
+function renderContributors(value: RepositoryStats): HTMLElement {
+  const top = value.contributors.slice(0, 8)
+  const { wrap } = section('Contributors', String(value.contributors.length))
+
+  if (top.length === 0) {
+    wrap.append(el('p', 'explorer__empty-text', 'No contributors yet.'))
+    return wrap
+  }
+
+  for (const person of top) {
+    const row = el('div', 'churn-row')
+    row.title = `${person.name}: ${person.commits} commits, +${person.added} / −${person.deleted}`
+    row.append(el('span', 'churn-row__path', person.name))
+    row.append(el('span', 'churn-row__count', `${person.commits}`))
+    wrap.append(row)
+  }
+  return wrap
+}
+
+/** Everything below the GitHub-backed sections, and independent of them. */
+function appendLocalSections(host: HTMLElement): void {
+  if (localLoading && breakdown === null && stats === null) {
+    host.append(el('p', 'explorer__empty-text', 'Analysing workspace…'))
+    return
+  }
+  if (breakdown !== null) host.append(renderLanguages(breakdown))
+  if (health !== null) host.append(renderHealth(health))
+  if (stats !== null && stats.isRepository) {
+    host.append(renderCodeFrequency(stats))
+    host.append(renderChurn(stats))
+    host.append(renderContributors(stats))
+  }
+}
+
 function render(): void {
   if (bodyHost === null || titleHost === null) return
 
@@ -111,7 +287,10 @@ function render(): void {
   refresh.innerHTML =
     '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13 8a5 5 0 1 1-1.5-3.5M13 2v3h-3" ' +
     'fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>'
-  refresh.addEventListener('click', () => void load(true))
+  refresh.addEventListener('click', () => {
+    void load(true)
+    void loadLocal()
+  })
   actions.append(refresh)
   titleHost.append(actions)
 
@@ -124,6 +303,9 @@ function render(): void {
 
   if (insights === null) {
     bodyHost.append(emptyState('Insights are unavailable.', { label: 'Retry', run: () => void load(true) }))
+    // The locally-computed sections do not depend on GitHub at all, so a failed
+    // fetch must not blank them — that is the whole point of computing them here.
+    appendLocalSections(bodyHost)
     return
   }
 
@@ -175,6 +357,8 @@ function render(): void {
     }
     bodyHost.append(quota)
   }
+
+  appendLocalSections(bodyHost)
 }
 
 /* ---------------------------------- data --------------------------------- */
@@ -195,13 +379,69 @@ async function load(force: boolean): Promise<void> {
   render()
 }
 
+/**
+ * Loads the sections that need no token.
+ *
+ * Runs independently of `load()` so a GitHub failure — or the absence of any
+ * remote at all — cannot take these down with it. The three requests are
+ * concurrent because none depends on another.
+ */
+async function loadLocal(): Promise<void> {
+  localLoading = true
+  render()
+
+  const [statsResult, breakdownResult, filesResult] = await Promise.all([
+    window.betterCallCompiler.git.stats({}),
+    window.betterCallCompiler.fs.languageBreakdown({}),
+    window.betterCallCompiler.fs.listFiles({})
+  ])
+
+  stats = statsResult.ok ? statsResult.value.stats : null
+  breakdown = breakdownResult.ok ? breakdownResult.value.breakdown : null
+
+  if (filesResult.ok) {
+    const files = filesResult.value.files
+    const find = (predicate: (name: string) => boolean): string | null =>
+      files.find((file) => predicate(file.name.toLowerCase()))?.path ?? null
+
+    const readmePath = find((name) => name.startsWith('readme'))
+    const packagePath = find((name) => name === 'package.json')
+
+    const [readme, packageJson] = await Promise.all([
+      readTextOrNull(readmePath),
+      readTextOrNull(packagePath)
+    ])
+
+    health = evaluateRepoHealth({
+      paths: files.map((file) => file.relativePath),
+      readme,
+      packageJson
+    })
+  } else {
+    health = null
+  }
+
+  localLoading = false
+  render()
+}
+
+async function readTextOrNull(path: string | null): Promise<string | null> {
+  if (path === null) return null
+  const result = await window.betterCallCompiler.fs.readFile({ path })
+  return result.ok ? result.value.content : null
+}
+
 export async function mountInsights(title: HTMLElement, body: HTMLElement): Promise<void> {
   titleHost = title
   bodyHost = body
-  // Served from the 10-minute cache on every visit after the first.
+  // Served from the 10-minute cache on every visit after the first. The local
+  // half is not awaited alongside it: the GitHub call can be slow, and there is
+  // no reason for a token-free section to wait on a network round trip.
+  void loadLocal()
   await load(false)
 }
 
 export function onInsightsShown(): void {
   if (insights === null && !loading) void load(false)
+  if (stats === null && breakdown === null && !localLoading) void loadLocal()
 }

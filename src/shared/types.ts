@@ -183,6 +183,83 @@ export function describeChange(change: GitFileChange): string {
   return status.trim() === '' ? 'M' : status
 }
 
+/* ---------------------------- language stats ----------------------------- */
+
+/**
+ * Bytes per language across the workspace.
+ *
+ * Measured in bytes rather than file count, the way GitHub's own language bar
+ * works: counting files would rank a three-line barrel export equal to a
+ * thousand-line module. `FileNode` deliberately carries no size — adding one
+ * would put a `stat` behind every explorer row — so this is aggregated in the
+ * main process and only the totals cross IPC.
+ */
+export const languageStatSchema = z.strictObject({
+  /** Display name, e.g. `TypeScript`. */
+  language: z.string(),
+  /** Lower-case extension without the dot, e.g. `ts`. */
+  extension: z.string(),
+  bytes: z.number().int().nonnegative(),
+  files: z.number().int().nonnegative()
+})
+export type LanguageStat = z.infer<typeof languageStatSchema>
+
+export const languageBreakdownSchema = z.strictObject({
+  /** Largest first, already truncated by the service. */
+  languages: z.array(languageStatSchema),
+  totalBytes: z.number().int().nonnegative(),
+  /** True when the walk hit its file ceiling and the numbers are a sample. */
+  truncated: z.boolean()
+})
+export type LanguageBreakdown = z.infer<typeof languageBreakdownSchema>
+
+/* ---------------------------- repository stats --------------------------- */
+
+/**
+ * Statistics derived from the local `git log` alone.
+ *
+ * Deliberately separate from `GithubInsights`: everything here works with no
+ * token, no network and no remote, so the Insights view can show real numbers
+ * on a repository that has never been pushed anywhere. The GitHub-backed
+ * calendar degrades; these sections simply do not need to.
+ */
+export const codeFrequencyWeekSchema = z.strictObject({
+  /** ISO date of that week's Sunday, so weeks sort lexicographically. */
+  weekStart: z.string(),
+  added: z.number().int().nonnegative(),
+  deleted: z.number().int().nonnegative()
+})
+export type CodeFrequencyWeek = z.infer<typeof codeFrequencyWeekSchema>
+
+export const fileChurnSchema = z.strictObject({
+  path: z.string(),
+  /** Number of commits that touched this path. */
+  commits: z.number().int().nonnegative(),
+  added: z.number().int().nonnegative(),
+  deleted: z.number().int().nonnegative()
+})
+export type FileChurn = z.infer<typeof fileChurnSchema>
+
+export const contributorSchema = z.strictObject({
+  name: z.string(),
+  commits: z.number().int().nonnegative(),
+  added: z.number().int().nonnegative(),
+  deleted: z.number().int().nonnegative()
+})
+export type Contributor = z.infer<typeof contributorSchema>
+
+export const repositoryStatsSchema = z.strictObject({
+  isRepository: z.boolean(),
+  /** Oldest first. Empty on a repository with no commits. */
+  codeFrequency: z.array(codeFrequencyWeekSchema),
+  /** Most-churned first, already truncated by the service. */
+  churn: z.array(fileChurnSchema),
+  /** Most commits first. */
+  contributors: z.array(contributorSchema),
+  totalCommits: z.number().int().nonnegative()
+})
+export type RepositoryStats = z.infer<typeof repositoryStatsSchema>
+
 /* ------------------------------- github ---------------------------------- */
 
 export const contributionDaySchema = z.strictObject({
