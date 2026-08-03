@@ -1371,6 +1371,142 @@
 .calendar__day--3 { background: #26a641; }
 .calendar__day--4 { background: #39d353; }
 
+/* ---------- Insights: locally-computed sections ---------- */
+
+.langbar {
+  display: flex;
+  height: 9px;
+  margin: 6px 10px 8px;
+  border-radius: 5px;
+  overflow: hidden;
+  background: var(--bcc-gray-4);
+}
+
+.langbar__part {
+  height: 100%;
+  min-width: 2px;
+}
+
+.langlegend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  padding: 0 10px 8px;
+}
+
+.langlegend__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: var(--bcc-font-size-sm);
+}
+
+.langlegend__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.langlegend__percent {
+  color: var(--bcc-fg-subtle);
+}
+
+.health-row {
+  display: grid;
+  grid-template-columns: 16px 96px 1fr;
+  align-items: baseline;
+  gap: 6px;
+  padding: 2px 10px;
+  font-size: var(--bcc-font-size-sm);
+}
+
+.health-row__mark {
+  color: var(--bcc-danger);
+  text-align: center;
+}
+
+.health-row--pass .health-row__mark {
+  color: var(--bcc-success);
+}
+
+.health-row__detail {
+  color: var(--bcc-fg-subtle);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Added above the baseline, deleted below — the shape reads at a glance. */
+.freq {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 64px;
+  padding: 4px 10px 8px;
+}
+
+.freq__week {
+  flex: 1 1 0;
+  min-width: 2px;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.freq__bar {
+  display: block;
+  width: 100%;
+  border-radius: 1px;
+}
+
+.freq__bar--added {
+  background: var(--bcc-added);
+  align-self: flex-end;
+  margin-top: auto;
+}
+
+.freq__bar--deleted {
+  background: var(--bcc-modified);
+  margin-bottom: auto;
+}
+
+.churn-row {
+  display: grid;
+  grid-template-columns: 1fr 60px 28px;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 10px;
+  font-size: var(--bcc-font-size-sm);
+}
+
+.churn-row__path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}
+
+.churn-row__meter {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--bcc-gray-4);
+  overflow: hidden;
+}
+
+.churn-row__fill {
+  display: block;
+  height: 100%;
+  background: var(--bcc-accent);
+}
+
+.churn-row__count {
+  color: var(--bcc-fg-subtle);
+  text-align: right;
+}
+
 .calendar__legend {
   display: flex;
   align-items: center;

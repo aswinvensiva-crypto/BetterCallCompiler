@@ -7,7 +7,8 @@ import type {
   GitCommit,
   GitFileChange,
   GitFileDiff,
-  GitStatus
+  GitStatus,
+  RepositoryStats
 } from '../shared/types'
 import { confinePath, getWorkspace } from './fs-service'
 
@@ -297,6 +298,147 @@ export async function log(limit = 50): Promise<GitCommit[]> {
   } catch {
     // A repository with no commits has no log; that is not an error.
     return []
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * Repository statistics
+ * ------------------------------------------------------------------ */
+
+/** Header emitted once per commit; `|` cannot appear in a hash or ISO date. */
+const COMMIT_MARKER = '@@@'
+
+/**
+ * Parses `git log --numstat` output into the three derived statistics.
+ *
+ * Exported and pure so the parser can be unit-tested against captured git
+ * output without needing a repository — the same reason `parseRemote` is
+ * exported. Every awkward case below is one git actually produces:
+ *
+ *   - binary files report `-` instead of a count, and must not become NaN
+ *   - renames appear as `old => new` (or `dir/{a => b}/f`), and the *new* path
+ *     is the one worth attributing churn to
+ *   - a commit with no file changes emits a header and nothing else
+ */
+export function parseNumstatLog(raw: string): Omit<RepositoryStats, 'isRepository'> {
+  const weeks = new Map<string, { added: number; deleted: number }>()
+  const files = new Map<string, { commits: number; added: number; deleted: number }>()
+  const authors = new Map<string, { commits: number; added: number; deleted: number }>()
+
+  let currentWeek = ''
+  let currentAuthor = ''
+  let totalCommits = 0
+
+  for (const line of raw.split('\n')) {
+    const text = line.trim()
+    if (text === '') continue
+
+    if (text.startsWith(COMMIT_MARKER)) {
+      const [, author = '', date = ''] = text.slice(COMMIT_MARKER.length).split('|')
+      currentAuthor = author
+      currentWeek = weekStartOf(date)
+      totalCommits++
+
+      const entry = authors.get(currentAuthor) ?? { commits: 0, added: 0, deleted: 0 }
+      entry.commits++
+      authors.set(currentAuthor, entry)
+      continue
+    }
+
+    const parts = text.split('\t')
+    if (parts.length < 3) continue
+
+    // `-` marks a binary file: it has real churn but no line counts.
+    const added = parts[0] === '-' ? 0 : Number.parseInt(parts[0] ?? '', 10)
+    const deleted = parts[1] === '-' ? 0 : Number.parseInt(parts[1] ?? '', 10)
+    if (Number.isNaN(added) || Number.isNaN(deleted)) continue
+
+    const path = normaliseRenamedPath(parts.slice(2).join('\t'))
+    if (path === '') continue
+
+    if (currentWeek !== '') {
+      const week = weeks.get(currentWeek) ?? { added: 0, deleted: 0 }
+      week.added += added
+      week.deleted += deleted
+      weeks.set(currentWeek, week)
+    }
+
+    const file = files.get(path) ?? { commits: 0, added: 0, deleted: 0 }
+    file.commits++
+    file.added += added
+    file.deleted += deleted
+    files.set(path, file)
+
+    if (currentAuthor !== '') {
+      const author = authors.get(currentAuthor) ?? { commits: 0, added: 0, deleted: 0 }
+      author.added += added
+      author.deleted += deleted
+      authors.set(currentAuthor, author)
+    }
+  }
+
+  return {
+    codeFrequency: [...weeks.entries()]
+      .map(([weekStart, v]) => ({ weekStart, added: v.added, deleted: v.deleted }))
+      .sort((a, b) => a.weekStart.localeCompare(b.weekStart)),
+    churn: [...files.entries()]
+      .map(([path, v]) => ({ path, ...v }))
+      .sort((a, b) => b.added + b.deleted - (a.added + a.deleted))
+      .slice(0, 20),
+    contributors: [...authors.entries()]
+      .map(([name, v]) => ({ name, ...v }))
+      .sort((a, b) => b.commits - a.commits),
+    totalCommits
+  }
+}
+
+/** `dir/{old => new}/f.ts` and `old.ts => new.ts` both resolve to the new path. */
+function normaliseRenamedPath(path: string): string {
+  const braced = /^(.*)\{(.*) => (.*)\}(.*)$/.exec(path)
+  if (braced !== null) {
+    return `${braced[1] ?? ''}${braced[3] ?? ''}${braced[4] ?? ''}`.replace(/\/{2,}/g, '/')
+  }
+  const arrow = path.split(' => ')
+  return (arrow.length === 2 ? arrow[1] : path)?.trim() ?? ''
+}
+
+/** ISO timestamp to the Sunday of its week, so weeks sort lexicographically. */
+function weekStartOf(iso: string): string {
+  const parsed = new Date(iso)
+  if (Number.isNaN(parsed.getTime())) return ''
+  const day = new Date(
+    Date.UTC(parsed.getUTCFullYear(), parsed.getUTCMonth(), parsed.getUTCDate())
+  )
+  day.setUTCDate(day.getUTCDate() - day.getUTCDay())
+  return day.toISOString().slice(0, 10)
+}
+
+/**
+ * Code frequency, per-file churn and contributors, from ONE `git log` walk.
+ *
+ * `--numstat` already carries everything all three need, so running three
+ * separate git commands would triple the process cost for the same bytes.
+ * `--no-merges` matters: a merge commit restates its parents' changes, and
+ * counting it double-reports every line in a merge-heavy history.
+ */
+export async function repositoryStats(maxCommits = 2000): Promise<RepositoryStats> {
+  const root = getWorkspace().root
+  const empty = { codeFrequency: [], churn: [], contributors: [], totalCommits: 0 }
+  if (root === null) return { isRepository: false, ...empty }
+  if (!(await isRepository())) return { isRepository: false, ...empty }
+
+  try {
+    const raw = await gitFor(root).raw([
+      'log',
+      `--max-count=${maxCommits}`,
+      '--no-merges',
+      '--numstat',
+      `--format=${COMMIT_MARKER}%H|%an|%aI`
+    ])
+    return { isRepository: true, ...parseNumstatLog(raw) }
+  } catch {
+    // No commits yet, or a git that refused the format; neither is an error.
+    return { isRepository: true, ...empty }
   }
 }
 

@@ -18,6 +18,7 @@ import {
   createFile,
   getWorkspace,
   openFolder,
+  languageBreakdown,
   listFiles,
   readDirectory,
   readFile,
@@ -40,6 +41,7 @@ import {
   commit as gitCommit,
   diff as gitDiff,
   log as gitLog,
+  repositoryStats as gitStats,
   stage as gitStage,
   startGitWatch,
   status as gitStatus,
@@ -115,6 +117,8 @@ export function createHandlerMap(): HandlerMap {
 
     'fs:listFiles': async () => ({ files: await listFiles() }),
 
+    'fs:languageBreakdown': async () => ({ breakdown: await languageBreakdown() }),
+
     'fs:search': async (request) => ({
       matches: await searchWorkspace({
         query: request.query,
@@ -177,6 +181,8 @@ export function createHandlerMap(): HandlerMap {
     'git:branches': async () => ({ branches: await gitBranches() }),
 
     'git:log': async (request) => ({ commits: await gitLog(request.limit) }),
+
+    'git:stats': async () => ({ stats: await gitStats() }),
 
     'github:insights': async (request) => {
       if (request.force) clearInsightsCache()
