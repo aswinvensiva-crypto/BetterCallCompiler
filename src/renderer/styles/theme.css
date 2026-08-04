@@ -152,6 +152,48 @@
   /* IntelliJ's chrome is squarer than VS Code's. */
   --bcc-radius: 3px;
   --bcc-shadow-overlay: 0 10px 32px rgba(0, 0, 0, 0.62);
+
+  /* ---------- Visualizer ----------
+
+     One hue per node category, and — with a single exception — every hue is
+     borrowed from the semantic set above rather than invented, so a diagram
+     reads as part of the same product rather than a chart pasted into it.
+     Purple is the exception: nothing in the palette carried "asynchronous",
+     and reusing blue would have collided with `exported`, which is the
+     distinction the colour exists to draw. */
+  --bcc-node-exported: var(--bcc-accent);
+  --bcc-node-internal: var(--bcc-gray-7);
+  --bcc-node-async: #9a7fd0;
+  --bcc-node-control: var(--bcc-warning);
+  --bcc-node-external: var(--bcc-gray-6);
+  --bcc-node-terminal: var(--bcc-success);
+
+  /* Node bodies stay one shade so the border carries the category on its own.
+     Colouring the fill as well turns a dense graph into a heat map, where
+     every node competes for attention and none of them wins. */
+  --bcc-node-bg: var(--bcc-gray-3);
+  --bcc-node-bg-hover: var(--bcc-gray-4);
+  --bcc-node-fg: var(--bcc-gray-12);
+  --bcc-node-fg-muted: var(--bcc-gray-9);
+
+  /* Edges are graded by how much the reader needs them. Sequential flow is the
+     quiet default; a branch, a loop-back or a throw is the thing being looked
+     for and is allowed to be louder. */
+  --bcc-edge: var(--bcc-gray-6);
+  --bcc-edge-true: var(--bcc-success);
+  --bcc-edge-false: var(--bcc-gray-7);
+  --bcc-edge-loop: var(--bcc-warning);
+  --bcc-edge-catch: var(--bcc-danger);
+  --bcc-edge-calls: var(--bcc-accent);
+  --bcc-edge-label: var(--bcc-gray-9);
+
+  --bcc-node-radius: 8px;
+  --bcc-node-glow: 0 0 0 1px var(--bcc-accent), 0 0 12px rgba(53, 116, 240, 0.55);
+
+  /* Declared here with the other resizable dimensions even though the splitter
+     overwrites it at runtime, so the default is discoverable in one place
+     rather than buried in a `var()` fallback. */
+  --bcc-viz-inspector-width: 280px;
 }
 
 *,

@@ -1,0 +1,644 @@
+/**
+ * The Visualizer.
+ *
+ * Kept out of workbench.css because it is a self-contained surface with its own
+ * vocabulary — nodes, edges, an inspector — rather than another piece of
+ * workbench chrome, and because it is the one region whose look is expected to
+ * keep moving. Every colour here resolves to a token in theme.css; nothing in
+ * this file invents one.
+ *
+ * The renderer draws SVG, so most rules set `fill` and `stroke` rather than
+ * `background` and `color`. Geometry (x, y, width, d) stays in TypeScript,
+ * because only the layout engine knows it. The split is deliberate: TS decides
+ * *where* a thing goes, CSS decides *what it looks like*, and neither reaches
+ * across.
+ */
+
+/* ---------- panel shell ---------- */
+
+.viz-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--bcc-bg);
+}
+
+/* The canvas and the inspector sit side by side, with the inspector on a track
+   the user can drag. `minmax(0, 1fr)` rather than `1fr`: an SVG child will
+   happily report a larger minimum content size and push the inspector off the
+   edge otherwise. */
+.viz-panel__main {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--bcc-splitter-size) var(--bcc-viz-inspector-width, 280px);
+}
+
+.viz-panel--no-inspector .viz-panel__main {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.viz-panel--no-inspector .viz-inspector,
+.viz-panel--no-inspector .viz-panel__splitter {
+  display: none;
+}
+
+/* Maximised: a fixed overlay rather than a grid reflow. Fighting the workbench
+   grid to make one cell cover its siblings means every other region has to know
+   about this one; an overlay bounded to the editor area keeps that knowledge
+   here. `--bcc-*-width` are read live so the overlay tracks a dragged side bar. */
+.viz-panel--maximized {
+  position: fixed;
+  left: calc(var(--bcc-activity-bar-width) + var(--bcc-side-bar-width));
+  top: 0;
+  right: 0;
+  bottom: var(--bcc-status-bar-height);
+  z-index: 40;
+  border-left: 1px solid var(--bcc-border);
+  box-shadow: var(--bcc-shadow-overlay);
+}
+
+.workbench[data-sidebar-hidden='true'] .viz-panel--maximized {
+  left: var(--bcc-activity-bar-width);
+}
+
+/* ---------- toolbar ---------- */
+
+.viz-toolbar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: var(--bcc-toolbar-height);
+  padding: 0 8px;
+  background: var(--bcc-toolwindow-header-bg);
+  border-bottom: 1px solid var(--bcc-border);
+  font-size: var(--bcc-font-size-sm);
+  color: var(--bcc-fg-muted);
+  /* The controls wrap rather than overflow: this panel can be dragged narrow,
+     and a slider that has slid out of reach is worse than a second row. */
+  flex-wrap: wrap;
+}
+
+.viz-toolbar__group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+
+.viz-toolbar__label {
+  white-space: nowrap;
+  color: var(--bcc-fg-subtle);
+}
+
+.viz-toolbar__slider {
+  width: 84px;
+  accent-color: var(--bcc-accent);
+  cursor: pointer;
+}
+
+.viz-toolbar__value {
+  min-width: 2ch;
+  font-variant-numeric: tabular-nums;
+  color: var(--bcc-fg);
+}
+
+.viz-toolbar__spacer {
+  flex: 1 1 auto;
+}
+
+.viz-toolbar__metrics {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+}
+
+.viz-toolbar__metric {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.viz-toolbar__metric-label {
+  color: var(--bcc-fg-subtle);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 10px;
+}
+
+.viz-toolbar__metric-value {
+  color: var(--bcc-fg);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Hidden nodes and unparseable input both land here. Amber rather than red:
+   neither is an error, and most "cannot parse" states are simply a half-typed
+   line that will resolve itself on the next keystroke. */
+.viz-toolbar__notice {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 1px 7px;
+  border: 1px solid var(--bcc-warning);
+  border-radius: 999px;
+  color: var(--bcc-warning);
+  background: rgba(217, 163, 67, 0.1);
+  white-space: nowrap;
+}
+
+.viz-toolbar__button--active {
+  background: var(--bcc-bg-active);
+  color: var(--bcc-fg);
+}
+
+/* ---------- canvas ---------- */
+
+.viz-canvas {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bcc-bg);
+  /* A faint dot grid. It costs nothing, and it is what makes panning legible —
+     on a flat background a drag with no node under the pointer looks like
+     nothing happened at all. */
+  background-image: radial-gradient(circle, var(--bcc-gray-4) 1px, transparent 1px);
+  background-size: 22px 22px;
+}
+
+.viz-canvas__svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  cursor: grab;
+  outline: none;
+}
+
+.viz-canvas__svg:active {
+  cursor: grabbing;
+}
+
+.viz-canvas__svg:focus-visible {
+  box-shadow: inset 0 0 0 1px var(--bcc-accent);
+}
+
+.viz-empty {
+  fill: var(--bcc-fg-subtle);
+  font-family: var(--bcc-font-ui);
+  font-size: var(--bcc-font-size);
+}
+
+/* ---------- edges ---------- */
+
+.viz-edge {
+  fill: none;
+  stroke: var(--bcc-edge);
+  stroke-width: 1.5;
+  /* Transitioning `d` would animate every node into place on each re-render,
+     which at a 300ms debounce reads as the diagram never settling. Only opacity
+     moves. */
+  transition: opacity 120ms ease;
+}
+
+.viz-edge--true {
+  stroke: var(--bcc-edge-true);
+}
+
+.viz-edge--false {
+  stroke: var(--bcc-edge-false);
+  stroke-dasharray: 4 3;
+}
+
+.viz-edge--case {
+  stroke: var(--bcc-edge-true);
+  stroke-dasharray: 6 3;
+}
+
+/* Dashed and amber, because a loop-back is the one edge that runs against the
+   left-to-right reading direction and needs to be recognised as such. */
+.viz-edge--loop-back {
+  stroke: var(--bcc-edge-loop);
+  stroke-dasharray: 5 4;
+}
+
+.viz-edge--catch,
+.viz-edge--finally {
+  stroke: var(--bcc-edge-catch);
+  stroke-dasharray: 3 3;
+}
+
+.viz-edge--calls {
+  stroke: var(--bcc-edge-calls);
+}
+
+.viz-edge--dimmed {
+  opacity: 0.16;
+}
+
+.viz-edge--highlighted {
+  stroke-width: 2.4;
+  opacity: 1;
+}
+
+.viz-edge__label {
+  fill: var(--bcc-edge-label);
+  font-family: var(--bcc-font-ui);
+  font-size: 10px;
+  text-anchor: middle;
+  dominant-baseline: middle;
+  pointer-events: none;
+  paint-order: stroke;
+  /* A halo in the canvas colour, so a label crossing an edge stays readable
+     without needing an opaque plate behind it. */
+  stroke: var(--bcc-bg);
+  stroke-width: 3;
+  stroke-linejoin: round;
+}
+
+/* ---------- nodes ---------- */
+
+.viz-node {
+  cursor: pointer;
+  transition: opacity 120ms ease;
+}
+
+.viz-node__shape {
+  fill: var(--bcc-node-bg);
+  stroke: var(--bcc-node-internal);
+  stroke-width: 1.25;
+  rx: var(--bcc-node-radius);
+}
+
+.viz-node:hover .viz-node__shape {
+  fill: var(--bcc-node-bg-hover);
+}
+
+.viz-node__label {
+  fill: var(--bcc-node-fg);
+  font-family: var(--bcc-font-ui);
+  font-size: 12px;
+  dominant-baseline: middle;
+  pointer-events: none;
+}
+
+.viz-node__metric {
+  fill: var(--bcc-node-fg-muted);
+  font-family: var(--bcc-font-mono);
+  font-size: 10px;
+  dominant-baseline: middle;
+  pointer-events: none;
+}
+
+.viz-node__badge {
+  fill: var(--bcc-gray-1);
+  stroke: currentColor;
+  stroke-width: 1;
+  rx: 3;
+  opacity: 0.9;
+}
+
+.viz-node__badge-text {
+  font-family: var(--bcc-font-ui);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  dominant-baseline: middle;
+  text-anchor: middle;
+  pointer-events: none;
+}
+
+/* One rule per category, setting `color` so the badge can inherit it through
+   `currentColor` and the border can name it once. */
+.viz-node--exported {
+  color: var(--bcc-node-exported);
+}
+.viz-node--internal {
+  color: var(--bcc-node-internal);
+}
+.viz-node--async {
+  color: var(--bcc-node-async);
+}
+.viz-node--control {
+  color: var(--bcc-node-control);
+}
+.viz-node--external {
+  color: var(--bcc-node-external);
+}
+.viz-node--terminal {
+  color: var(--bcc-node-terminal);
+}
+
+.viz-node--exported .viz-node__shape,
+.viz-node--internal .viz-node__shape,
+.viz-node--async .viz-node__shape,
+.viz-node--control .viz-node__shape,
+.viz-node--external .viz-node__shape,
+.viz-node--terminal .viz-node__shape {
+  stroke: currentColor;
+}
+
+.viz-node--exported .viz-node__badge-text,
+.viz-node--async .viz-node__badge-text,
+.viz-node--external .viz-node__badge-text {
+  fill: currentColor;
+}
+
+/* An unresolved call is a placeholder for code this analysis cannot see, and it
+   says so by being drawn as an outline rather than a solid body. */
+.viz-node--external .viz-node__shape {
+  fill: transparent;
+  stroke-dasharray: 4 3;
+}
+
+/* The overflow node is a counter, not code. It must never be mistaken for a
+   thing you can click through to. */
+.viz-node--overflow {
+  cursor: default;
+}
+
+.viz-node--overflow .viz-node__shape {
+  fill: transparent;
+  stroke: var(--bcc-gray-6);
+  stroke-dasharray: 2 3;
+}
+
+.viz-node--overflow .viz-node__label {
+  fill: var(--bcc-fg-subtle);
+  font-style: italic;
+}
+
+.viz-node--selected .viz-node__shape {
+  stroke-width: 2;
+  filter: drop-shadow(0 0 6px rgba(53, 116, 240, 0.7));
+}
+
+.viz-node--selected .viz-node__label {
+  fill: var(--bcc-gray-14);
+}
+
+/* Dimming rather than hiding: the shape of the whole graph stays readable while
+   one path through it is picked out. */
+.viz-node--dimmed {
+  opacity: 0.22;
+}
+
+/* ---------- tooltip ---------- */
+
+.viz-tooltip {
+  position: fixed;
+  z-index: 60;
+  max-width: 380px;
+  padding: 8px 10px;
+  border: 1px solid var(--bcc-border-strong);
+  border-radius: var(--bcc-radius);
+  background: var(--bcc-bg-elevated);
+  box-shadow: var(--bcc-shadow-overlay);
+  font-size: var(--bcc-font-size-sm);
+  color: var(--bcc-fg);
+  /* It follows the pointer; letting it take hit-tests would make it flicker
+     against its own hover handler. */
+  pointer-events: none;
+}
+
+.viz-tooltip[hidden] {
+  display: none;
+}
+
+.viz-tooltip__title {
+  font-weight: 600;
+  color: var(--bcc-fg);
+  margin-bottom: 2px;
+}
+
+.viz-tooltip__signature {
+  font-family: var(--bcc-font-mono);
+  font-size: 11px;
+  color: var(--bcc-accent);
+  word-break: break-word;
+}
+
+.viz-tooltip__doc {
+  margin-top: 4px;
+  color: var(--bcc-fg-muted);
+  line-height: 1.45;
+}
+
+.viz-tooltip__meta {
+  margin-top: 5px;
+  padding-top: 5px;
+  border-top: 1px solid var(--bcc-border-strong);
+  color: var(--bcc-fg-subtle);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- inspector ---------- */
+
+.viz-inspector {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bcc-toolwindow-bg);
+  border-left: 1px solid var(--bcc-border);
+}
+
+.viz-inspector__header {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  padding: 0 6px 0 10px;
+  min-height: 30px;
+  border-bottom: 1px solid var(--bcc-border);
+  background: var(--bcc-toolwindow-header-bg);
+}
+
+.viz-inspector__title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--bcc-font-size-sm);
+  font-weight: 600;
+  color: var(--bcc-toolwindow-header-fg);
+}
+
+.viz-inspector__actions {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  flex: none;
+}
+
+.viz-inspector__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 4px 0 10px;
+}
+
+.viz-inspector__empty {
+  padding: 16px 12px;
+  color: var(--bcc-fg-subtle);
+  font-size: var(--bcc-font-size-sm);
+  line-height: 1.5;
+}
+
+/* ---------- property tree ---------- */
+
+.viz-prop__group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  padding: 4px 10px;
+  border: 0;
+  background: none;
+  color: var(--bcc-fg-muted);
+  font-family: inherit;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  text-align: left;
+  cursor: pointer;
+}
+
+.viz-prop__group:hover {
+  background: var(--bcc-bg-hover);
+  color: var(--bcc-fg);
+}
+
+.viz-prop__chevron {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  transition: transform 100ms ease;
+  transform: rotate(90deg);
+}
+
+.viz-prop__group[aria-expanded='false'] .viz-prop__chevron {
+  transform: rotate(0deg);
+}
+
+.viz-prop__rows {
+  padding: 2px 10px 8px 22px;
+  display: grid;
+  /* A fixed key column keeps the values aligned down the whole panel; without
+     it every group indents differently and the tree reads as a list of
+     unrelated fragments. */
+  grid-template-columns: minmax(64px, 34%) minmax(0, 1fr);
+  gap: 3px 8px;
+  align-items: baseline;
+}
+
+.viz-prop__rows[hidden] {
+  display: none;
+}
+
+.viz-prop__key {
+  color: var(--bcc-fg-subtle);
+  font-size: var(--bcc-font-size-sm);
+}
+
+.viz-prop__value {
+  color: var(--bcc-fg);
+  font-size: var(--bcc-font-size-sm);
+  word-break: break-word;
+}
+
+.viz-prop__value--mono {
+  font-family: var(--bcc-font-mono);
+  font-size: 11px;
+}
+
+.viz-prop__link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--bcc-accent);
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.viz-prop__link:hover {
+  text-decoration: underline;
+}
+
+.viz-prop__chips {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.viz-prop__chip {
+  padding: 1px 7px;
+  border: 1px solid var(--bcc-border-strong);
+  border-radius: 999px;
+  background: var(--bcc-bg-elevated);
+  color: var(--bcc-fg-muted);
+  font-family: var(--bcc-font-mono);
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.viz-prop__chip:hover {
+  border-color: var(--bcc-accent);
+  color: var(--bcc-fg);
+}
+
+/* ---------- embedded control-flow view ---------- */
+
+.viz-inspector__cfg-label {
+  padding: 4px 10px;
+  color: var(--bcc-fg-muted);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+/* A fixed height, because this is a thumbnail. Letting it grow with its content
+   would push the properties above it off the top of a panel whose whole job is
+   showing them. */
+.viz-inspector__cfg {
+  height: 190px;
+  margin: 0 8px 8px;
+  border: 1px solid var(--bcc-border);
+  border-radius: var(--bcc-radius);
+  overflow: hidden;
+  background: var(--bcc-bg-inset);
+}
+
+.viz-inspector__cfg .viz-canvas {
+  background-image: none;
+}
+
+/* ---------- minimized strip ---------- */
+
+/* When the dock is collapsed the Visualizer keeps a foothold in the status bar,
+   so a closed panel still reports what it was showing and can be reopened
+   without hunting for the icon. */
+.viz-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 340px;
+}
+
+.viz-status__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.viz-status__count {
+  font-variant-numeric: tabular-nums;
+  color: var(--bcc-fg-subtle);
+}
