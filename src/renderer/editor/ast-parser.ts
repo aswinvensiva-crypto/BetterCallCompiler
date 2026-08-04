@@ -13,6 +13,15 @@ import type * as t from '@babel/types'
  * Language coverage is JS/TS/JSX/TSX, which is what `@babel/parser` handles.
  * Python and C/C++ would each need a `web-tree-sitter` grammar; that is real
  * added scope and is deliberately not attempted here rather than faked.
+ *
+ * The walk no longer writes Mermaid syntax directly. It produces a list of
+ * `TopographyNode` records — shape, line, unescaped text — which is then
+ * projected to a definition string. That split exists because `code-graph.ts`
+ * needs the same parse, the same naming rules and the same expression
+ * descriptions to build a real control-flow graph, and duplicating them would
+ * guarantee the two views eventually disagree about what a node is called. The
+ * primitives that both share are exported below; they are internal to the
+ * editor package, not public API.
  */
 
 /**
@@ -20,8 +29,11 @@ import type * as t from '@babel/types'
  * interop the namespace object itself is sometimes returned instead of that
  * default, and calling it throws "traverse is not a function". Resolving both
  * shapes is the standard guard and costs nothing.
+ *
+ * Exported so the guard exists exactly once. Every other module in the editor
+ * package traverses through this binding, never through the raw import.
  */
-const traverse = (
+export const babelTraverse = (
   (traverseModule as unknown as { default?: typeof traverseModule }).default ?? traverseModule
 ) as typeof traverseModule
 
@@ -43,6 +55,17 @@ const PARSER_OPTIONS: ParserOptions = {
   allowAwaitOutsideFunction: true,
   allowSuperOutsideMethod: true,
   plugins: ['typescript', 'jsx', 'decorators-legacy', 'classProperties', 'topLevelAwait']
+}
+
+/**
+ * Parses JS/TS/JSX/TSX with recovery on.
+ *
+ * Throws on an unrecoverable parse. Every caller is expected to catch and
+ * degrade to a fallback rather than let an exception reach the panel — this
+ * runs on a keystroke debounce, so most inputs are transiently invalid.
+ */
+export function parseSource(code: string): t.File {
+  return parse(code, PARSER_OPTIONS)
 }
 
 /**
@@ -71,7 +94,7 @@ function label(text: string, max = 44): string {
 }
 
 /** `n<counter>_L<line>` — the line is parsed back out on click. */
-function nodeId(counter: number, line: number): string {
+export function makeNodeId(counter: number, line: number): string {
   return `n${counter}_L${line}`
 }
 
@@ -91,111 +114,172 @@ export function lineFromNodeId(id: string): number | null {
   return Number.isNaN(line) ? null : line
 }
 
-interface Builder {
-  readonly lines: string[]
-  counter: number
-  nodes: number
-}
-
-function add(builder: Builder, statement: string): void {
-  builder.lines.push(`  ${statement}`)
+/**
+ * Names a function for display.
+ *
+ * Anonymous functions are extremely common in this codebase's own idiom
+ * (`const handler = () => …`), and a diagram full of boxes labelled
+ * `anonymous()` is worthless, so the two containers that actually carry a name
+ * are consulted. Class and object *methods* are deliberately not handled here:
+ * changing this would change `generateDiagram`'s output, which the Visualizer
+ * and its e2e assertions still depend on byte-for-byte. `code-graph.ts` names
+ * members itself.
+ */
+export function functionName(node: t.Function, parent: t.Node | null): string {
+  if ('id' in node && node.id !== null && node.id !== undefined) return node.id.name
+  if (parent !== null) {
+    if (parent.type === 'VariableDeclarator' && parent.id.type === 'Identifier') return parent.id.name
+    if (parent.type === 'ObjectProperty' && parent.key.type === 'Identifier') return parent.key.name
+  }
+  return 'anonymous'
 }
 
 /**
- * Emits one node per interesting construct.
+ * The name a call should be labelled with, or null when there is not one.
+ *
+ * A computed callee (`handlers[kind]()`) returns null rather than a made-up
+ * name — the legacy diagram then omits the node entirely, which is honest.
+ */
+export function calleeName(callee: t.Node): string | null {
+  if (callee.type === 'Identifier') return callee.name
+  if (callee.type === 'MemberExpression' && callee.property.type === 'Identifier') {
+    return callee.property.name
+  }
+  return null
+}
+
+/**
+ * Best-effort source text for a label; falls back to the node type.
+ *
+ * Node-based rather than path-based so it can be used from a hand-rolled walk
+ * as well as from a Babel visitor. The cases covered are exactly the ones the
+ * legacy diagram already covered — adding more would silently change labels the
+ * Visualizer and its e2e test assert on.
+ */
+export function describeExpression(node: t.Node | null | undefined): string {
+  if (node === null || node === undefined) return '…'
+  if (node.type === 'Identifier') return node.name
+  if (node.type === 'BinaryExpression' || node.type === 'LogicalExpression') {
+    return `${describeExpression(node.left)} ${node.operator} ${describeExpression(node.right)}`
+  }
+  if (node.type === 'MemberExpression' && node.property.type === 'Identifier') {
+    return `${describeExpression(node.object)}.${node.property.name}`
+  }
+  if (node.type === 'CallExpression') return `${describeExpression(node.callee)}()`
+  if (node.type === 'StringLiteral') return `'${node.value}'`
+  if (node.type === 'NumericLiteral') return String(node.value)
+  if (node.type === 'UnaryExpression') {
+    return `${node.operator}${describeExpression(node.argument)}`
+  }
+  return node.type.replace(/Expression$/, '')
+}
+
+/* --------------------------- topography walk ----------------------------- */
+
+/** Mermaid's four box shapes, named by what they mean rather than by syntax. */
+type TopographyShape = 'process' | 'decision' | 'subroutine' | 'terminal'
+
+interface TopographyNode {
+  readonly shape: TopographyShape
+  /** Absolute source line, already offset by the selection start. */
+  readonly line: number
+  /** Unescaped label text; `label()` is applied at projection time. */
+  readonly text: string
+}
+
+const SHAPES: Readonly<Record<TopographyShape, (id: string, text: string) => string>> = {
+  process: (id, text) => `${id}["${text}"]`,
+  decision: (id, text) => `${id}{"${text}"}`,
+  subroutine: (id, text) => `${id}[["${text}"]]`,
+  terminal: (id, text) => `${id}(["${text}"])`
+}
+
+/**
+ * Emits one record per interesting construct, in Babel's traversal order.
  *
  * Deliberately a topography rather than a faithful control-flow graph: the goal
  * is to see the shape of a function at a glance — where it branches, where it
  * loops, where it leaves — not to produce something a compiler would accept.
+ * `code-graph.ts` is where the branch-accurate CFG lives; this walk stays as it
+ * was because the Visualizer still renders its output.
  */
-function walk(ast: t.File, startLine: number, builder: Builder): void {
+function walk(ast: t.File, startLine: number): TopographyNode[] {
+  const found: TopographyNode[] = []
   const absolute = (node: t.Node): number => (node.loc?.start.line ?? 1) + startLine - 1
-
-  const emit = (node: t.Node, shape: (id: string) => string): string => {
-    const id = nodeId(builder.counter++, absolute(node))
-    add(builder, shape(id))
-    builder.nodes++
-    return id
+  const emit = (node: t.Node, shape: TopographyShape, text: string): void => {
+    found.push({ shape, line: absolute(node), text })
   }
 
-  traverse(ast, {
+  babelTraverse(ast, {
     Function(path: NodePath<t.Function>) {
-      const node = path.node
-      let name = 'anonymous'
-      if ('id' in node && node.id !== null && node.id !== undefined) {
-        name = node.id.name
-      } else if (path.parent.type === 'VariableDeclarator' && path.parent.id.type === 'Identifier') {
-        name = path.parent.id.name
-      } else if (path.parent.type === 'ObjectProperty' && path.parent.key.type === 'Identifier') {
-        name = path.parent.key.name
-      }
-      emit(node, (id) => `${id}[["${label(`${name}()`)}"]]`)
+      emit(path.node, 'subroutine', `${functionName(path.node, path.parent)}()`)
     },
 
     IfStatement(path: NodePath<t.IfStatement>) {
-      const test = sourceOf(path.get('test'))
-      emit(path.node, (id) => `${id}{"${label(`If (${test})`)}"}`)
+      emit(path.node, 'decision', `If (${describeExpression(path.node.test)})`)
     },
 
     ForStatement(path: NodePath<t.ForStatement>) {
-      emit(path.node, (id) => `${id}["${label('For loop')}"]`)
+      emit(path.node, 'process', 'For loop')
     },
     ForOfStatement(path: NodePath<t.ForOfStatement>) {
-      const right = sourceOf(path.get('right'))
-      emit(path.node, (id) => `${id}["${label(`For of ${right}`)}"]`)
+      emit(path.node, 'process', `For of ${describeExpression(path.node.right)}`)
     },
     ForInStatement(path: NodePath<t.ForInStatement>) {
-      emit(path.node, (id) => `${id}["${label('For in')}"]`)
+      emit(path.node, 'process', 'For in')
     },
     WhileStatement(path: NodePath<t.WhileStatement>) {
-      const test = sourceOf(path.get('test'))
-      emit(path.node, (id) => `${id}["${label(`While (${test})`)}"]`)
+      emit(path.node, 'process', `While (${describeExpression(path.node.test)})`)
     },
 
     TryStatement(path: NodePath<t.TryStatement>) {
-      emit(path.node, (id) => `${id}["${label('Try')}"]`)
+      emit(path.node, 'process', 'Try')
     },
 
     CallExpression(path: NodePath<t.CallExpression>) {
-      const callee = path.node.callee
-      let name: string | null = null
-      if (callee.type === 'Identifier') name = callee.name
-      else if (callee.type === 'MemberExpression' && callee.property.type === 'Identifier') {
-        name = callee.property.name
-      }
+      const name = calleeName(path.node.callee)
       if (name === null) return
-      emit(path.node, (id) => `${id}["${label(`Call: ${name}()`)}"]`)
+      emit(path.node, 'process', `Call: ${name}()`)
     },
 
     ReturnStatement(path: NodePath<t.ReturnStatement>) {
-      emit(path.node, (id) => `${id}(["${label('Return')}"])`)
+      emit(path.node, 'terminal', 'Return')
     },
     ThrowStatement(path: NodePath<t.ThrowStatement>) {
-      emit(path.node, (id) => `${id}(["${label('Throw')}"])`)
+      emit(path.node, 'terminal', 'Throw')
     }
   })
+
+  return found
 }
 
-/** Best-effort source text for a label; falls back to the node type. */
-function sourceOf(path: NodePath<t.Node | null | undefined>): string {
-  const node = path.node
-  if (node === null || node === undefined) return '…'
-  if (node.type === 'Identifier') return node.name
-  if (node.type === 'BinaryExpression' || node.type === 'LogicalExpression') {
-    return `${sourceOf(path.get('left') as NodePath<t.Node>)} ${node.operator} ${sourceOf(
-      path.get('right') as NodePath<t.Node>
-    )}`
+/**
+ * Projects the walk's records to a Mermaid definition.
+ *
+ * The nodes are chained in source order. A real CFG would branch here; this
+ * ordering is honest about being a reading sequence, not an execution path —
+ * see `buildSelectionGraph` for the version that does branch.
+ */
+function project(found: readonly TopographyNode[]): string {
+  const statements: string[] = []
+  const ids: string[] = []
+
+  for (let i = 0; i < found.length; i++) {
+    const node = found[i]
+    if (node === undefined) continue
+    const id = makeNodeId(i, node.line)
+    ids.push(id)
+    statements.push(`  ${SHAPES[node.shape](id, label(node.text))}`)
   }
-  if (node.type === 'MemberExpression' && node.property.type === 'Identifier') {
-    return `${sourceOf(path.get('object') as NodePath<t.Node>)}.${node.property.name}`
+
+  for (let i = 0; i < ids.length - 1; i++) {
+    const from = ids[i]
+    const to = ids[i + 1]
+    if (from === undefined || to === undefined) continue
+    statements.push(`  ${from} --> ${to}`)
   }
-  if (node.type === 'CallExpression') return `${sourceOf(path.get('callee') as NodePath<t.Node>)}()`
-  if (node.type === 'StringLiteral') return `'${node.value}'`
-  if (node.type === 'NumericLiteral') return String(node.value)
-  if (node.type === 'UnaryExpression') {
-    return `${node.operator}${sourceOf(path.get('argument') as NodePath<t.Node>)}`
-  }
-  return node.type.replace(/Expression$/, '')
+
+  return ['graph TD', ...statements].join('\n')
 }
 
 /**
@@ -207,35 +291,49 @@ function sourceOf(path: NodePath<t.Node | null | undefined>): string {
  * existing habit of degrading visibly rather than dead-ending.
  */
 function fallbackDiagram(code: string, startLine: number, error: string): Diagram {
-  const lines = code
+  const lines = sourceLines(code, startLine)
+
+  if (lines.length === 0) {
+    return {
+      definition: 'graph TD\n  empty["Nothing to diagram"]',
+      source: 'fallback',
+      error,
+      nodeCount: 0
+    }
+  }
+
+  const found: TopographyNode[] = lines.map((entry) => ({
+    shape: 'process',
+    line: entry.line,
+    text: entry.text
+  }))
+
+  return {
+    definition: project(found),
+    source: 'fallback',
+    error,
+    nodeCount: found.length
+  }
+}
+
+/**
+ * Non-blank, non-comment lines with their absolute numbering, capped.
+ *
+ * The cap is not cosmetic: without it a 2000-line paste becomes 2000 boxes and
+ * the renderer stops responding. Shared with `code-graph.ts` so both fallbacks
+ * truncate at the same place and a user switching views sees the same lines.
+ */
+export const FALLBACK_LINE_LIMIT = 40
+
+export function sourceLines(
+  code: string,
+  startLine: number
+): { readonly text: string; readonly line: number }[] {
+  return code
     .split('\n')
     .map((line, index) => ({ text: line.trim(), line: startLine + index }))
     .filter((entry) => entry.text !== '' && !/^(\/\/|#|\*|\/\*)/.test(entry.text))
-    .slice(0, 40)
-
-  const builder: Builder = { lines: ['graph TD'], counter: 0, nodes: 0 }
-
-  if (lines.length === 0) {
-    add(builder, 'empty["Nothing to diagram"]')
-    return { definition: builder.lines.join('\n'), source: 'fallback', error, nodeCount: 0 }
-  }
-
-  const ids = lines.map((entry) => {
-    const id = nodeId(builder.counter++, entry.line)
-    add(builder, `${id}["${label(entry.text)}"]`)
-    builder.nodes++
-    return id
-  })
-  for (let i = 0; i < ids.length - 1; i++) {
-    add(builder, `${ids[i]} --> ${ids[i + 1]}`)
-  }
-
-  return {
-    definition: builder.lines.join('\n'),
-    source: 'fallback',
-    error,
-    nodeCount: builder.nodes
-  }
+    .slice(0, FALLBACK_LINE_LIMIT)
 }
 
 /**
@@ -257,7 +355,7 @@ export function generateDiagram(code: string, startLine = 1): Diagram {
 
   let ast: t.File
   try {
-    ast = parse(code, PARSER_OPTIONS)
+    ast = parseSource(code)
   } catch (error) {
     return fallbackDiagram(
       code,
@@ -266,10 +364,9 @@ export function generateDiagram(code: string, startLine = 1): Diagram {
     )
   }
 
-  const builder: Builder = { lines: ['graph TD'], counter: 0, nodes: 0 }
-
+  let found: TopographyNode[]
   try {
-    walk(ast, startLine, builder)
+    found = walk(ast, startLine)
   } catch (error) {
     return fallbackDiagram(
       code,
@@ -279,25 +376,14 @@ export function generateDiagram(code: string, startLine = 1): Diagram {
   }
 
   // Parsed fine but contained nothing worth drawing (a type alias, a constant).
-  if (builder.nodes === 0) {
+  if (found.length === 0) {
     return fallbackDiagram(code, startLine, '')
   }
 
-  // Chain the emitted nodes in source order. A real CFG would branch here; the
-  // ordering is honest about being a reading sequence, not an execution path.
-  const emitted = builder.lines
-    .slice(1)
-    .map((line) => /^ {2}(n\d+_L\d+)/.exec(line)?.[1])
-    .filter((id): id is string => id !== undefined)
-
-  for (let i = 0; i < emitted.length - 1; i++) {
-    add(builder, `${emitted[i]} --> ${emitted[i + 1]}`)
-  }
-
   return {
-    definition: builder.lines.join('\n'),
+    definition: project(found),
     source: 'ast',
     error: null,
-    nodeCount: builder.nodes
+    nodeCount: found.length
   }
 }
