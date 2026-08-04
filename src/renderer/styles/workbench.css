@@ -1,25 +1,59 @@
 /* Workbench shell geometry.
 
-   The grid is the load-bearing piece: activity bar and side bar are fixed
-   columns, the editor area takes the remaining space, and the panel is a row
-   that collapses to zero when hidden. Everything inside these regions must be
-   free to scroll without the page itself ever scrolling. */
+   The grid is the load-bearing piece: the activity bar is a fixed column, the
+   side bar and the right-hand dock are resizable ones, the editor area takes
+   what is left, and the panel is a row that collapses to zero when hidden.
+   Everything inside these regions must be free to scroll without the page
+   itself ever scrolling.
+
+   Every resizable measurement is a custom property rather than a number baked
+   into the template. That is what lets a drag write one property on
+   `.workbench` sixty times a second instead of having TypeScript reassemble
+   `grid-template-columns` from parts on every pointermove.
+
+   The `--bcc-grid-*` layer on top of those exists so collapsing a region is a
+   two-line override. Restating the whole template inside each `[data-*-hidden]`
+   rule — which is what the original sidebar-hidden rule did, back when there
+   were three columns — means every future change to the grid has to be made in
+   as many places as there are collapsible regions, and the copies drift. */
 
 .workbench {
+  --bcc-grid-side-bar: var(--bcc-side-bar-width);
+  --bcc-grid-side-bar-splitter: var(--bcc-splitter-size);
+  --bcc-grid-right-dock: var(--bcc-right-dock-width);
+  --bcc-grid-right-dock-splitter: var(--bcc-splitter-size);
+
   display: grid;
-  grid-template-columns: var(--bcc-activity-bar-width) auto 1fr;
-  grid-template-rows: 1fr auto var(--bcc-status-bar-height);
+  grid-template-columns:
+    var(--bcc-activity-bar-width)
+    var(--bcc-grid-side-bar)
+    var(--bcc-grid-side-bar-splitter)
+    minmax(0, 1fr)
+    var(--bcc-grid-right-dock-splitter)
+    var(--bcc-grid-right-dock);
+  /* The panel and its splitter get `auto` rather than a fixed track, so
+     `display: none` on either takes its row to zero on its own. panel.ts stays
+     the only thing that decides whether the panel is showing; this file only
+     has to not fight it. */
+  grid-template-rows: minmax(0, 1fr) auto auto var(--bcc-status-bar-height);
   grid-template-areas:
-    'activity sidebar editor'
-    'activity sidebar panel'
-    'status   status  status';
+    'activity sidebar sidebar-splitter editor         rightdock-splitter rightdock'
+    'activity sidebar sidebar-splitter panel-splitter rightdock-splitter rightdock'
+    'activity sidebar sidebar-splitter panel          rightdock-splitter rightdock'
+    'status   status  status           status         status             status';
   height: 100vh;
   width: 100vw;
   overflow: hidden;
 }
 
 .workbench[data-sidebar-hidden='true'] {
-  grid-template-columns: var(--bcc-activity-bar-width) 0 1fr;
+  --bcc-grid-side-bar: 0;
+  --bcc-grid-side-bar-splitter: 0;
+}
+
+.workbench[data-rightdock-hidden='true'] {
+  --bcc-grid-right-dock: 0;
+  --bcc-grid-right-dock-splitter: 0;
 }
 
 /* ---------- activity bar ---------- */
@@ -67,9 +101,11 @@
 
 /* ---------- side bar ---------- */
 
+/* No `width` here: the grid column is sized from the same custom property, and
+   two declarations of one measurement is one too many the first time a drag
+   updates only one of them. */
 .side-bar {
   grid-area: sidebar;
-  width: var(--bcc-side-bar-width);
   background: var(--bcc-bg-elevated);
   border-right: 1px solid var(--bcc-border);
   display: flex;
@@ -98,6 +134,175 @@
   flex: 1 1 auto;
   overflow: auto;
   min-height: 0;
+}
+
+/* ---------- right dock ---------- */
+
+/* Mirrors `.side-bar` on purpose — same tool-window tokens, same title/body
+   split — because they are the same kind of region docked on opposite edges.
+   The `--bcc-toolwindow-*` tokens have been defined and unused since the theme
+   was written; this is the region they were named for. */
+
+.right-dock {
+  grid-area: rightdock;
+  background: var(--bcc-toolwindow-bg);
+  border-left: 1px solid var(--bcc-border);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.workbench[data-rightdock-hidden='true'] .right-dock,
+.workbench[data-rightdock-hidden='true'] .splitter--right-dock {
+  display: none;
+}
+
+.right-dock__title {
+  flex: 0 0 35px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  padding: 0 16px;
+  background: var(--bcc-toolwindow-header-bg);
+  font-size: var(--bcc-font-size-sm);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--bcc-toolwindow-header-fg);
+}
+
+/* A column rather than a scroll box, unlike `.side-bar__body`: what docks here
+   is a canvas that wants to fill the region, not a list that wants to overflow
+   it. Without a definite height on the view the diagram cannot use `height:
+   100%` and collapses to its 220px minimum — the cramped result this whole
+   region exists to stop. */
+.right-dock__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.right-dock__title-slot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  width: 100%;
+  min-width: 0;
+}
+
+.right-dock__view {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+
+.right-dock__title-slot[hidden],
+.right-dock__view[hidden] {
+  display: none;
+}
+
+/* ---------- splitters ---------- */
+
+/* A 1px line with a ~5px grab area. The line is the element; the grab area is a
+   ::before that overhangs both neighbours, because a 1px pointer target is a
+   joke and widening the line itself would draw a visible bar between every
+   region. The trade is that the outermost few pixels of the editor and the tool
+   windows belong to the splitter rather than to them — the same trade IntelliJ
+   and VS Code both make. */
+
+.splitter {
+  position: relative;
+  /* Above the neighbouring regions so the overhang wins the hit test. Monaco
+     and the tool windows establish stacking contexts but claim no z-index, so
+     anything positive is enough. */
+  z-index: 5;
+  background: var(--bcc-splitter);
+}
+
+.splitter::before {
+  content: '';
+  position: absolute;
+}
+
+.splitter--vertical {
+  width: var(--bcc-splitter-size);
+  cursor: col-resize;
+}
+
+.splitter--vertical::before {
+  top: 0;
+  bottom: 0;
+  left: calc(-1 * var(--bcc-splitter-grab));
+  right: calc(-1 * var(--bcc-splitter-grab));
+}
+
+.splitter--horizontal {
+  height: var(--bcc-splitter-size);
+  cursor: row-resize;
+}
+
+.splitter--horizontal::before {
+  left: 0;
+  right: 0;
+  top: calc(-1 * var(--bcc-splitter-grab));
+  bottom: calc(-1 * var(--bcc-splitter-grab));
+}
+
+.splitter:hover,
+.splitter:focus-visible,
+.splitter--dragging {
+  background: var(--bcc-splitter-hover);
+}
+
+/* The global focus ring is a 1px outline inset by 1px, which on a 1px element
+   is nothing at all. Colouring the line itself is the only visible option, and
+   the rule above already does it. */
+.splitter:focus-visible {
+  outline: none;
+}
+
+.splitter--side-bar {
+  grid-area: sidebar-splitter;
+}
+
+.splitter--right-dock {
+  grid-area: rightdock-splitter;
+}
+
+.splitter--panel {
+  grid-area: panel-splitter;
+}
+
+/* panel.ts owns whether the panel is showing. Its splitter has to follow
+   without becoming a second record of the same fact, so it reads the panel's
+   own `hidden` attribute rather than being toggled alongside it. */
+.workbench:has(.panel[hidden]) .splitter--panel {
+  display: none;
+}
+
+/* Applied to <body> for the duration of a drag. The pointer is captured by the
+   handle but the *cursor* is still resolved from whatever is underneath it, so
+   without this it flickers to the editor's I-beam the moment the drag leaves
+   the 1px line. `!important` on the descendant rule is not decoration: Monaco
+   sets `cursor` on its own elements with more specificity than any selector
+   this file can reasonably write, and the alternative is a full-window overlay
+   element that exists only to carry a cursor. */
+body.workbench--resizing {
+  user-select: none;
+}
+
+body.workbench--resizing-x,
+body.workbench--resizing-x * {
+  cursor: col-resize !important;
+}
+
+body.workbench--resizing-y,
+body.workbench--resizing-y * {
+  cursor: row-resize !important;
 }
 
 /* ---------- editor ---------- */
@@ -164,7 +369,9 @@
 
 .panel {
   grid-area: panel;
-  height: 280px;
+  /* Driven by the splitter above it. The row itself is `auto`, so the height
+     lives here and `hidden` still collapses the row completely. */
+  height: var(--bcc-panel-height);
   background: var(--bcc-bg-inset);
   border-top: 1px solid var(--bcc-border);
   display: flex;
@@ -259,7 +466,13 @@
   gap: 4px;
 }
 
-.side-bar__heading {
+/* Two regions are visible at once now, so a tool window titles itself with its
+   own region's class rather than borrowing the side bar's. The rule is shared
+   because the treatment is identical; the class names are not, because a
+   selector like `.side-bar__heading` must keep meaning "a heading in the side
+   bar" — tests and future styling both depend on that staying true. */
+.side-bar__heading,
+.right-dock__heading {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

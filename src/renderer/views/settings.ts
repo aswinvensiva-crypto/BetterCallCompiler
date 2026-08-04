@@ -13,7 +13,24 @@ import { notify, notifyError } from '../workbench/notifications'
 let titleHost: HTMLElement | null = null
 let bodyHost: HTMLElement | null = null
 
-let settings: Settings = { aiModel: 'claude-sonnet-5', githubUser: '', telemetry: false }
+/**
+ * Placeholder for the one render that can happen before `load()` resolves.
+ * Every field is replaced by the real settings a tick later; `workbenchLayout`
+ * is carried only because `Settings` requires it — nothing in this view reads
+ * it, and the workbench restores its own geometry from the same record.
+ */
+let settings: Settings = {
+  aiModel: 'claude-sonnet-5',
+  githubUser: '',
+  telemetry: false,
+  workbenchLayout: {
+    sideBarWidth: 260,
+    rightDockWidth: 460,
+    panelHeight: 280,
+    sideBarHidden: false,
+    rightDockHidden: true
+  }
+}
 let secrets: SecretsState = { anthropic: false, github: false, encryptionAvailable: true }
 
 function el<K extends keyof HTMLElementTagNameMap>(

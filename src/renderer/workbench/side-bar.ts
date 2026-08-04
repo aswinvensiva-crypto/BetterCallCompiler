@@ -1,3 +1,5 @@
+import { createToolWindowRegistry, type ToolWindowView } from './tool-window-registry'
+
 /**
  * The side-bar view registry.
  *
@@ -6,92 +8,36 @@
  * switch between them. The registry is deliberately thin: it owns *which* view
  * is showing and nothing about what any of them contain.
  *
- * Each view gets its own title slot and body container rather than sharing one
- * pair, so switching away and back does not force a view to re-render from
- * scratch — the explorer's expansion state and scroll position survive a trip
- * to the SCM view and back.
+ * The mechanics moved to tool-window-registry.ts when the right-hand dock
+ * arrived and needed the same ones. What stays here is the module-level
+ * singleton and this exact export surface: seven call sites import these names,
+ * and the E2E suite asserts on the `.side-bar__title-slot` / `.side-bar__view`
+ * classes and the `data-view-id` attributes the registry stamps for it.
  */
 
-export interface SideBarView {
-  readonly id: string
-  /** Mounted once, lazily, the first time the view is shown. */
-  readonly mount: (title: HTMLElement, body: HTMLElement) => void | Promise<void>
-  /** Called on every activation after the first. */
-  readonly onShow?: () => void
-}
+/** Structurally the tool-window view; the alias keeps the seven call sites. */
+export type SideBarView = ToolWindowView
 
-interface RegisteredView {
-  readonly view: SideBarView
-  readonly title: HTMLElement
-  readonly body: HTMLElement
-  mounted: boolean
-}
-
-const views = new Map<string, RegisteredView>()
-let titleHost: HTMLElement | null = null
-let bodyHost: HTMLElement | null = null
-let activeId: string | null = null
-
-const changeListeners = new Set<(id: string) => void>()
+const registry = createToolWindowRegistry('side-bar__title-slot', 'side-bar__view')
 
 export function onSideBarViewChanged(listener: (id: string) => void): () => void {
-  changeListeners.add(listener)
-  return () => changeListeners.delete(listener)
+  return registry.onChanged(listener)
 }
 
 export function mountSideBar(title: HTMLElement, body: HTMLElement): void {
-  titleHost = title
-  bodyHost = body
-  title.replaceChildren()
-  body.replaceChildren()
+  registry.mountHosts(title, body)
 }
 
 export function registerSideBarView(view: SideBarView): void {
-  if (titleHost === null || bodyHost === null) return
-  if (views.has(view.id)) return
-
-  const title = document.createElement('div')
-  title.className = 'side-bar__title-slot'
-  title.dataset['viewId'] = view.id
-  title.hidden = true
-  titleHost.append(title)
-
-  const body = document.createElement('div')
-  body.className = 'side-bar__view'
-  body.dataset['viewId'] = view.id
-  body.hidden = true
-  bodyHost.append(body)
-
-  views.set(view.id, { view, title, body, mounted: false })
+  registry.register(view)
 }
 
 export function activeSideBarView(): string | null {
-  return activeId
+  return registry.activeId()
 }
 
-export async function showSideBarView(id: string): Promise<void> {
-  const target = views.get(id)
-  if (target === undefined) return
-
-  for (const entry of views.values()) {
-    const showing = entry.view.id === id
-    entry.title.hidden = !showing
-    entry.body.hidden = !showing
-  }
-
-  activeId = id
-
-  // Mounting on first show keeps start-up cheap: the SCM view does not shell
-  // out to git, and the insights view does not touch the network, until the
-  // user actually asks for them.
-  if (!target.mounted) {
-    target.mounted = true
-    await target.view.mount(target.title, target.body)
-  } else {
-    target.view.onShow?.()
-  }
-
-  for (const listener of changeListeners) listener(id)
+export function showSideBarView(id: string): Promise<void> {
+  return registry.show(id)
 }
 
 /**

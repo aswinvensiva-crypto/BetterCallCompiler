@@ -8,7 +8,10 @@
     <link rel="stylesheet" href="./styles/workbench.css" />
   </head>
   <body>
-    <div id="workbench" class="workbench">
+    <!-- The dock ships closed: it is 460px of editor width, and the first paint
+         must agree with that rather than showing a column that vanishes once
+         main.ts has read the persisted layout. right-dock.ts reads this back. -->
+    <div id="workbench" class="workbench" data-rightdock-hidden="true">
       <div class="activity-bar" id="activity-bar" role="tablist" aria-label="Activity"></div>
 
       <div class="side-bar" id="side-bar">
@@ -16,15 +19,40 @@
         <div class="side-bar__body" id="side-bar-body"></div>
       </div>
 
+      <!-- Splitters carry their accessible name here; splitter.ts adds the
+           role, the orientation and the value attributes it keeps in step. -->
+      <div
+        class="splitter splitter--vertical splitter--side-bar"
+        id="splitter-sidebar"
+        aria-label="Resize the side bar"
+      ></div>
+
       <main class="editor-area" id="editor-area">
         <div class="tab-bar" id="tab-bar" role="tablist" aria-label="Open editors"></div>
         <div class="editor-host" id="editor-host"></div>
       </main>
 
+      <div
+        class="splitter splitter--horizontal splitter--panel"
+        id="splitter-panel"
+        aria-label="Resize the panel"
+      ></div>
+
       <section class="panel" id="panel" hidden>
         <div class="panel__tabs" id="panel-tabs" role="tablist" aria-label="Panel"></div>
         <div class="panel__body" id="panel-body"></div>
       </section>
+
+      <div
+        class="splitter splitter--vertical splitter--right-dock"
+        id="splitter-rightdock"
+        aria-label="Resize the right dock"
+      ></div>
+
+      <aside class="right-dock" id="right-dock">
+        <div class="right-dock__title" id="right-dock-title"></div>
+        <div class="right-dock__body" id="right-dock-body"></div>
+      </aside>
 
       <footer class="status-bar" id="status-bar" role="status"></footer>
     </div>

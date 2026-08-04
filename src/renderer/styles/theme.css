@@ -127,9 +127,19 @@
   --bcc-font-size-sm: 11px;
   --bcc-line-height: 1.5;
 
-  /* ── metrics ───────────────────────────────────────────────────────────── */
+  /* ── metrics ─────────────────────────────────────────────────────────────
+     The three resizable ones are read back from here at boot and then
+     overridden inline on `.workbench` by the splitters, so this block stays the
+     one place the shipped sizes are written down.
+
+     The right dock is deliberately far wider than the side bar. 260px is a good
+     width for a file tree and a useless one for a control-flow graph, and the
+     Visualizer moving out of the side bar into a region sized for it is the
+     whole point of that region existing. */
   --bcc-activity-bar-width: 48px;
   --bcc-side-bar-width: 260px;
+  --bcc-right-dock-width: 460px;
+  --bcc-panel-height: 280px;
   --bcc-status-bar-height: 24px;
   --bcc-tab-height: 35px;
 

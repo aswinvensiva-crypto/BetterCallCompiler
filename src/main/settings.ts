@@ -14,7 +14,26 @@ import { settingsSchema, type Settings } from '../shared/types'
 const DEFAULTS: Settings = {
   aiModel: 'claude-sonnet-5',
   githubUser: '',
-  telemetry: false
+  telemetry: false,
+  /**
+   * Mirrors the metrics block in theme.css, which is where these sizes are
+   * actually decided; the renderer seeds itself from the stylesheet and only
+   * falls back to what it reads here. `rightDockHidden` starts true because the
+   * dock is 460px of editor width and an IDE should not open holding a tool
+   * window nobody asked for.
+   *
+   * A settings.json written before this key existed is missing it entirely, and
+   * the shallow `{ ...DEFAULTS, ...data }` merge in `loadSettings` supplies this
+   * whole object for it — nested defaults only go wrong when an old file has a
+   * *partial* version of the key, which cannot happen for one introduced whole.
+   */
+  workbenchLayout: {
+    sideBarWidth: 260,
+    rightDockWidth: 460,
+    panelHeight: 280,
+    sideBarHidden: false,
+    rightDockHidden: true
+  }
 }
 
 let cache: Settings | null = null
