@@ -200,7 +200,7 @@ export function mountTopography(title: HTMLElement, body: HTMLElement): void {
   bodyHost = body
 
   titleHost.replaceChildren()
-  titleHost.append(el('span', 'side-bar__heading', 'Visualizer'))
+  titleHost.append(el('span', 'right-dock__heading', 'Visualizer'))
 
   bodyHost.replaceChildren()
   diagramHost = el('div', 'topo-canvas')

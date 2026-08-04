@@ -114,11 +114,44 @@ export type SecretsState = z.infer<typeof secretsStateSchema>
 
 /* ------------------------------ settings --------------------------------- */
 
+/**
+ * Where the user last dragged the workbench's region boundaries.
+ *
+ * The bounds here are wide on purpose. Their job is to reject nonsense — a
+ * negative width, a NaN, a number no display has ever been — and not to decide
+ * what is *usable*, which depends on the size of the window and so can only be
+ * settled in the renderer against the live one. Two things argue against
+ * tightening them:
+ *
+ *   - `loadSettings` validates with `settingsSchema.partial()`, which is
+ *     per-key optional but still per-key strict. A `sideBarWidth` outside the
+ *     bound fails the whole parse and resets the user's model, GitHub handle
+ *     and telemetry choice along with their layout. A layout number is not
+ *     worth that.
+ *   - The renderer clamps everything it applies anyway, so an in-range but
+ *     silly value is already handled a second time where the window size is
+ *     known.
+ */
+export const workbenchLayoutSchema = z.strictObject({
+  sideBarWidth: z.number().int().min(0).max(4000),
+  rightDockWidth: z.number().int().min(0).max(4000),
+  panelHeight: z.number().int().min(0).max(4000),
+  sideBarHidden: z.boolean(),
+  rightDockHidden: z.boolean()
+})
+export type WorkbenchLayout = z.infer<typeof workbenchLayoutSchema>
+
 export const settingsSchema = z.strictObject({
   aiModel: z.string().min(1),
   /** Whose contribution calendar to show when no token names one. */
   githubUser: z.string(),
-  telemetry: z.boolean()
+  telemetry: z.boolean(),
+  /**
+   * Nested, which makes it the one setting a `patch` cannot half-specify:
+   * `saveSettings` merges one level deep and then parses against a strict
+   * object, so a caller sends the whole layout or none of it.
+   */
+  workbenchLayout: workbenchLayoutSchema
 })
 export type Settings = z.infer<typeof settingsSchema>
 

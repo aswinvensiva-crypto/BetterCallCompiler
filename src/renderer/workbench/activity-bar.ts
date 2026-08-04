@@ -1,4 +1,10 @@
-import { showSideBarView } from './side-bar'
+import { activeSideBarView, showSideBarView } from './side-bar'
+import {
+  activeRightDockView,
+  hideRightDock,
+  isRightDockVisible,
+  showRightDockView
+} from './right-dock'
 
 /**
  * The activity bar.
@@ -8,6 +14,17 @@ import { showSideBarView } from './side-bar'
  * bookkeeping so no individual view has to know about its neighbours.
  */
 
+/**
+ * Where an item's view lives.
+ *
+ * Previously this was a Set of the ids that happened to be side-bar views, with
+ * everything else falling through to a callback named `onOther`. That worked
+ * while "everything else" meant Run. With a second dock the implicit rule stops
+ * being readable: an item's region is a fact about the item, so it is written
+ * on the item.
+ */
+export type ActivityRegion = 'sidebar' | 'rightdock' | 'other'
+
 export interface ActivityItem {
   readonly id: string
   readonly label: string
@@ -15,29 +32,39 @@ export interface ActivityItem {
   readonly icon: string
   /** Views not yet built are rendered disabled rather than silently inert. */
   readonly enabled: boolean
+  readonly region: ActivityRegion
 }
 
 export const ACTIVITY_ITEMS: readonly ActivityItem[] = [
-  { id: 'explorer', label: 'Explorer', icon: 'M3 5h6l2 2h10v12H3z', enabled: true },
+  { id: 'explorer', label: 'Explorer', icon: 'M3 5h6l2 2h10v12H3z', enabled: true, region: 'sidebar' },
   {
     id: 'search',
     label: 'Search',
     icon: 'M10.5 4a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13zM20 20l-4.9-4.9',
-    enabled: true
+    enabled: true,
+    region: 'sidebar'
   },
   {
     id: 'scm',
     label: 'Source Control',
     icon: 'M6 3v12M6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6zm0 0v3a5 5 0 0 1-5 5H9',
-    enabled: true
+    enabled: true,
+    region: 'sidebar'
   },
-  { id: 'run', label: 'Run', icon: 'M8 5v14l11-7z', enabled: true },
-  { id: 'insights', label: 'Insights', icon: 'M4 20V10M10 20V4M16 20v-7M22 20H2', enabled: true },
+  { id: 'run', label: 'Run', icon: 'M8 5v14l11-7z', enabled: true, region: 'other' },
+  {
+    id: 'insights',
+    label: 'Insights',
+    icon: 'M4 20V10M10 20V4M16 20v-7M22 20H2',
+    enabled: true,
+    region: 'sidebar'
+  },
   {
     id: 'ai',
     label: 'Assistant',
     icon: 'M12 3l2.2 5.6L20 10.8l-5.8 2.2L12 19l-2.2-6L4 10.8l5.8-2.2z',
-    enabled: true
+    enabled: true,
+    region: 'sidebar'
   },
   {
     // "Assist" is the local static-analysis panel; "Assistant" above is the AI
@@ -45,40 +72,66 @@ export const ACTIVITY_ITEMS: readonly ActivityItem[] = [
     id: 'assist',
     label: 'Assist',
     icon: 'M9 18h6M10 21h4M12 3a6 6 0 0 0-3.5 10.9V16h7v-2.1A6 6 0 0 0 12 3z',
-    enabled: true
+    enabled: true,
+    region: 'sidebar'
   },
   {
+    // The one right-dock item, and the reason that region exists: a
+    // control-flow graph needs width the side bar does not have.
     id: 'visualizer',
     label: 'Visualizer',
     icon: 'M12 3v4M12 17v4M5.6 7.6l2.8 2.8M15.6 13.6l2.8 2.8M4 12h4M16 12h4M12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6z',
-    enabled: true
+    enabled: true,
+    region: 'rightdock'
   },
   {
     id: 'settings',
     label: 'Settings',
     icon:
       'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-2.9 1.2 2 2 0 1 1-4 0 1.7 1.7 0 0 0-2.9-1.2l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.7 1.7 0 0 0 3 15a2 2 0 1 1 0-4 1.7 1.7 0 0 0 1.2-2.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A1.7 1.7 0 0 0 10 4.6a2 2 0 1 1 4 0 1.7 1.7 0 0 0 2.9 1.2l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1A1.7 1.7 0 0 0 21 11a2 2 0 1 1 0 4z',
-    enabled: true
+    enabled: true,
+    region: 'sidebar'
   }
 ]
-
-/** Views that live in the side bar, as opposed to the panel. */
-const SIDE_BAR_VIEWS = new Set([
-  'explorer',
-  'search',
-  'scm',
-  'insights',
-  'settings',
-  'ai',
-  'assist',
-  'visualizer'
-])
 
 let host: HTMLElement | null = null
 const buttons = new Map<string, HTMLButtonElement>()
 
-/** Non-side-bar activity items (Run) route somewhere else. */
+/** Activity items belonging to no dock (Run) route somewhere else. */
 let onNonSideBarSelect: ((id: string) => void) | null = null
+
+/**
+ * Handles a click on an item, given where its view lives.
+ *
+ * The right-dock branch is the only one that can *close* something. That is
+ * IntelliJ's behaviour for its tool-window stripes and it is the useful one:
+ * the button that opened a 460px region is the obvious place to reach for when
+ * you want the editor width back, and re-showing an already-showing view is a
+ * click that does nothing.
+ */
+function activate(item: ActivityItem): void {
+  if (item.region === 'sidebar') {
+    setSelected(item.id)
+    void showSideBarView(item.id)
+    return
+  }
+
+  if (item.region === 'rightdock') {
+    if (isRightDockVisible() && activeRightDockView() === item.id) {
+      hideRightDock()
+      // Selection follows the region that is still on screen, so the stripe
+      // does not go on highlighting a tool window that is no longer there.
+      const showing = activeSideBarView()
+      if (showing !== null) setSelected(showing)
+      return
+    }
+    setSelected(item.id)
+    void showRightDockView(item.id)
+    return
+  }
+
+  onNonSideBarSelect?.(item.id)
+}
 
 export function setSelected(id: string): void {
   for (const [itemId, button] of buttons) {
@@ -110,14 +163,7 @@ export function mountActivityBar(
       `<path d="${item.icon}" stroke-linecap="round" stroke-linejoin="round" /></svg>`
 
     if (item.enabled) {
-      button.addEventListener('click', () => {
-        if (SIDE_BAR_VIEWS.has(item.id)) {
-          setSelected(item.id)
-          void showSideBarView(item.id)
-        } else {
-          onNonSideBarSelect?.(item.id)
-        }
-      })
+      button.addEventListener('click', () => activate(item))
     }
 
     buttons.set(item.id, button)

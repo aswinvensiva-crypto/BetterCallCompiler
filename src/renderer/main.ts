@@ -8,7 +8,7 @@
 
 import type * as monacoNs from 'monaco-editor'
 import type { BetterCallCompilerApi } from '../shared/ipc-contract'
-import type { FileNode } from '../shared/types'
+import type { FileNode, WorkbenchLayout } from '../shared/types'
 import { mountExplorer, OPEN_FILE_EVENT } from './views/explorer'
 import { createEditor } from './editor/monaco-setup'
 import { attachEditor, activeDocument, openFile, reloadFromDisk, saveActive } from './editor/models'
@@ -19,6 +19,15 @@ import { mountStatusBar } from './workbench/status-bar'
 import { runActiveFile } from './views/run'
 import { mountActivityBar, setSelected } from './workbench/activity-bar'
 import { mountSideBar, registerSideBarView, showSideBarView } from './workbench/side-bar'
+import {
+  hideRightDock,
+  isRightDockVisible,
+  mountRightDock,
+  registerRightDockView,
+  showRightDock,
+  showRightDockView
+} from './workbench/right-dock'
+import { mountSplitter } from './workbench/splitter'
 import { clearDiffSelection, mountScm, onScmShown } from './views/scm'
 import { mountInsights, onInsightsShown } from './views/insights'
 import { mountSettings, onSettingsShown } from './views/settings'
@@ -246,8 +255,197 @@ async function renderStatusBar(host: HTMLElement): Promise<void> {
   }
 }
 
+/* --------------------------- workbench layout ---------------------------- */
+
 /**
- * Registers every side-bar view and wires the activity bar to them.
+ * The live geometry of the resizable regions, mirrored into CSS custom
+ * properties on `.workbench`.
+ *
+ * Held as a plain object rather than read back out of `getComputedStyle`,
+ * because a splitter asks for the current size on every pointermove and a
+ * computed-style read forces a layout flush each time. The stylesheet owns the
+ * grid; this owns three numbers in it.
+ */
+const layout: WorkbenchLayout = {
+  sideBarWidth: cssPixels('--bcc-side-bar-width'),
+  rightDockWidth: cssPixels('--bcc-right-dock-width'),
+  panelHeight: cssPixels('--bcc-panel-height'),
+  sideBarHidden: false,
+  // Matches the attribute index.html ships. Overwritten a moment later by the
+  // persisted value, if there is one.
+  rightDockHidden: true
+}
+
+/**
+ * Reads a length token from the theme.
+ *
+ * theme.css is the source of truth for the shipped sizes, so they are recovered
+ * from it rather than repeated here — a fourth copy of "260" alongside the
+ * stylesheet, the main-process defaults and the schema would be a fourth thing
+ * to keep in step. The fallback covers a token that has been renamed out from
+ * under this call: zero would collapse the region with no way to drag it back.
+ */
+function cssPixels(token: string): number {
+  const parsed = Number.parseFloat(
+    getComputedStyle(document.documentElement).getPropertyValue(token)
+  )
+  return Number.isFinite(parsed) ? parsed : 240
+}
+
+/** Below these a region is a sliver that cannot show anything. */
+const SIDE_BAR_MIN_WIDTH = 180
+const RIGHT_DOCK_MIN_WIDTH = 280
+const PANEL_MIN_HEIGHT = 120
+/** Never resize a tool window at the cost of leaving the editor unusable. */
+const EDITOR_MIN_WIDTH = 360
+const EDITOR_MIN_HEIGHT = 220
+/** Mirrors `workbenchLayoutSchema`'s ceiling; a larger value fails to persist. */
+const LAYOUT_MAX_PX = 4000
+
+function maxSideBarWidth(): number {
+  const taken =
+    cssPixels('--bcc-activity-bar-width') +
+    EDITOR_MIN_WIDTH +
+    (isRightDockVisible() ? layout.rightDockWidth : 0)
+  return Math.min(LAYOUT_MAX_PX, Math.max(SIDE_BAR_MIN_WIDTH, window.innerWidth - taken))
+}
+
+function maxRightDockWidth(): number {
+  const taken =
+    cssPixels('--bcc-activity-bar-width') +
+    EDITOR_MIN_WIDTH +
+    (layout.sideBarHidden ? 0 : layout.sideBarWidth)
+  return Math.min(LAYOUT_MAX_PX, Math.max(RIGHT_DOCK_MIN_WIDTH, window.innerWidth - taken))
+}
+
+function maxPanelHeight(): number {
+  const taken = cssPixels('--bcc-status-bar-height') + EDITOR_MIN_HEIGHT
+  return Math.min(LAYOUT_MAX_PX, Math.max(PANEL_MIN_HEIGHT, window.innerHeight - taken))
+}
+
+function clampPx(value: number, min: number, max: number): number {
+  return Math.round(Math.min(Math.max(value, min), Math.max(min, max)))
+}
+
+let layoutWriteTimer: number | null = null
+
+/**
+ * Writes the layout back, coalesced.
+ *
+ * Called at the end of every drag and on every arrow-key nudge, and a held
+ * arrow key repeats. The patch carries the whole `workbenchLayout` object
+ * because `settings.set` merges one level deep and then parses against a strict
+ * schema — half an object is a validation error, not a partial update.
+ */
+function persistLayout(): void {
+  if (layoutWriteTimer !== null) window.clearTimeout(layoutWriteTimer)
+  layoutWriteTimer = window.setTimeout(() => {
+    layoutWriteTimer = null
+    // Failure is deliberately not surfaced: a layout that did not persist is a
+    // nuisance at the next launch, not something to interrupt the user over.
+    void window.betterCallCompiler.settings.set({ patch: { workbenchLayout: { ...layout } } })
+  }, 400)
+}
+
+/**
+ * Restores the saved layout and makes the three region boundaries draggable.
+ *
+ * Everything read back is clamped before it is applied. settings.json is a
+ * plain file the user can edit, and it is also carried between machines — a
+ * `rightDockWidth` of 1800 saved on a wide monitor must not open a workbench on
+ * a laptop with no editor in it and no handle left on screen to drag one back.
+ */
+async function mountWorkbenchLayout(): Promise<void> {
+  const root = requireEl('workbench')
+
+  const stored = await window.betterCallCompiler.settings.get({})
+  if (stored.ok) {
+    const saved = stored.value.settings.workbenchLayout
+    layout.sideBarHidden = saved.sideBarHidden
+    layout.rightDockHidden = saved.rightDockHidden
+    // Widths are clamped after the hidden flags are applied, because what a
+    // region may grow to depends on which of its neighbours are showing.
+    layout.sideBarWidth = clampPx(saved.sideBarWidth, SIDE_BAR_MIN_WIDTH, maxSideBarWidth())
+    layout.rightDockWidth = clampPx(saved.rightDockWidth, RIGHT_DOCK_MIN_WIDTH, maxRightDockWidth())
+    layout.panelHeight = clampPx(saved.panelHeight, PANEL_MIN_HEIGHT, maxPanelHeight())
+  }
+
+  root.style.setProperty('--bcc-side-bar-width', `${layout.sideBarWidth}px`)
+  root.style.setProperty('--bcc-right-dock-width', `${layout.rightDockWidth}px`)
+  root.style.setProperty('--bcc-panel-height', `${layout.panelHeight}px`)
+  if (layout.sideBarHidden) root.dataset['sidebarHidden'] = 'true'
+  else delete root.dataset['sidebarHidden']
+  if (layout.rightDockHidden) hideRightDock()
+  else showRightDock()
+
+  mountSplitter(requireEl('splitter-sidebar'), {
+    axis: 'x',
+    min: SIDE_BAR_MIN_WIDTH,
+    max: maxSideBarWidth,
+    get: () => layout.sideBarWidth,
+    set: (px) => {
+      layout.sideBarWidth = px
+      root.style.setProperty('--bcc-side-bar-width', `${px}px`)
+    },
+    onCommit: persistLayout
+  })
+
+  mountSplitter(requireEl('splitter-rightdock'), {
+    axis: 'x',
+    min: RIGHT_DOCK_MIN_WIDTH,
+    max: maxRightDockWidth,
+    get: () => layout.rightDockWidth,
+    set: (px) => {
+      layout.rightDockWidth = px
+      root.style.setProperty('--bcc-right-dock-width', `${px}px`)
+    },
+    onCommit: persistLayout,
+    // The dock is anchored to the right edge, so the handle travelling left is
+    // what makes it wider.
+    invert: true
+  })
+
+  mountSplitter(requireEl('splitter-panel'), {
+    axis: 'y',
+    min: PANEL_MIN_HEIGHT,
+    max: maxPanelHeight,
+    get: () => layout.panelHeight,
+    set: (px) => {
+      layout.panelHeight = px
+      root.style.setProperty('--bcc-panel-height', `${px}px`)
+    },
+    onCommit: persistLayout,
+    // Bottom-anchored, same reasoning: dragging up grows it.
+    invert: true
+  })
+
+  watchRegionVisibility(root)
+}
+
+/**
+ * Persists a region being opened or closed.
+ *
+ * The activity bar is what toggles the dock, and it has no business knowing
+ * that settings exist; threading a callback from here through right-dock.ts to
+ * reach it would couple three modules to persist one boolean. The attribute on
+ * `.workbench` is already the record CSS reads, so it is read from there too.
+ * Attached after the restore above, so replaying what was just loaded cannot
+ * trigger a write.
+ */
+function watchRegionVisibility(root: HTMLElement): void {
+  const observer = new MutationObserver(() => {
+    const sideBarHidden = root.dataset['sidebarHidden'] === 'true'
+    const rightDockHidden = root.dataset['rightdockHidden'] === 'true'
+    if (sideBarHidden === layout.sideBarHidden && rightDockHidden === layout.rightDockHidden) return
+    layout.sideBarHidden = sideBarHidden
+    layout.rightDockHidden = rightDockHidden
+    persistLayout()
+  })
+  observer.observe(root, { attributeFilter: ['data-sidebar-hidden', 'data-rightdock-hidden'] })
+}
+
+/**
+ * Registers every docked view and wires the activity bar to them.
  *
  * Views are registered eagerly but *mounted* lazily on first show, so opening
  * the app does not shell out to git or reach for the network.
@@ -262,7 +460,12 @@ async function mountSideBarViews(): Promise<void> {
   registerSideBarView({ id: 'settings', mount: mountSettings, onShow: onSettingsShown })
   registerSideBarView({ id: 'ai', mount: mountAi, onShow: onAiShown })
   registerSideBarView({ id: 'assist', mount: mountAssist, onShow: onAssistShown })
-  registerSideBarView({ id: 'visualizer', mount: mountTopography, onShow: onTopographyShown })
+
+  // The Visualizer docks on the right instead of in the side bar. Same view,
+  // same handlers, a region three times as wide as the one a control-flow graph
+  // was previously being folded into.
+  mountRightDock(requireEl('right-dock-title'), requireEl('right-dock-body'))
+  registerRightDockView({ id: 'visualizer', mount: mountTopography, onShow: onTopographyShown })
 
   mountActivityBar(requireEl('activity-bar'), (id) => {
     // The Run icon opens the output console rather than a side-bar view.
@@ -308,6 +511,18 @@ function registerWorkbenchCommands(): void {
     { id: 'view.scm', title: 'View: Source Control', run: showView('scm') },
     { id: 'view.insights', title: 'View: Insights', run: showView('insights') },
     { id: 'view.ai', title: 'View: Assistant', run: showView('ai') },
+    // Both of these were unreachable from the palette until now — registered
+    // in the activity bar and nowhere else, which meant the only way to open
+    // them was to know which icon they are.
+    { id: 'view.assist', title: 'View: Assist', run: showView('assist') },
+    {
+      id: 'view.visualizer',
+      title: 'View: Visualizer',
+      run: () => {
+        setSelected('visualizer')
+        void showRightDockView('visualizer')
+      }
+    },
     { id: 'view.settings', title: 'View: Settings', run: showView('settings') },
 
     {
@@ -390,6 +605,10 @@ async function boot(): Promise<void> {
   mountEditor(requireEl('editor-host'), requireEl('tab-bar'))
   mountPanel(requireEl('panel'), requireEl('panel-tabs'), requireEl('panel-body'))
   await mountSideBarViews()
+  // After the docks exist, so restoring an open right dock has something to
+  // show in it. Monaco lays itself out automatically, so the editor absorbs the
+  // resulting width change without being told.
+  await mountWorkbenchLayout()
   listenForAiActions()
   registerWorkbenchCommands()
   bindGlobalKeys()

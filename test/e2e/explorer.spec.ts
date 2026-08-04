@@ -2,6 +2,7 @@ import { test, expect, _electron as electron, type ElectronApplication, type Pag
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { isolatedUserData } from './helpers/user-data'
 
 const APP_ROOT = join(__dirname, '..', '..')
 const MAIN_ENTRY = join(APP_ROOT, 'out', 'main', 'index.js')
@@ -19,7 +20,7 @@ test.beforeAll(async () => {
   await writeFile(join(fixture, 'src', 'nested', 'deep.txt'), 'deep\n')
 
   app = await electron.launch({
-    args: [MAIN_ENTRY, `--folder=${fixture}`],
+    args: [MAIN_ENTRY, isolatedUserData('explorer'), `--folder=${fixture}`],
     cwd: APP_ROOT
   })
   window = await app.firstWindow()

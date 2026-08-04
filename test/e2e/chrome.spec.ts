@@ -8,6 +8,7 @@ import {
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { isolatedUserData } from './helpers/user-data'
 
 const APP_ROOT = join(__dirname, '..', '..')
 const MAIN_ENTRY = join(APP_ROOT, 'out', 'main', 'index.js')
@@ -31,7 +32,7 @@ test.beforeAll(async () => {
   await mkdir(join(fixture, 'node_modules', 'junk'), { recursive: true })
   await writeFile(join(fixture, 'node_modules', 'junk', 'index.ts'), 'needle needle needle\n')
 
-  app = await electron.launch({ args: [MAIN_ENTRY, `--folder=${fixture}`], cwd: APP_ROOT })
+  app = await electron.launch({ args: [MAIN_ENTRY, isolatedUserData('chrome'), `--folder=${fixture}`], cwd: APP_ROOT })
   window = await app.firstWindow()
   await window.waitForSelector('html[data-bettercallcompiler-ready="true"]')
 })

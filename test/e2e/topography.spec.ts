@@ -8,6 +8,7 @@ import {
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { isolatedUserData } from './helpers/user-data'
 
 const APP_ROOT = join(__dirname, '..', '..')
 const MAIN_ENTRY = join(APP_ROOT, 'out', 'main', 'index.js')
@@ -35,7 +36,7 @@ test.beforeAll(async () => {
   await writeFile(join(fixture, 'src', 'sample.js'), SAMPLE)
   await writeFile(join(fixture, 'src', 'broken.js'), 'function ( { not valid ]]] <<<\n')
 
-  app = await electron.launch({ args: [MAIN_ENTRY, `--folder=${fixture}`], cwd: APP_ROOT })
+  app = await electron.launch({ args: [MAIN_ENTRY, isolatedUserData('topography'), `--folder=${fixture}`], cwd: APP_ROOT })
   window = await app.firstWindow()
 
   window.on('console', (message) => {
@@ -63,9 +64,10 @@ test.afterAll(async () => {
  * no benefit.
  */
 async function openInVisualizer(file: string): Promise<void> {
-  // Only one side-bar view is visible at a time, so once the Visualizer is
-  // showing the file tree is hidden and its rows cannot be clicked. Switch back
-  // to the Explorer before reaching for a file.
+  // The Visualizer now lives in the right dock, not the side bar, so it no
+  // longer competes with the Explorer for the same region — but the Explorer is
+  // still switched to explicitly, because the side bar shows one view at a time
+  // and a previous test may have left something else in front of the file tree.
   await window.locator('.activity-bar__item[data-view-id="explorer"]').click()
   await expect(window.locator('.side-bar__view[data-view-id="explorer"]')).toBeVisible()
 
@@ -74,8 +76,13 @@ async function openInVisualizer(file: string): Promise<void> {
     .click()
   await window.waitForSelector('.monaco-editor .view-lines')
 
-  await window.locator('.activity-bar__item[data-view-id="visualizer"]').click()
-  await expect(window.locator('.side-bar__view[data-view-id="visualizer"]')).toBeVisible()
+  // Clicking the activity-bar icon toggles the dock, so it is only pressed when
+  // the dock is not already open — a second click would close it.
+  const view = window.locator('.right-dock__view[data-view-id="visualizer"]')
+  if (!(await view.isVisible())) {
+    await window.locator('.activity-bar__item[data-view-id="visualizer"]').click()
+  }
+  await expect(view).toBeVisible()
 }
 
 /**
@@ -132,8 +139,12 @@ test('clicking a node jumps the editor to that line', async () => {
   expect(id).toMatch(/_L\d+/)
 
   // Move focus out of the editor first, so regaining it is evidence the click
-  // handler ran rather than focus never having left.
-  await window.locator('.activity-bar__item[data-view-id="visualizer"]').click()
+  // handler ran rather than focus never having left. The Explorer icon is used
+  // rather than the Visualizer's own: re-clicking an active tool window's icon
+  // now toggles its dock shut, which would take the diagram away with it. The
+  // side bar and the right dock are separate regions, so this leaves the
+  // diagram on screen.
+  await window.locator('.activity-bar__item[data-view-id="explorer"]').click()
   await nodes.first().click()
 
   // Reaches through `globalThis` rather than naming `document`: this file is
