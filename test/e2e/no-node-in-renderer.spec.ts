@@ -1,5 +1,6 @@
 import { test, expect, _electron as electron } from '@playwright/test'
 import { join } from 'node:path'
+import { isolatedUserData } from './helpers/user-data'
 
 const APP_ROOT = join(__dirname, '..', '..')
 const MAIN_ENTRY = join(APP_ROOT, 'out', 'main', 'index.js')
@@ -11,7 +12,7 @@ const MAIN_ENTRY = join(APP_ROOT, 'out', 'main', 'index.js')
  * so this file needs no DOM lib in the Node-side tsconfig.
  */
 test('the renderer has no Node access and no generic IPC escape hatch', async () => {
-  const app = await electron.launch({ args: [MAIN_ENTRY], cwd: APP_ROOT })
+  const app = await electron.launch({ args: [MAIN_ENTRY, isolatedUserData('no-node-in-renderer')], cwd: APP_ROOT })
 
   try {
     const window = await app.firstWindow()
@@ -56,7 +57,7 @@ test('the renderer has no Node access and no generic IPC escape hatch', async ()
 })
 
 test('app:ping round-trips through the bridge and returns a Result', async () => {
-  const app = await electron.launch({ args: [MAIN_ENTRY], cwd: APP_ROOT })
+  const app = await electron.launch({ args: [MAIN_ENTRY, isolatedUserData('no-node-in-renderer')], cwd: APP_ROOT })
 
   try {
     const window = await app.firstWindow()

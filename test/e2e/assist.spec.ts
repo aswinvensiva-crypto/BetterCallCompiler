@@ -8,6 +8,7 @@ import {
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { isolatedUserData } from './helpers/user-data'
 
 const APP_ROOT = join(__dirname, '..', '..')
 const MAIN_ENTRY = join(APP_ROOT, 'out', 'main', 'index.js')
@@ -34,7 +35,7 @@ test.beforeAll(async () => {
   await mkdir(join(fixture, 'src'), { recursive: true })
   await writeFile(join(fixture, 'src', 'load.js'), SAMPLE)
 
-  app = await electron.launch({ args: [MAIN_ENTRY, `--folder=${fixture}`], cwd: APP_ROOT })
+  app = await electron.launch({ args: [MAIN_ENTRY, isolatedUserData('assist'), `--folder=${fixture}`], cwd: APP_ROOT })
   window = await app.firstWindow()
   await window.waitForSelector('html[data-bettercallcompiler-ready="true"]')
 
@@ -74,8 +75,12 @@ async function runMode(label: string): Promise<void> {
 test('the Assist panel says what to do before anything is selected', async () => {
   await window.locator('.activity-bar__item[data-view-id="assist"]').click()
 
-  await expect(window.locator('.side-bar__view[data-view-id="assist"]')).toBeVisible()
-  await expect(window.locator('.explorer__empty-text')).toContainText('Select code')
+  const view = window.locator('.side-bar__view[data-view-id="assist"]')
+  await expect(view).toBeVisible()
+  // Scoped to the Assist view: `.explorer__empty-text` is the shared empty-state
+  // class every panel uses, and the Visualizer docks in its own region now, so
+  // an unscoped match finds that panel's empty state too.
+  await expect(view.locator('.explorer__empty-text')).toContainText('Select code')
 
   // Back to the explorer so the remaining tests start from a known view.
   await window.locator('.activity-bar__item[data-view-id="explorer"]').click()

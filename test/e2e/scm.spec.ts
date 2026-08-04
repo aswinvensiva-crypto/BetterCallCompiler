@@ -9,6 +9,7 @@ import { execFileSync } from 'node:child_process'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { isolatedUserData } from './helpers/user-data'
 
 const APP_ROOT = join(__dirname, '..', '..')
 const MAIN_ENTRY = join(APP_ROOT, 'out', 'main', 'index.js')
@@ -44,7 +45,7 @@ test.beforeAll(async () => {
   await writeFile(join(fixture, 'tracked.txt'), 'original\nmodified\n')
   await writeFile(join(fixture, 'fresh.txt'), 'brand new\n')
 
-  app = await electron.launch({ args: [MAIN_ENTRY, `--folder=${fixture}`], cwd: APP_ROOT })
+  app = await electron.launch({ args: [MAIN_ENTRY, isolatedUserData('scm'), `--folder=${fixture}`], cwd: APP_ROOT })
   window = await app.firstWindow()
   await window.waitForSelector('html[data-bettercallcompiler-ready="true"]')
 })

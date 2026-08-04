@@ -1,5 +1,6 @@
 import { test, expect, _electron as electron } from '@playwright/test'
 import { join } from 'node:path'
+import { isolatedUserData } from './helpers/user-data'
 
 const APP_ROOT = join(__dirname, '..', '..')
 const MAIN_ENTRY = join(APP_ROOT, 'out', 'main', 'index.js')
@@ -10,7 +11,7 @@ const MAIN_ENTRY = join(APP_ROOT, 'out', 'main', 'index.js')
  * navigation completes so start-up failures cannot slip past.
  */
 test('app launches and renders the workbench with a clean console', async () => {
-  const app = await electron.launch({ args: [MAIN_ENTRY], cwd: APP_ROOT })
+  const app = await electron.launch({ args: [MAIN_ENTRY, isolatedUserData('launch')], cwd: APP_ROOT })
 
   try {
     const problems: string[] = []

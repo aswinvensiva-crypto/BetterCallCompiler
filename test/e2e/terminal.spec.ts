@@ -2,6 +2,7 @@ import { test, expect, _electron as electron, type ElectronApplication, type Pag
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { isolatedUserData } from './helpers/user-data'
 
 const APP_ROOT = join(__dirname, '..', '..')
 const MAIN_ENTRY = join(APP_ROOT, 'out', 'main', 'index.js')
@@ -12,7 +13,7 @@ let window: Page
 
 test.beforeAll(async () => {
   fixture = await mkdtemp(join(tmpdir(), 'bettercallcompiler-terminal-'))
-  app = await electron.launch({ args: [MAIN_ENTRY, `--folder=${fixture}`], cwd: APP_ROOT })
+  app = await electron.launch({ args: [MAIN_ENTRY, isolatedUserData('terminal'), `--folder=${fixture}`], cwd: APP_ROOT })
   window = await app.firstWindow()
   await window.waitForSelector('html[data-bettercallcompiler-ready="true"]')
 })

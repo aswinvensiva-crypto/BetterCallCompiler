@@ -6,6 +6,7 @@ import {
   type Page
 } from '@playwright/test'
 import { join } from 'node:path'
+import { isolatedUserData } from './helpers/user-data'
 
 const APP_ROOT = join(__dirname, '..', '..')
 const MAIN_ENTRY = join(APP_ROOT, 'out', 'main', 'index.js')
@@ -20,7 +21,7 @@ let window: Page
  * well-formed, and the classification is one the renderer knows how to draw.
  */
 test.beforeAll(async () => {
-  app = await electron.launch({ args: [MAIN_ENTRY], cwd: APP_ROOT })
+  app = await electron.launch({ args: [MAIN_ENTRY, isolatedUserData('toolchains')], cwd: APP_ROOT })
   window = await app.firstWindow()
   await window.waitForSelector('html[data-bettercallcompiler-ready="true"]')
 })
