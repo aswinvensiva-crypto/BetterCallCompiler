@@ -80,7 +80,8 @@ test('the panel exposes Terminal and Output as separate views', async () => {
   await expect(window.locator('#panel')).toBeHidden()
 
   await window.keyboard.press('Control+`')
-  await expect(window.locator('.panel-view-tab')).toHaveCount(2)
+  // Terminal, Output and Problems.
+  await expect(window.locator('.panel-view-tab')).toHaveCount(3)
   await expect(window.locator('.panel-view-tab--active')).toHaveText('Terminal')
 
   await window.locator('.panel-view-tab', { hasText: 'Output' }).click()
