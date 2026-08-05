@@ -16,7 +16,16 @@ export default defineConfig({
     },
     build: {
       rollupOptions: {
-        input: { index: resolve(__dirname, 'src/main/index.ts') }
+        input: {
+          index: resolve(__dirname, 'src/main/index.ts'),
+          // The compiler daemon runs in a worker_thread, so it needs its own
+          // entry rather than being bundled into index.js — `new Worker()`
+          // takes a file path. electron-vite emits entries as `[name].js`, so
+          // this lands at out/main/compiler-worker.js next to index.js, which
+          // is why the spawn path can be a plain join(__dirname, …) with no
+          // packaged-vs-dev branch.
+          'compiler-worker': resolve(__dirname, 'src/main/compiler-worker.ts')
+        }
       }
     }
   },
