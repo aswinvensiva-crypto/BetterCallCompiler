@@ -14,7 +14,7 @@ import { createEditor } from './editor/monaco-setup'
 import { attachEditor, activeDocument, openFile, reloadFromDisk, saveActive } from './editor/models'
 import { mountTabs } from './editor/tabs'
 import { notifyError } from './workbench/notifications'
-import { mountPanel, showOutput } from './workbench/panel'
+import { mountPanel, showOutput, showProblems as showProblemsPanel } from './workbench/panel'
 import { mountStatusBar } from './workbench/status-bar'
 import { runActiveFile } from './views/run'
 import { mountActivityBar, setSelected } from './workbench/activity-bar'
@@ -33,6 +33,7 @@ import { mountInsights, onInsightsShown } from './views/insights'
 import { mountSettings, onSettingsShown } from './views/settings'
 import { listenForAiActions, mountAi, onAiShown } from './views/ai'
 import { registerAiActions } from './editor/ai-actions'
+import { applyDiagnostics, clearAllMarkers } from './editor/markers'
 import {
   listenForAssistActions,
   mountAssist,
@@ -495,8 +496,9 @@ async function mountSideBarViews(): Promise<void> {
   registerRightDockView({ id: 'visualizer', mount: mountVisualizer, onShow: onVisualizerShown })
 
   mountActivityBar(requireEl('activity-bar'), (id) => {
-    // The Run icon opens the output console rather than a side-bar view.
+    // Run and Problems open bottom-panel views rather than side-bar ones.
     if (id === 'run') void showOutput()
+    else if (id === 'problems') void showProblemsPanel()
   })
 
   // Assist results surface in its panel the way AI answers surface in theirs.
@@ -559,6 +561,14 @@ function registerWorkbenchCommands(): void {
       run: () => void showPanelView('terminal')
     },
     { id: 'view.output', title: 'View: Output', run: () => void showOutput() },
+    { id: 'view.problems', title: 'View: Problems', run: () => void showProblemsPanel() },
+    {
+      id: 'compiler.restart',
+      title: 'Compiler: Restart Daemon',
+      run: () => {
+        void window.betterCallCompiler.compiler.restart({})
+      }
+    },
 
     {
       id: 'run.file',
@@ -712,6 +722,33 @@ function bootVisualizerWindow(): void {
   document.documentElement.dataset['bettercallcompilerReady'] = 'true'
 }
 
+/**
+ * Renders daemon diagnostics as Monaco markers.
+ *
+ * A batch is applied wholesale: `FileDiagnostics` is the complete set for its
+ * file, so an empty array clears that file's markers — which is how a fixed
+ * error's squiggle disappears.
+ */
+function bindCompilerDiagnostics(): void {
+  window.betterCallCompiler.compiler.onDiagnosticsChanged((batch) => {
+    applyDiagnostics(batch.files)
+  })
+
+  window.betterCallCompiler.compiler.onStatusChanged((status) => {
+    // A restarting or failed daemon is no longer maintaining its markers, and
+    // leaving them would strand squiggles nobody is updating.
+    if (status.state === 'restarting' || status.state === 'failed') clearAllMarkers()
+  })
+
+  // The daemon may already have checked files before this window finished
+  // booting; pull whatever it has rather than waiting for the next edit.
+  void window.betterCallCompiler.compiler
+    .diagnostics({ relativePath: null })
+    .then((result) => {
+      if (result.ok) applyDiagnostics(result.value.files)
+    })
+}
+
 async function boot(): Promise<void> {
   // One bundle, two windows. The branch is first so nothing below it — Monaco,
   // the watcher, the git poll — is ever constructed in a window that only draws
@@ -732,6 +769,7 @@ async function boot(): Promise<void> {
   // resulting width change without being told.
   await mountWorkbenchLayout()
   listenForAiActions()
+  bindCompilerDiagnostics()
   registerWorkbenchCommands()
   bindGlobalKeys()
   watchForFileChanges()

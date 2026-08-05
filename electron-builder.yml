@@ -14,6 +14,27 @@ files:
   - '!**/*.map'
   - '!**/{.git,.github,test,docs,.vscode}/**'
 
+  # The locale catalogues DO pack by default and nothing ever reads them.
+  # Dropping ~12 copies of the diagnostic message catalogue is free.
+  - '!node_modules/typescript/lib/{cs,de,es,fr,it,ja,ko,pl,pt-br,ru,tr,zh-cn,zh-tw}/**'
+
+# TypeScript's lib.*.d.ts, shipped OUTSIDE the asar.
+#
+# They cannot go inside it. electron-builder appends
+# `!**/*.{…,d.ts,…}` (fileMatcher.js: `excludedExts`) as the LAST pattern, after
+# any user `files` entry, so nothing in `files` can re-include them — and it
+# matches every path, so copying them under out/ does not help either.
+#
+# The exclusion is right for type declarations and wrong for these: lib.*.d.ts
+# are runtime data. The daemon's LanguageService reads them to know what
+# `console` and `Promise` are. Measured: a build without this ships 0 of 99 lib
+# files, and the daemon then reports nonsense on every file it checks.
+extraResources:
+  - from: node_modules/typescript/lib
+    to: typescript-lib
+    filter:
+      - lib.*.d.ts
+
 # node-pty 1.1.0 is a Node-API addon — it depends on node-addon-api, ships no
 # binding.gyp, and carries prebuilds for every platform it supports. Node-API is
 # ABI-stable across Node and Electron versions by design, which is exactly why

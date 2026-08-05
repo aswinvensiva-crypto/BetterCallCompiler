@@ -1,5 +1,6 @@
 import { createTerminal, hasTerminals, mountTerminals, refitActive } from '../terminal/xterm-view'
 import { mountRunView, refitOutput, showRunActions } from '../views/run'
+import { mountProblems, onProblemsShown } from '../views/problems'
 
 /**
  * The bottom panel.
@@ -14,7 +15,12 @@ import { mountRunView, refitOutput, showRunActions } from '../views/run'
  * step 5's E2E assertions are counting.
  */
 
-export type PanelViewId = 'terminal' | 'output'
+/**
+ * A closed union rather than an open registry: the panel has a fixed set of
+ * views, each with its own body element created in `mountPanel`, and the tab
+ * strip is meant to stay small enough to read at a glance.
+ */
+export type PanelViewId = 'terminal' | 'output' | 'problems'
 
 interface PanelView {
   readonly id: PanelViewId
@@ -108,6 +114,10 @@ export async function showOutput(): Promise<void> {
   await showPanelView('output')
 }
 
+export async function showProblems(): Promise<void> {
+  await showPanelView('problems')
+}
+
 export function mountPanel(
   panel: HTMLElement,
   tabs: HTMLElement,
@@ -138,7 +148,12 @@ export function mountPanel(
   outputActions.id = 'panel-output-actions'
   outputActions.hidden = true
 
-  tabs.append(viewTabStrip, divider, terminalActions, outputActions)
+  const problemsActions = document.createElement('div')
+  problemsActions.className = 'panel__actions'
+  problemsActions.id = 'panel-problems-actions'
+  problemsActions.hidden = true
+
+  tabs.append(viewTabStrip, divider, terminalActions, outputActions, problemsActions)
 
   const terminalBody = document.createElement('div')
   terminalBody.className = 'panel__view'
@@ -149,7 +164,12 @@ export function mountPanel(
   outputBody.id = 'panel-output-view'
   outputBody.hidden = true
 
-  body.append(terminalBody, outputBody)
+  const problemsBody = document.createElement('div')
+  problemsBody.className = 'panel__view panel__view--problems'
+  problemsBody.id = 'panel-problems-view'
+  problemsBody.hidden = true
+
+  body.append(terminalBody, outputBody, problemsBody)
 
   views.set('terminal', {
     id: 'terminal',
@@ -169,8 +189,20 @@ export function mountPanel(
     onShow: showRunActions
   })
 
+  views.set('problems', {
+    id: 'problems',
+    label: 'Problems',
+    body: problemsBody,
+    actions: problemsActions,
+    onShow: onProblemsShown
+  })
+
   mountTerminals(terminalBody, terminalActions)
   mountRunView(outputBody, outputActions)
+  // Mounted eagerly, unlike the side-bar views: it subscribes to the daemon's
+  // event stream, and a panel that only starts listening when first opened
+  // would miss every diagnostic produced before that.
+  mountProblems(problemsBody, problemsActions)
   renderViewTabs()
 
   document.addEventListener('keydown', (event) => {

@@ -7,6 +7,14 @@ import JsonWorker from 'monaco-editor/language/json/json.worker?worker'
 import CssWorker from 'monaco-editor/language/css/css.worker?worker'
 import HtmlWorker from 'monaco-editor/language/html/html.worker?worker'
 import TsWorker from 'monaco-editor/language/typescript/ts.worker?worker'
+// monaco 0.56 moved these off `monaco.languages.typescript`, which is now just
+// `{ deprecated: true }`. They live in their own module under `languages`
+// (plural) — a different path from the `language` (singular) worker imports
+// above, which is easy to mistype into a module that does not exist.
+import {
+  javascriptDefaults,
+  typescriptDefaults
+} from 'monaco-editor/languages/features/typescript/register'
 
 /**
  * Monaco worker wiring.
@@ -188,8 +196,43 @@ export interface EditorHandle {
   readonly editor: monaco.editor.IStandaloneCodeEditor
 }
 
+let languageDefaultsConfigured = false
+
+/**
+ * Splits diagnostic duty between Monaco's bundled TS worker and the daemon.
+ *
+ * Monaco's worker validates every TS/JS model, but it has no tsconfig, no file
+ * system and no cross-file resolution — so on a real project every local import
+ * yields a false `TS2307 Cannot find module './x'`. Nothing in this app reads
+ * those markers, but they are still being drawn.
+ *
+ * The rule: **syntax for open files is Monaco's, everything else is ours.**
+ * Monaco keeps syntactic validation, which is instant and model-local and needs
+ * no daemon round trip. Semantic validation is turned off here because the
+ * daemon is authoritative — it has the real program, the real config and the
+ * whole workspace — and it publishes under its own marker owner, so the two
+ * never collide.
+ */
+function configureLanguageDefaults(): void {
+  if (languageDefaultsConfigured) return
+
+  for (const defaults of [typescriptDefaults, javascriptDefaults]) {
+    defaults.setDiagnosticsOptions({
+      noSemanticValidation: true,
+      // `noSyntaxValidation`, not `noSyntacticValidation` — the option is
+      // spelled differently from the LanguageService method it mirrors, and a
+      // typo here is silently ignored rather than rejected.
+      noSyntaxValidation: false,
+      noSuggestionDiagnostics: true
+    })
+  }
+
+  languageDefaultsConfigured = true
+}
+
 export function createEditor(host: HTMLElement): monaco.editor.IStandaloneCodeEditor {
   defineTheme()
+  configureLanguageDefaults()
 
   return monaco.editor.create(host, {
     theme: THEME,

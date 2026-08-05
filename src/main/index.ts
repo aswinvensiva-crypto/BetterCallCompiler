@@ -11,11 +11,17 @@ import {
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { isWithin } from './fs-service'
-import { setWatchEmitter, setWorkspace, stopWatching } from './fs-service'
+import { getWorkspace, setWatchEmitter, setWorkspace, stopWatching } from './fs-service'
 import { createHandlerMap, emitEvent, registerIpcHandlers } from './ipc'
 import { disposeAllSessions, setTerminalEmitters } from './terminal'
 import { cancelAllRuns, setRunEmitters } from './runner'
 import { setGitChangeEmitter, startGitWatch, stopGitWatch } from './git-service'
+import {
+  notifyWatchEvent,
+  setCompilerEmitters,
+  startCompiler,
+  stopCompiler
+} from './compiler-service'
 import { cancelAllAiStreams, setAiEmitters } from './ai-service'
 import { buildCspHeader, isAllowedExternalUrl, isInternalNavigation } from './security'
 import { closeVisualizerWindow, setVisualizerHostWindow } from './visualizer-window'
@@ -112,7 +118,21 @@ function createWindow(): BrowserWindow {
   win.once('ready-to-show', () => win.show())
 
   // Filesystem watch events are pushed to whichever window is current.
-  setWatchEmitter((event) => emitEvent(win, 'fs:watchEvent', event))
+  // One watcher, two consumers. `setWatchEmitter` is a single slot, so the
+  // compiler daemon is fanned out from here rather than starting a second
+  // chokidar over the same tree.
+  setWatchEmitter((event) => {
+    emitEvent(win, 'fs:watchEvent', event)
+    notifyWatchEvent(event)
+  })
+  setCompilerEmitters(
+    (batch) => emitEvent(win, 'compiler:diagnosticsChanged', batch),
+    (status) => emitEvent(win, 'compiler:statusChanged', status)
+  )
+  // Started here, not where the argv folder is adopted: that runs before this
+  // window exists, so a daemon booted there would emit its first status into a
+  // null emitter and the renderer would never learn it had started.
+  startCompiler(getWorkspace().root)
   setTerminalEmitters(
     (id, data) => emitEvent(win, 'terminal:data', { id, data }),
     (payload) => emitEvent(win, 'terminal:exit', payload)
@@ -143,6 +163,7 @@ function createWindow(): BrowserWindow {
     disposeAllSessions()
     cancelAllRuns()
     cancelAllAiStreams()
+    stopCompiler()
   })
 
   const devUrl = devServerUrl()
@@ -346,6 +367,7 @@ if (!gotLock) {
     disposeAllSessions()
     cancelAllRuns()
     cancelAllAiStreams()
+    stopCompiler()
     void stopWatching()
     void stopGitWatch()
   })

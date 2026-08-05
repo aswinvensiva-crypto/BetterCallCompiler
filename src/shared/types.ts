@@ -506,3 +506,172 @@ export function describeExit(exitCode: number): string {
   if (exitCode === 0) return 'exited cleanly'
   return `exited with code ${exitCode}`
 }
+
+/* -------------------------------- compiler ------------------------------- */
+
+/**
+ * The compiler daemon's data contract.
+ *
+ * Until now a compiler error existed only as text in the run console's
+ * scrollback — `ErrorLink` carries a location and nothing else, because a
+ * location is all you can recover from formatted output. `ts.LanguageService`
+ * hands back structured diagnostics, so these types model what a diagnostic
+ * actually is: a severity, a code, a message and a range.
+ *
+ * Every position here is 1-based, matching Monaco, tsc, and every other
+ * diagnostic in this codebase.
+ */
+
+export const diagnosticSeveritySchema = z.enum(['error', 'warning', 'info', 'hint'])
+export type DiagnosticSeverity = z.infer<typeof diagnosticSeveritySchema>
+
+/**
+ * Which producer owns a diagnostic. Grouping metadata only — everything lands
+ * under one Monaco marker owner, so a single `setModelMarkers` call replaces
+ * the complete set for a file.
+ */
+export const diagnosticSourceSchema = z.enum(['typescript', 'graph'])
+export type DiagnosticSource = z.infer<typeof diagnosticSourceSchema>
+
+export const diagnosticMessageSchema = z.strictObject({
+  /** POSIX-separated, workspace-relative — the key every side joins on. */
+  relativePath: z.string(),
+  /** Absolute, so the renderer opens it without re-deriving the root. */
+  path: z.string(),
+  severity: diagnosticSeveritySchema,
+  /** `TS2345`, or `TS-CYCLE` for the graph's own warnings. */
+  code: z.string(),
+  message: z.string(),
+  startLine: z.number().int().positive(),
+  startColumn: z.number().int().positive(),
+  endLine: z.number().int().positive(),
+  endColumn: z.number().int().positive(),
+  source: diagnosticSourceSchema
+})
+export type DiagnosticMessage = z.infer<typeof diagnosticMessageSchema>
+
+export const fileDiagnosticsSchema = z.strictObject({
+  relativePath: z.string(),
+  path: z.string(),
+  /**
+   * The COMPLETE set for this file. An empty array means "now clean" and the
+   * renderer must clear its markers — it is not an empty batch to be skipped.
+   * Dropping these is exactly how a fixed error keeps its squiggle forever.
+   */
+  diagnostics: z.array(diagnosticMessageSchema),
+  /** Monotonic per file; a late batch with a lower version is discarded. */
+  version: z.number().int().nonnegative()
+})
+export type FileDiagnostics = z.infer<typeof fileDiagnosticsSchema>
+
+export const diagnosticsBatchSchema = z.strictObject({
+  files: z.array(fileDiagnosticsSchema),
+  /** True when this batch completes the current check pass. */
+  settled: z.boolean()
+})
+export type DiagnosticsBatch = z.infer<typeof diagnosticsBatchSchema>
+
+export const dependencyNodeSchema = z.strictObject({
+  relativePath: z.string(),
+  path: z.string(),
+  /**
+   * Resolved workspace-relative paths. Specifiers that do not resolve, or that
+   * resolve outside the workspace, are dropped rather than guessed at — a
+   * fabricated edge invalidates the wrong files.
+   */
+  imports: z.array(z.string()),
+  /** Reverse edges, maintained alongside so invalidation is O(dependents). */
+  importedBy: z.array(z.string()),
+  /** mtimeMs at last parse — staleness without hashing every file. */
+  mtimeMs: z.number().nonnegative(),
+  /** The strongly-connected component this belongs to; its own path when acyclic. */
+  componentId: z.string()
+})
+export type DependencyNode = z.infer<typeof dependencyNodeSchema>
+
+export const dependencyCycleSchema = z.strictObject({
+  id: z.string(),
+  /** Sorted, so the same cycle always renders identically. */
+  members: z.array(z.string()).min(2)
+})
+export type DependencyCycle = z.infer<typeof dependencyCycleSchema>
+
+export const buildGraphSummarySchema = z.strictObject({
+  fileCount: z.number().int().nonnegative(),
+  edgeCount: z.number().int().nonnegative(),
+  cycles: z.array(dependencyCycleSchema),
+  /** True when the walk hit its ceiling — a sampled graph must say so. */
+  truncated: z.boolean(),
+  lastBuildMs: z.number().nonnegative(),
+  /**
+   * The tsconfig actually adopted, or null when none was found and the fallback
+   * options are in use. Surfaced in the UI because a daemon checking against
+   * the wrong config is worse than one that admits it.
+   */
+  tsconfigRelativePath: z.string().nullable()
+})
+export type BuildGraphSummary = z.infer<typeof buildGraphSummarySchema>
+
+export const dependencyQuerySchema = z.strictObject({
+  node: dependencyNodeSchema.nullable(),
+  /** Transitive dependents, nearest first — the invalidation set. */
+  dependents: z.array(z.string()),
+  cycle: dependencyCycleSchema.nullable()
+})
+export type DependencyQuery = z.infer<typeof dependencyQuerySchema>
+
+/**
+ * `failed` is deliberately distinct from `stopped`, for the same reason
+ * `toolchainKind` has `unusable`: "neither running nor deliberately off" needs
+ * its own name, or the UI reports a crash as a choice.
+ */
+export const compilerDaemonStateSchema = z.enum([
+  'stopped',
+  'starting',
+  'indexing',
+  'checking',
+  'idle',
+  'restarting',
+  'failed'
+])
+export type CompilerDaemonState = z.infer<typeof compilerDaemonStateSchema>
+
+export const compilerStatusSchema = z.strictObject({
+  state: compilerDaemonStateSchema,
+  graph: buildGraphSummarySchema,
+  errorCount: z.number().int().nonnegative(),
+  warningCount: z.number().int().nonnegative(),
+  /**
+   * Files actually checked, of `graph.fileCount`. A cold workspace is only
+   * partially checked by design, and partial coverage is stated rather than
+   * implied away.
+   */
+  checkedFileCount: z.number().int().nonnegative(),
+  /** Observability only — NOT the OOM enforcement mechanism (resourceLimits is). */
+  heapUsedMb: z.number().nonnegative(),
+  restarts: z.number().int().nonnegative(),
+  /** Non-null only in `failed`; shown verbatim. */
+  detail: z.string().nullable()
+})
+export type CompilerStatus = z.infer<typeof compilerStatusSchema>
+
+/** The daemon before it has ever run. Shared by the service and its tests. */
+export function stoppedCompilerStatus(): CompilerStatus {
+  return {
+    state: 'stopped',
+    graph: {
+      fileCount: 0,
+      edgeCount: 0,
+      cycles: [],
+      truncated: false,
+      lastBuildMs: 0,
+      tsconfigRelativePath: null
+    },
+    errorCount: 0,
+    warningCount: 0,
+    checkedFileCount: 0,
+    heapUsedMb: 0,
+    restarts: 0,
+    detail: null
+  }
+}
