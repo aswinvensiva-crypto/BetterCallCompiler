@@ -321,6 +321,31 @@ function applyChanges(root: string, changed: readonly string[], removed: readonl
 
 /* ---------------------------- language service ---------------------------- */
 
+/**
+ * Where `lib.*.d.ts` actually live.
+ *
+ * `ts.getDefaultLibFilePath` resolves relative to the typescript package, which
+ * is correct in development. In a packaged build those files are NOT beside the
+ * package: electron-builder appends `!**\/*.{…,d.ts,…}` as its last file
+ * pattern, so every one of the 99 lib files is stripped from app.asar and no
+ * `files` entry can re-include them. They are shipped via `extraResources` to
+ * `resources/typescript-lib` instead, which is a separate pipeline that the
+ * filter does not touch.
+ *
+ * Probing for the file rather than branching on `app.isPackaged` keeps this
+ * worker free of any electron import — it is a plain Node thread and must stay
+ * one.
+ */
+function defaultLibPath(options: ts.CompilerOptions): string {
+  const packaged = join(process.resourcesPath ?? '', 'typescript-lib', ts.getDefaultLibFileName(options))
+  try {
+    if (process.resourcesPath !== undefined && statSync(packaged).isFile()) return packaged
+  } catch {
+    // Not a packaged build, or the resource is missing; fall through.
+  }
+  return ts.getDefaultLibFilePath(options)
+}
+
 let service: ts.LanguageService | null = null
 
 /** Bumped per file on every edit so the host knows a snapshot is stale. */
@@ -372,7 +397,7 @@ function createService(root: string): ts.LanguageService {
     },
     getCurrentDirectory: () => root,
     getCompilationSettings: () => compilerOptions,
-    getDefaultLibFileName: (options) => ts.getDefaultLibFilePath(options),
+    getDefaultLibFileName: (options) => defaultLibPath(options),
     fileExists: ts.sys.fileExists,
     readFile: ts.sys.readFile,
     readDirectory: ts.sys.readDirectory,
