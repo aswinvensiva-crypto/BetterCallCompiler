@@ -83,6 +83,39 @@ function uriFor(node: FileNode): monacoNs.Uri {
   return monaco.Uri.parse(`bettercallcompiler:///${encodeURI(node.relativePath)}`)
 }
 
+/**
+ * Sends the unsaved buffer to the daemon, debounced.
+ *
+ * 300ms because every push triggers a re-check of this file and everything
+ * that imports it. Pushing per keystroke would queue a full type-check per
+ * character; waiting for save would mean the squiggles describe a file the user
+ * stopped looking at several edits ago.
+ *
+ * The version is Monaco's own version id, which increases monotonically per
+ * model, so the daemon can discard an overlay that arrives out of order.
+ */
+const overlayTimers = new Map<string, ReturnType<typeof setTimeout>>()
+
+const OVERLAY_DEBOUNCE_MS = 300
+
+function pushOverlay(relativePath: string, model: monacoNs.editor.ITextModel): void {
+  const existing = overlayTimers.get(relativePath)
+  if (existing !== undefined) clearTimeout(existing)
+
+  overlayTimers.set(
+    relativePath,
+    setTimeout(() => {
+      overlayTimers.delete(relativePath)
+      if (model.isDisposed()) return
+      void window.betterCallCompiler.compiler.openDocument({
+        relativePath,
+        content: model.getValue(),
+        version: model.getVersionId()
+      })
+    }, OVERLAY_DEBOUNCE_MS)
+  )
+}
+
 export async function openFile(node: FileNode): Promise<boolean> {
   const key = keyFor(node.path)
   const existing = documents.get(key)
@@ -106,12 +139,19 @@ export async function openFile(node: FileNode): Promise<boolean> {
     viewState: null
   }
 
-  model.onDidChangeContent(() => notify())
+  model.onDidChangeContent(() => {
+    notify()
+    pushOverlay(node.relativePath, model)
+  })
 
   // The daemon reports on the whole invalidation set, most of which is not
   // open. Anything parked for this file is drained now, so opening it shows
   // its squiggles immediately instead of waiting for the next unrelated edit.
   flushPendingMarkers(node.relativePath)
+
+  // Seed the overlay on open, so a file that is already dirty from a previous
+  // session — or simply differs from disk — is checked as the user sees it.
+  pushOverlay(node.relativePath, model)
 
   documents.set(key, doc)
   order.push(key)
@@ -206,6 +246,12 @@ export function close(path: string): void {
   documents.delete(key)
   const index = order.indexOf(key)
   if (index >= 0) order.splice(index, 1)
+
+  // The buffer is gone, so the daemon must go back to reading this file from
+  // disk rather than serving an overlay nobody is updating any more.
+  void window.betterCallCompiler.compiler.closeDocument({
+    relativePath: doc.node.relativePath
+  })
 
   doc.model.dispose()
 
