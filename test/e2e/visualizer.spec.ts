@@ -31,12 +31,12 @@ const SAMPLE = `export function classify(value) {
 `
 
 test.beforeAll(async () => {
-  fixture = await mkdtemp(join(tmpdir(), 'bcc-topo-'))
+  fixture = await mkdtemp(join(tmpdir(), 'bcc-viz-'))
   await mkdir(join(fixture, 'src'), { recursive: true })
   await writeFile(join(fixture, 'src', 'sample.js'), SAMPLE)
   await writeFile(join(fixture, 'src', 'broken.js'), 'function ( { not valid ]]] <<<\n')
 
-  app = await electron.launch({ args: [MAIN_ENTRY, isolatedUserData('topography'), `--folder=${fixture}`], cwd: APP_ROOT })
+  app = await electron.launch({ args: [MAIN_ENTRY, isolatedUserData('visualizer'), `--folder=${fixture}`], cwd: APP_ROOT })
   window = await app.firstWindow()
 
   window.on('console', (message) => {
@@ -59,15 +59,15 @@ test.afterAll(async () => {
 
 /**
  * Each test drives the panel to a known state itself rather than inheriting the
- * previous test's DOM. The diagram is re-rendered on a debounce by design, so
+ * previous test's DOM. The graph is rebuilt on a debounce by design, so
  * depending on it surviving between tests makes the suite order-sensitive for
  * no benefit.
  */
 async function openInVisualizer(file: string): Promise<void> {
-  // The Visualizer now lives in the right dock, not the side bar, so it no
-  // longer competes with the Explorer for the same region — but the Explorer is
-  // still switched to explicitly, because the side bar shows one view at a time
-  // and a previous test may have left something else in front of the file tree.
+  // The Visualizer lives in the right dock, not the side bar, so it does not
+  // compete with the Explorer for a region — but the Explorer is still switched
+  // to explicitly, because the side bar shows one view at a time and a previous
+  // test may have left something else in front of the file tree.
   await window.locator('.activity-bar__item[data-view-id="explorer"]').click()
   await expect(window.locator('.side-bar__view[data-view-id="explorer"]')).toBeVisible()
 
@@ -86,66 +86,90 @@ async function openInVisualizer(file: string): Promise<void> {
 }
 
 /**
- * Drives a render by making an explicit selection.
+ * Drives a control-flow render by making an explicit selection.
  *
- * The feed is debounced off `onDidChangeCursorSelection`, so the trigger has to
- * be a genuine *change*. Re-pressing Ctrl+Home when the caret is already there
- * — which is the state every test after the first inherits — fires nothing, and
- * the panel simply keeps whatever it had.
+ * The feed is debounced and additionally keyed on its own inputs, so the trigger
+ * has to be a genuine *change* of selection. Re-pressing Ctrl+A when everything
+ * is already selected — which is the state every test after the first inherits
+ * — produces the same key, and the panel keeps what it had.
  */
-async function showDiagramFor(file: string): Promise<void> {
+async function showGraphFor(file: string): Promise<void> {
   await openInVisualizer(file)
   await window.locator('.monaco-editor .view-lines').click()
   await window.keyboard.press('Control+A')
-  await expect(window.locator('.topo-canvas svg')).toBeVisible({ timeout: 20_000 })
+
+  // Waiting for a node to appear is not enough, and the reason is worth stating:
+  // opening the file already drew the whole-file graph, so nodes are on screen
+  // before Ctrl+A is even pressed. That wait passes instantly against the *old*
+  // drawing, and the assertions then race the 300ms debounce that swaps in the
+  // control-flow one. The toolbar's mode readout is the honest signal — it flips
+  // only once the selection graph has actually been built.
+  await expect(window.locator('.viz-toolbar__metrics')).toContainText('Selection', {
+    timeout: 20_000
+  })
+  await expect(window.locator('.viz-canvas__svg .viz-node').first()).toBeVisible()
 }
 
-test('renders a diagram from the enclosing function with no selection', async () => {
+test('renders the enclosing node from the cursor with no selection', async () => {
   await openInVisualizer('sample.js')
 
-  // No selection at all — just a caret inside the function, which is the
-  // common case and the one that needs findEnclosingSymbol.
+  // No selection at all — just a caret inside the function. The whole file is
+  // graphed and the node covering the caret's line is picked out, which is what
+  // replaced the old regex `findEnclosingSymbol` fallback.
   await window.locator('.monaco-editor .view-lines').click()
   await window.keyboard.press('Control+Home')
   await window.keyboard.press('ArrowDown')
 
-  await expect(window.locator('.topo-canvas svg')).toBeVisible({ timeout: 20_000 })
-  await expect(window.locator('.topo-canvas .node').first()).toBeVisible()
-  await expect(window.locator('.topo-meta')).toContainText('node')
+  const svg = window.locator('.viz-canvas__svg')
+  await expect(svg.locator('.viz-node').first()).toBeVisible({ timeout: 20_000 })
+  await expect(svg).toContainText('classify')
+  // The bidirectional link: the caret on line 2 sits inside `classify`, so that
+  // is the node the panel highlights and the toolbar reports.
+  await expect(svg.locator('.viz-node--selected')).toHaveCount(1)
+  await expect(window.locator('.viz-toolbar__metrics')).toContainText('classify')
 })
 
-test('the diagram reflects the code — decisions, loops and returns', async () => {
-  await showDiagramFor('sample.js')
+test('the graph reflects the code — decisions, loops and returns', async () => {
+  await showGraphFor('sample.js')
 
-  // `<svg>` is not an HTMLElement, so textContent is the right accessor here.
-  const text = (await window.locator('.topo-canvas svg').textContent()) ?? ''
+  // Auto-retrying assertions rather than one `textContent()` read: the graph is
+  // rebuilt on a debounce, and a single read is a snapshot of whichever drawing
+  // happened to be up at that instant.
+  const svg = window.locator('.viz-canvas__svg')
 
-  expect(text).toContain('If')
-  expect(text).toContain('Return')
-  // The `>` is emitted as a numeric entity and must survive rendering as a real
-  // operator — stripping it would draw a condition the code does not contain.
-  expect(text).toContain('>')
+  await expect(svg).toContainText('If')
+  await expect(svg).toContainText('Return')
+  // The operator has to survive into the drawing as a real `>`. Labels are set
+  // through `textContent` rather than markup, so an escaped entity here would
+  // show up on the canvas as a literal `&gt;`.
+  await expect(svg).toContainText('>')
 })
 
-test('clicking a node jumps the editor to that line', async () => {
-  await showDiagramFor('sample.js')
+test('activating a node jumps the editor to that line', async () => {
+  await showGraphFor('sample.js')
 
-  const nodes = window.locator('.topo-canvas .node')
+  const nodes = window.locator('.viz-canvas__svg .viz-node')
   await expect(nodes.first()).toBeVisible()
 
-  // Every node id encodes the line it came from; that mapping is what
-  // click-to-source relies on.
-  const id = await nodes.first().getAttribute('id')
+  // Every node carries the id it was built from, and that id still encodes the
+  // line — the same mapping click-to-source relies on, now read from
+  // `location` rather than parsed back out of the id.
+  const id = await nodes.first().getAttribute('data-node-id')
   expect(id).toMatch(/_L\d+/)
 
-  // Move focus out of the editor first, so regaining it is evidence the click
-  // handler ran rather than focus never having left. The Explorer icon is used
-  // rather than the Visualizer's own: re-clicking an active tool window's icon
-  // now toggles its dock shut, which would take the diagram away with it. The
-  // side bar and the right dock are separate regions, so this leaves the
-  // diagram on screen.
+  // Move focus out of the editor first, so regaining it is evidence the handler
+  // ran rather than focus never having left. The Explorer icon is used rather
+  // than the Visualizer's own: re-clicking an active tool window's icon toggles
+  // its dock shut, which would take the graph away with it. The side bar and
+  // the right dock are separate regions, so this leaves the graph on screen.
   await window.locator('.activity-bar__item[data-view-id="explorer"]').click()
+
+  // A single click selects; revealing the source is a deliberate second action,
+  // so that panning around a graph can never scroll the editor by accident.
+  // Enter on the focused canvas is the keyboard half of that gesture and, unlike
+  // a double click, does not depend on two events landing inside a time window.
   await nodes.first().click()
+  await window.keyboard.press('Enter')
 
   // Reaches through `globalThis` rather than naming `document`: this file is
   // compiled by the Node-side tsconfig, which has no DOM lib — the same reason
@@ -166,21 +190,24 @@ test('clicking a node jumps the editor to that line', async () => {
     .toBe(true)
 })
 
-test('a deliberately broken file still renders a fallback diagram, not an error', async () => {
-  await showDiagramFor('broken.js')
+test('a deliberately broken file still renders a fallback graph, not an error', async () => {
+  await showGraphFor('broken.js')
 
-  // Degrading visibly beats a blank panel: something is drawn, and it is
-  // badged as sequential rather than passed off as a control-flow graph.
-  await expect(window.locator('.topo-canvas svg')).toBeVisible()
-  await expect(window.locator('.topo-meta__badge')).toHaveText('sequential')
+  // Degrading visibly beats a blank panel: something is drawn, and the toolbar
+  // says plainly that it is a list of lines rather than passing it off as a
+  // control-flow graph.
+  await expect(window.locator('.viz-canvas__svg .viz-node').first()).toBeVisible()
+  await expect(window.locator('.viz-toolbar__notice')).toContainText('does not parse')
 })
 
 /**
- * The reason Mermaid is bundled through Vite rather than loaded from a CDN.
- * The renderer ships `connect-src 'none'` and `script-src 'self'`, so a CDN
- * fetch, a blob: worker or an eval would all fail — and would surface here.
+ * Load-bearing, and more so than when Mermaid drew this panel. Every element on
+ * the canvas is now hand-written SVG built in the renderer, which ships
+ * `connect-src 'none'` and `script-src 'self'` — an inline handler, a blob:
+ * worker or a stray eval would all be refused, and would surface here rather
+ * than as a diagram that quietly renders nothing.
  */
-test('Mermaid renders with no CSP violations or console errors', async () => {
+test('the Visualizer renders with no CSP violations or console errors', async () => {
   const csp = consoleProblems.filter((message) =>
     /content security policy|refused to|blob:|unsafe-eval/i.test(message)
   )

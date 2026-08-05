@@ -41,12 +41,16 @@ import {
 } from './views/assist'
 import { registerAssistActions } from './editor/assist-popup'
 import {
-  mountTopography,
-  onTopographyShown,
-  renderTopography,
-  setTopographyRevealHandler
-} from './views/topography'
-import { findEnclosingSymbol } from './editor/code-context'
+  currentVisualizerGraph,
+  highlightVisualizerLine,
+  mountVisualizer,
+  onVisualizerGraphChanged,
+  onVisualizerShown,
+  renderVisualizer,
+  renderVisualizerGraph,
+  setVisualizerFloatHandler,
+  setVisualizerRevealHandler
+} from './views/visualizer/visualizer-panel'
 import { mountSearch, onSearchShown, setSearchQuery } from './views/search'
 import { openCommandPalette, registerCommands } from './workbench/command-palette'
 import { openQuickOpen, watchForFileChanges } from './workbench/quick-open'
@@ -120,13 +124,17 @@ function mountEditor(editorHost: HTMLElement, tabBar: HTMLElement): void {
   // and no shared state with the AI actions above.
   registerAssistActions(editor)
 
-  // Visualizer: a live topography of whatever the cursor is in.
-  setTopographyRevealHandler((line) => {
+  // Visualizer: a live code graph of whatever the cursor is in.
+  const revealInEditor = (line: number): void => {
     editor.revealLineInCenter(line)
     editor.setPosition({ lineNumber: line, column: 1 })
     editor.focus()
-  })
-  registerTopographyFeed(editor)
+  }
+  setVisualizerRevealHandler(revealInEditor)
+  registerVisualizerFeed(editor)
+  // A detached diagram reveals through the same function, so a click means the
+  // same thing whichever window it happened in.
+  connectFloatingVisualizer(revealInEditor)
 
   const placeholder = document.getElementById('editor-placeholder')
   const syncPlaceholder = (): void => {
@@ -180,50 +188,69 @@ function mountEditor(editorHost: HTMLElement, tabBar: HTMLElement): void {
 }
 
 /**
- * Feeds the Visualizer from the editor selection.
+ * Feeds the Visualizer from the editor.
  *
- * Debounced at 300ms because this parses on every cursor move, and the cost is
- * a full Babel parse plus a Mermaid render. With a live selection the selected
- * text is diagrammed; without one it falls back to the enclosing function, so
- * simply putting the caret in a function shows its shape — which is the common
- * case and requires no selecting at all.
+ * Two paths, because the panel has two costs. Moving the caret inside a graph
+ * that is already drawn only changes which node is highlighted, so it is sent
+ * straight through — waiting 300ms to move a highlight makes the panel feel
+ * detached from the editor. Changing the *input* to the graph — a new selection,
+ * an edit, a different file — costs a full Babel parse and a repaint, so it
+ * stays behind the debounce.
+ *
+ * `rebuildKey` is the second half of that split and matters as much as the
+ * timer: the caret changing does not change what the expensive path would
+ * consume, so the debounce would otherwise still reparse the whole file every
+ * time it settles. Comparing the inputs means a bare cursor move costs nothing
+ * at all.
+ *
+ * With no selection the whole file is graphed and the enclosing node is
+ * highlighted from the caret's line. That replaces the old regex
+ * `findEnclosingSymbol` fallback outright and is strictly better here: the same
+ * caret shows the function *in the context of everything it calls*, and it is
+ * the graph's own locations doing the enclosing rather than a brace count.
  */
-function registerTopographyFeed(editor: monacoNs.editor.IStandaloneCodeEditor): void {
+function registerVisualizerFeed(editor: monacoNs.editor.IStandaloneCodeEditor): void {
   let timer: number | null = null
+  let rebuildKey = ''
 
-  const update = (): void => {
+  const rebuild = (): void => {
     const model = editor.getModel()
     const selection = editor.getSelection()
     if (model === null || selection === null) return
 
-    if (!selection.isEmpty()) {
-      void renderTopography(model.getValueInRange(selection), selection.startLineNumber)
+    // The version id covers every edit and the range covers every selection. The
+    // uri is in there because two different files can perfectly well be sitting
+    // on the same version number.
+    const buffer = `${model.uri.toString()} ${model.getVersionId()}`
+    const range =
+      `${selection.startLineNumber}:${selection.startColumn}` +
+      `-${selection.endLineNumber}:${selection.endColumn}`
+    const key = selection.isEmpty() ? `file ${buffer}` : `sel ${buffer} ${range}`
+    if (key === rebuildKey) return
+    rebuildKey = key
+
+    if (selection.isEmpty()) {
+      renderVisualizer(model.getValue(), 1, 'file')
+      highlightVisualizerLine(selection.positionLineNumber)
       return
     }
-
-    // `findEnclosingSymbol` is imported from code-context.ts and not modified —
-    // the same reuse the Assist feature makes of it. It reports a line range
-    // rather than text, so the source comes back out of the model.
-    const enclosing = findEnclosingSymbol(
-      model.getValue(),
-      model.getLanguageId(),
-      selection.startLineNumber
-    )
-    if (enclosing === null) return
-
-    const text = model.getValueInRange({
-      startLineNumber: enclosing.startLine,
-      startColumn: 1,
-      endLineNumber: enclosing.endLine,
-      endColumn: model.getLineMaxColumn(enclosing.endLine)
-    })
-    void renderTopography(text, enclosing.startLine)
+    renderVisualizer(model.getValueInRange(selection), selection.startLineNumber, 'selection')
   }
 
-  editor.onDidChangeCursorSelection(() => {
+  const schedule = (): void => {
     if (timer !== null) window.clearTimeout(timer)
-    timer = window.setTimeout(update, 300)
+    timer = window.setTimeout(rebuild, 300)
+  }
+
+  editor.onDidChangeCursorSelection((event) => {
+    // The cheap path, immediately. `positionLineNumber` rather than
+    // `startLineNumber`: it is the end the caret is actually at, so dragging a
+    // selection upwards tracks the moving end rather than the anchor.
+    highlightVisualizerLine(event.selection.positionLineNumber)
+    schedule()
   })
+  editor.onDidChangeModelContent(schedule)
+  editor.onDidChangeModel(schedule)
 }
 
 /**
@@ -465,7 +492,7 @@ async function mountSideBarViews(): Promise<void> {
   // same handlers, a region three times as wide as the one a control-flow graph
   // was previously being folded into.
   mountRightDock(requireEl('right-dock-title'), requireEl('right-dock-body'))
-  registerRightDockView({ id: 'visualizer', mount: mountTopography, onShow: onTopographyShown })
+  registerRightDockView({ id: 'visualizer', mount: mountVisualizer, onShow: onVisualizerShown })
 
   mountActivityBar(requireEl('activity-bar'), (id) => {
     // The Run icon opens the output console rather than a side-bar view.
@@ -598,7 +625,102 @@ function bindGlobalKeys(): void {
   )
 }
 
+/* --------------------------- the detached window -------------------------- */
+
+/**
+ * Whether a floating diagram is believed to be on screen.
+ *
+ * Gating the push on this is not an optimisation to be waved away: every
+ * `pushState` validates the whole graph twice — once as a request, once as an
+ * event payload — and the main window parses on a 300ms debounce for as long as
+ * somebody is typing. Pushing unconditionally would pay for a detached window
+ * nobody opened, on every keystroke, forever.
+ *
+ * It can go stale in one direction only: closing the floating window from its
+ * own title bar leaves this true, and the pushes become no-ops in main rather
+ * than errors. Correcting that needs main to report the close, which is a
+ * channel this does not have yet.
+ */
+let floatingOpen = false
+
+/**
+ * Wires the main window's half of the bridge.
+ *
+ * Both directions cross through main. There is no renderer-to-renderer channel
+ * and adding one would mean a second trust boundary to get right, for a feature
+ * that is two messages wide.
+ */
+function connectFloatingVisualizer(reveal: (line: number) => void): void {
+  setVisualizerFloatHandler(() => {
+    void window.betterCallCompiler.visualizer.openFloating({}).then((result) => {
+      if (!result.ok || !result.value.opened) return
+      floatingOpen = true
+      // The window opens empty and main replays the last state into it, but only
+      // if a parse has happened since launch. Pushing the graph on screen now
+      // covers the case where it has not.
+      const current = currentVisualizerGraph()
+      void window.betterCallCompiler.visualizer.pushState({
+        graph: current.graph,
+        selectedNodeId: current.selectedNodeId
+      })
+    })
+  })
+
+  onVisualizerGraphChanged((graph, selectedNodeId) => {
+    if (!floatingOpen) return
+    void window.betterCallCompiler.visualizer.pushState({ graph, selectedNodeId })
+  })
+
+  // A node clicked in the detached window moves this window's editor.
+  window.betterCallCompiler.visualizer.onRevealRequested((payload) => {
+    reveal(payload.line)
+  })
+}
+
+/**
+ * The whole renderer, when it is running as the detached diagram.
+ *
+ * It mounts the same panel against the same stylesheet and nothing else — no
+ * activity bar, no editor, no panel, no status bar. It also never parses:
+ * `renderVisualizerGraph` takes the graph the main window already built, so the
+ * two windows cannot drift into showing different diagrams of one file.
+ */
+function bootVisualizerWindow(): void {
+  document.body.replaceChildren()
+
+  const host = el('div', 'viz-floating-host')
+  // The panel writes its heading into a title host. There is no tool-window
+  // header out here, so it gets a hidden one rather than a special case inside
+  // the panel — the window's own title bar already names it.
+  const title = el('div')
+  title.hidden = true
+  const body = el('div', 'viz-floating-body')
+  host.append(title, body)
+  document.body.append(host)
+
+  mountVisualizer(title, body)
+
+  window.betterCallCompiler.visualizer.onStateChanged((state) => {
+    renderVisualizerGraph(state.graph, state.selectedNodeId)
+  })
+
+  // Click-to-source has to reach an editor in the other window.
+  setVisualizerRevealHandler((line) => {
+    void window.betterCallCompiler.visualizer.requestReveal({ line })
+  })
+
+  document.documentElement.dataset['bettercallcompilerReady'] = 'true'
+}
+
 async function boot(): Promise<void> {
+  // One bundle, two windows. The branch is first so nothing below it — Monaco,
+  // the watcher, the git poll — is ever constructed in a window that only draws
+  // a diagram.
+  if (new URLSearchParams(window.location.search).get('mode') === 'visualizer') {
+    bootVisualizerWindow()
+    return
+  }
+
   renderEditorPlaceholder(requireEl('editor-host'))
   await renderStatusBar(requireEl('status-bar'))
 

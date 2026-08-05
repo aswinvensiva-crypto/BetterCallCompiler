@@ -4,8 +4,8 @@
  * Built on Pointer Events with `setPointerCapture` rather than the classic
  * document-level mousemove/mouseup pair. The reason is concrete rather than
  * stylistic: the regions either side of a handle install their own mouse
- * handlers — svg-pan-zoom does it over the Visualizer's SVG today (see
- * topography.ts), Monaco does it over the editor — and a 1px handle is a
+ * handlers — the Visualizer captures the pointer over its canvas to pan it (see
+ * visualizer-canvas.ts), Monaco does it over the editor — and a 1px handle is a
  * surface the pointer leaves within the first few pixels of any drag. Capturing
  * the pointer routes every subsequent move back here regardless of what it is
  * over, so the drag cannot be swallowed halfway through.

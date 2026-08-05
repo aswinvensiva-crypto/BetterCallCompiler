@@ -620,6 +620,25 @@
   background-image: none;
 }
 
+/* ---------- detached window ---------- */
+
+/* The whole viewport when the renderer boots in `?mode=visualizer`. There is no
+   workbench grid out here to inherit a height from, so the chain down to the
+   canvas has to be established from the root. */
+.viz-floating-host {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: var(--bcc-bg);
+}
+
+.viz-floating-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
 /* ---------- minimized strip ---------- */
 
 /* When the dock is collapsed the Visualizer keeps a foothold in the status bar,
