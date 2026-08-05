@@ -14,7 +14,7 @@ import { createEditor } from './editor/monaco-setup'
 import { attachEditor, activeDocument, openFile, reloadFromDisk, saveActive } from './editor/models'
 import { mountTabs } from './editor/tabs'
 import { notifyError } from './workbench/notifications'
-import { mountPanel, showOutput } from './workbench/panel'
+import { mountPanel, showOutput, showProblems as showProblemsPanel } from './workbench/panel'
 import { mountStatusBar } from './workbench/status-bar'
 import { runActiveFile } from './views/run'
 import { mountActivityBar, setSelected } from './workbench/activity-bar'
@@ -496,8 +496,9 @@ async function mountSideBarViews(): Promise<void> {
   registerRightDockView({ id: 'visualizer', mount: mountVisualizer, onShow: onVisualizerShown })
 
   mountActivityBar(requireEl('activity-bar'), (id) => {
-    // The Run icon opens the output console rather than a side-bar view.
+    // Run and Problems open bottom-panel views rather than side-bar ones.
     if (id === 'run') void showOutput()
+    else if (id === 'problems') void showProblemsPanel()
   })
 
   // Assist results surface in its panel the way AI answers surface in theirs.
@@ -560,6 +561,14 @@ function registerWorkbenchCommands(): void {
       run: () => void showPanelView('terminal')
     },
     { id: 'view.output', title: 'View: Output', run: () => void showOutput() },
+    { id: 'view.problems', title: 'View: Problems', run: () => void showProblemsPanel() },
+    {
+      id: 'compiler.restart',
+      title: 'Compiler: Restart Daemon',
+      run: () => {
+        void window.betterCallCompiler.compiler.restart({})
+      }
+    },
 
     {
       id: 'run.file',

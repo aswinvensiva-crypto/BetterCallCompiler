@@ -53,6 +53,16 @@ export const ACTIVITY_ITEMS: readonly ActivityItem[] = [
   },
   { id: 'run', label: 'Run', icon: 'M8 5v14l11-7z', enabled: true, region: 'other' },
   {
+    // `region: 'other'` like Run: both open a bottom-panel view rather than a
+    // side-bar one, so main.ts routes them through the panel instead of the
+    // tool-window registry.
+    id: 'problems',
+    label: 'Problems',
+    icon: 'M12 9v4M12 17h.01M10.3 4.3 2.5 18a1.7 1.7 0 0 0 1.5 2.5h16a1.7 1.7 0 0 0 1.5-2.5L13.7 4.3a1.7 1.7 0 0 0-3 0z',
+    enabled: true,
+    region: 'other'
+  },
+  {
     id: 'insights',
     label: 'Insights',
     icon: 'M4 20V10M10 20V4M16 20v-7M22 20H2',

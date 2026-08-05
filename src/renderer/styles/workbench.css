@@ -2396,3 +2396,154 @@ body.workbench--resizing-y * {
   color: var(--bcc-fg);
   border-radius: 2px;
 }
+
+/* ---------- Problems panel ---------- */
+
+.panel__view--problems {
+  overflow: auto;
+  padding: 2px 0 6px;
+}
+
+.problems-summary {
+  display: inline-flex;
+  gap: 10px;
+  align-items: center;
+  font-size: var(--bcc-font-size-sm);
+}
+
+.problems-summary__errors {
+  color: var(--bcc-danger);
+}
+
+.problems-summary__warnings {
+  color: var(--bcc-warning);
+}
+
+/* The daemon's own state. `failed` must not read like `stopped`: a panel
+   showing "0 problems" while the daemon is dead is lying by omission. */
+.problems-chip {
+  padding: 0 6px;
+  border: 1px solid var(--bcc-border-strong);
+  border-radius: 9px;
+  color: var(--bcc-fg-subtle);
+  font-size: var(--bcc-font-size-sm);
+  text-transform: lowercase;
+}
+
+.problems-chip--idle {
+  border-color: var(--bcc-success);
+  color: var(--bcc-success);
+}
+
+.problems-chip--indexing,
+.problems-chip--checking,
+.problems-chip--starting,
+.problems-chip--restarting {
+  border-color: var(--bcc-accent);
+  color: var(--bcc-accent);
+}
+
+.problems-chip--failed {
+  border-color: var(--bcc-danger);
+  color: var(--bcc-danger);
+}
+
+.problems-group__header {
+  display: grid;
+  grid-template-columns: 14px 1fr auto;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  cursor: pointer;
+  font-size: var(--bcc-font-size-sm);
+}
+
+.problems-group__header:hover {
+  background: var(--bcc-bg-hover);
+}
+
+.problems-group__chevron {
+  display: inline-block;
+  color: var(--bcc-fg-subtle);
+  transition: transform 0.12s ease;
+}
+
+.problems-group__chevron--open {
+  transform: rotate(90deg);
+}
+
+.problems-group__path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}
+
+.problems-group__count {
+  color: var(--bcc-fg-subtle);
+}
+
+.problems-row {
+  display: grid;
+  grid-template-columns: 14px 1fr auto auto;
+  align-items: baseline;
+  gap: 8px;
+  padding: 2px 10px 2px 26px;
+  cursor: pointer;
+  font-size: var(--bcc-font-size-sm);
+}
+
+.problems-row:hover,
+.problems-row:focus-visible {
+  background: var(--bcc-bg-hover);
+}
+
+.problems-row__icon {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  align-self: center;
+}
+
+.problems-row__icon--error {
+  background: var(--bcc-danger);
+}
+
+.problems-row__icon--warning {
+  background: var(--bcc-warning);
+}
+
+.problems-row__icon--info,
+.problems-row__icon--hint {
+  background: var(--bcc-fg-subtle);
+}
+
+.problems-row__message {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.problems-row__code,
+.problems-row__position {
+  color: var(--bcc-fg-subtle);
+  font-family: var(--bcc-font-mono);
+}
+
+.problems-failure {
+  padding: 10px;
+}
+
+.problems-failure__title {
+  margin: 0 0 4px;
+  color: var(--bcc-danger);
+}
+
+.problems-failure__detail {
+  margin: 0;
+  color: var(--bcc-fg-muted);
+  font-size: var(--bcc-font-size-sm);
+  font-family: var(--bcc-font-mono);
+  word-break: break-word;
+}
