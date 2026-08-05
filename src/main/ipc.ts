@@ -13,6 +13,7 @@ import {
   type ResponseOf,
   type Result
 } from '../shared/ipc-contract'
+import { stoppedCompilerStatus } from '../shared/types'
 import {
   createDirectory,
   createFile,
@@ -300,7 +301,20 @@ export function createHandlerMap(): HandlerMap {
       const host = getVisualizerHostWindow()
       if (host !== null) emitEvent(host, 'visualizer:revealRequested', request)
       return {}
-    }
+    },
+
+    /* ------------------------------ compiler ------------------------------ *
+     * Stubs. The daemon lands in a later step; these exist now so the channel
+     * table, the handler map and the preload bridge are provably in lockstep
+     * before a line of worker code is written.
+     * ---------------------------------------------------------------------- */
+
+    'compiler:status': () => ({ status: stoppedCompilerStatus() }),
+    'compiler:diagnostics': () => ({ files: [] }),
+    'compiler:dependents': () => ({ graph: { node: null, dependents: [], cycle: null } }),
+    'compiler:openDocument': () => ({ accepted: true as const }),
+    'compiler:closeDocument': () => ({ closed: true as const }),
+    'compiler:restart': () => ({ restarted: true as const })
   }
 }
 

@@ -15,6 +15,10 @@ import {
   gitCommitSchema,
   gitFileDiffSchema,
   githubInsightsSchema,
+  compilerStatusSchema,
+  dependencyQuerySchema,
+  diagnosticsBatchSchema,
+  fileDiagnosticsSchema,
   gitStatusSchema,
   languageBreakdownSchema,
   repositoryStatsSchema,
@@ -409,6 +413,43 @@ export const INVOKE_CHANNELS = {
   'visualizer:requestReveal': {
     request: z.strictObject({ line: z.number().int().positive() }),
     response: empty
+  },
+
+  /* ------------------------------ compiler ------------------------------ */
+
+  'compiler:status': {
+    request: empty,
+    response: z.strictObject({ status: compilerStatusSchema })
+  },
+  'compiler:diagnostics': {
+    /** `null` asks for every file — what the Problems panel pulls on mount. */
+    request: z.strictObject({ relativePath: z.string().nullable() }),
+    response: z.strictObject({ files: z.array(fileDiagnosticsSchema) })
+  },
+  'compiler:dependents': {
+    request: z.strictObject({ relativePath: z.string().min(1) }),
+    response: z.strictObject({ graph: dependencyQuerySchema })
+  },
+  /**
+   * The unsaved-buffer overlay. The renderer cannot push, so an open document
+   * rides an invoke rather than an event — the daemon must see the buffer the
+   * user is looking at, not the last thing written to disk.
+   */
+  'compiler:openDocument': {
+    request: z.strictObject({
+      relativePath: z.string().min(1),
+      content: z.string(),
+      version: z.number().int().nonnegative()
+    }),
+    response: z.strictObject({ accepted: z.literal(true) })
+  },
+  'compiler:closeDocument': {
+    request: z.strictObject({ relativePath: z.string().min(1) }),
+    response: z.strictObject({ closed: z.literal(true) })
+  },
+  'compiler:restart': {
+    request: empty,
+    response: z.strictObject({ restarted: z.literal(true) })
   }
 } as const satisfies Record<InvokeChannel, ChannelSpec>
 
@@ -444,7 +485,13 @@ export const EVENT_CHANNELS = {
    */
   'visualizer:revealRequested': {
     payload: z.strictObject({ line: z.number().int().positive() })
-  }
+  },
+  // Carries its payload rather than being a bare signal like `git:changed`:
+  // diagnostics arrive in coalesced batches, and re-pulling per batch would
+  // undo the batching that makes them affordable.
+  'compiler:diagnosticsChanged': { payload: diagnosticsBatchSchema },
+  // The graph summary rides on status instead of earning a third channel.
+  'compiler:statusChanged': { payload: compilerStatusSchema }
 } as const satisfies Record<EventChannel, { readonly payload: z.ZodType }>
 
 export type InvokeChannels = typeof INVOKE_CHANNELS

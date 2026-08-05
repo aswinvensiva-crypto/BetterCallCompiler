@@ -60,7 +60,13 @@ export const INVOKE_CHANNEL_NAMES = [
   'visualizer:openFloating',
   'visualizer:closeFloating',
   'visualizer:pushState',
-  'visualizer:requestReveal'
+  'visualizer:requestReveal',
+  'compiler:status',
+  'compiler:diagnostics',
+  'compiler:dependents',
+  'compiler:openDocument',
+  'compiler:closeDocument',
+  'compiler:restart'
 ] as const
 
 export type InvokeChannel = (typeof INVOKE_CHANNEL_NAMES)[number]
@@ -80,7 +86,9 @@ export const EVENT_CHANNEL_NAMES = [
   // docked panel already holds what it would carry), reveals come back to the
   // window that owns the editor.
   'visualizer:stateChanged',
-  'visualizer:revealRequested'
+  'visualizer:revealRequested',
+  'compiler:diagnosticsChanged',
+  'compiler:statusChanged'
 ] as const
 
 export type EventChannel = (typeof EVENT_CHANNEL_NAMES)[number]
