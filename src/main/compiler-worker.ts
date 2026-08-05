@@ -13,11 +13,20 @@ import {
   cycleFor,
   dependentsOf,
   edgeCount,
+  invalidationSet,
   removeNode,
   upsertNode,
   type Cycle
 } from '../shared/dependency-graph'
-import type { BuildGraphSummary, CompilerDaemonState, DependencyNode } from '../shared/types'
+import { lineStartsOf, rangeFromSpan } from '../shared/diagnostic-position'
+import type {
+  BuildGraphSummary,
+  CompilerDaemonState,
+  DependencyNode,
+  DiagnosticMessage,
+  DiagnosticSeverity,
+  FileDiagnostics
+} from '../shared/types'
 
 /**
  * The compiler daemon, running in a worker_thread.
@@ -261,6 +270,11 @@ function indexWorkspace(root: string): void {
 
   cycles = assignComponents(graph)
   lastBuildMs = Date.now() - started
+
+  // The program changed shape, so any cached service is describing a different
+  // workspace.
+  service = null
+
   busySince = null
   reportState('idle')
 }
@@ -292,8 +306,201 @@ function applyChanges(root: string, changed: readonly string[], removed: readonl
   }
 
   if (graph.dirty) cycles = assignComponents(graph)
+
+  // A changed file invalidates itself and everything that transitively imports
+  // it — that reverse walk is the whole point of the graph, and what makes a
+  // squiggle appear in a dependent file the user never touched.
+  const affected = invalidationSet(graph, [...changed, ...removed]).filter((file) =>
+    graph.nodes.has(file)
+  )
+  checkFiles(root, affected)
+
   busySince = null
-  reportState('idle')
+  reportState('idle', affected.length)
+}
+
+/* ---------------------------- language service ---------------------------- */
+
+let service: ts.LanguageService | null = null
+
+/** Bumped per file on every edit so the host knows a snapshot is stale. */
+const documentVersions = new Map<string, number>()
+
+/** Files that had diagnostics last pass — the clean-sweep set. */
+let previouslyDirty = new Set<string>()
+
+/** Monotonic per file, so the renderer can discard an out-of-order batch. */
+const emittedVersions = new Map<string, number>()
+
+function bumpVersion(relativePath: string): void {
+  documentVersions.set(relativePath, (documentVersions.get(relativePath) ?? 0) + 1)
+}
+
+/**
+ * The file list handed to the LanguageService.
+ *
+ * Seeded from the walked graph, NOT from the tsconfig alone. This repository's
+ * own root tsconfig.json is an include-less stub that resolves to no files;
+ * trusting it would produce an empty program and a daemon that reports
+ * everything as clean because it checked nothing.
+ */
+function scriptFileNames(root: string): string[] {
+  const names = new Set<string>()
+  for (const relativePath of graph.nodes.keys()) {
+    names.add(toAbsolute(root, relativePath))
+  }
+  return [...names]
+}
+
+function createService(root: string): ts.LanguageService {
+  const host: ts.LanguageServiceHost = {
+    getScriptFileNames: () => scriptFileNames(root),
+    getScriptVersion: (fileName) => {
+      const relativePath = toRelative(root, fileName)
+      const overlay = overlays.get(relativePath)
+      if (overlay !== undefined) return `o${overlay.version}`
+      return String(documentVersions.get(relativePath) ?? mtimeOf(fileName))
+    },
+    getScriptSnapshot: (fileName) => {
+      // Overlay first: the daemon must check the buffer the user is looking at,
+      // not the last thing written to disk.
+      const overlay = overlays.get(toRelative(root, fileName))
+      if (overlay !== undefined) return ts.ScriptSnapshot.fromString(overlay.content)
+
+      const text = readIfPossible(fileName)
+      return text === null ? undefined : ts.ScriptSnapshot.fromString(text)
+    },
+    getCurrentDirectory: () => root,
+    getCompilationSettings: () => compilerOptions,
+    getDefaultLibFileName: (options) => ts.getDefaultLibFilePath(options),
+    fileExists: ts.sys.fileExists,
+    readFile: ts.sys.readFile,
+    readDirectory: ts.sys.readDirectory,
+    directoryExists: ts.sys.directoryExists,
+    getDirectories: ts.sys.getDirectories
+  }
+
+  return ts.createLanguageService(host, ts.createDocumentRegistry())
+}
+
+const SEVERITY_BY_CATEGORY: Readonly<Record<ts.DiagnosticCategory, DiagnosticSeverity>> = {
+  [ts.DiagnosticCategory.Error]: 'error',
+  [ts.DiagnosticCategory.Warning]: 'warning',
+  [ts.DiagnosticCategory.Suggestion]: 'hint',
+  [ts.DiagnosticCategory.Message]: 'info'
+}
+
+function toDiagnosticMessage(
+  root: string,
+  relativePath: string,
+  lineStarts: readonly number[],
+  diagnostic: ts.Diagnostic
+): DiagnosticMessage {
+  const range = rangeFromSpan(lineStarts, diagnostic.start ?? 0, diagnostic.length ?? 0)
+
+  return {
+    relativePath,
+    path: toAbsolute(root, relativePath),
+    severity: SEVERITY_BY_CATEGORY[diagnostic.category] ?? 'error',
+    code: `TS${diagnostic.code}`,
+    message: ts.flattenDiagnosticMessageText(diagnostic.messageText, ' '),
+    ...range,
+    source: 'typescript'
+  }
+}
+
+/** A cycle warning, anchored on the file rather than an arbitrary line. */
+function cycleDiagnostic(root: string, relativePath: string, cycle: Cycle): DiagnosticMessage {
+  const others = cycle.members.filter((member) => member !== relativePath)
+  return {
+    relativePath,
+    path: toAbsolute(root, relativePath),
+    severity: 'warning',
+    code: 'TS-CYCLE',
+    message: `Import cycle: this file and ${others.join(', ')} import each other.`,
+    startLine: 1,
+    startColumn: 1,
+    endLine: 1,
+    endColumn: 2,
+    source: 'graph'
+  }
+}
+
+/**
+ * Checks a set of files and posts their diagnostics.
+ *
+ * Files with an overlay are checked first — they are what the user is looking
+ * at, and getting a squiggle onto the visible file before the rest of the
+ * workspace is what makes this feel live rather than batch.
+ *
+ * Syntactic diagnostics are skipped for files with an overlay: Monaco's own
+ * bundled TS worker already reports those instantly and locally for open
+ * models, and reporting them here too would draw every syntax error twice.
+ */
+function checkFiles(root: string, files: readonly string[]): void {
+  if (service === null) service = createService(root)
+
+  const ordered = [
+    ...files.filter((file) => overlays.has(file)),
+    ...files.filter((file) => !overlays.has(file))
+  ]
+
+  const produced: FileDiagnostics[] = []
+  const nowDirty = new Set<string>()
+
+  for (const relativePath of ordered) {
+    const absolute = toAbsolute(root, relativePath)
+
+    let raw: ts.Diagnostic[]
+    try {
+      const semantic = service.getSemanticDiagnostics(absolute)
+      const syntactic = overlays.has(relativePath)
+        ? []
+        : service.getSyntacticDiagnostics(absolute)
+      raw = [...semantic, ...syntactic]
+    } catch {
+      // A file the program cannot load is not a reason to abandon the pass.
+      continue
+    }
+
+    const text = overlays.get(relativePath)?.content ?? readIfPossible(absolute) ?? ''
+    const lineStarts = lineStartsOf(text)
+
+    const diagnostics = raw.map((diagnostic) =>
+      toDiagnosticMessage(root, relativePath, lineStarts, diagnostic)
+    )
+
+    const cycle = cycleFor(cycles, relativePath)
+    if (cycle !== null) diagnostics.push(cycleDiagnostic(root, relativePath, cycle))
+
+    const version = (emittedVersions.get(relativePath) ?? 0) + 1
+    emittedVersions.set(relativePath, version)
+
+    produced.push({ relativePath, path: absolute, diagnostics, version })
+    if (diagnostics.length > 0) nowDirty.add(relativePath)
+  }
+
+  // Clean sweep: anything that had diagnostics last pass but was not re-checked
+  // this pass gets an explicit empty set, or its squiggles never clear.
+  for (const relativePath of previouslyDirty) {
+    if (nowDirty.has(relativePath)) continue
+    if (ordered.includes(relativePath)) continue
+    if (!graph.nodes.has(relativePath)) {
+      // Deleted: still emit an empty set so the Problems panel drops the row.
+      const version = (emittedVersions.get(relativePath) ?? 0) + 1
+      emittedVersions.set(relativePath, version)
+      produced.push({
+        relativePath,
+        path: toAbsolute(root, relativePath),
+        diagnostics: [],
+        version
+      })
+    }
+  }
+
+  previouslyDirty = nowDirty
+
+  if (produced.length > 0) post({ type: 'diagnostics', files: produced, settled: true })
 }
 
 function describeNode(root: string, relativePath: string): DependencyNode | null {
@@ -333,11 +540,15 @@ function handle(request: WorkerRequest): void {
         content: request.content,
         version: request.version
       })
+      bumpVersion(request.relativePath)
       if (workspaceRoot !== null) applyChanges(workspaceRoot, [request.relativePath], [])
       return
 
     case 'closeDocument':
       overlays.delete(request.relativePath)
+      // The buffer is gone, so the next check must read disk rather than serve
+      // a snapshot the host still thinks is current.
+      bumpVersion(request.relativePath)
       return
 
     case 'dependents': {
