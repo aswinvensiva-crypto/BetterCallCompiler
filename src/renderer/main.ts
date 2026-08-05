@@ -33,6 +33,7 @@ import { mountInsights, onInsightsShown } from './views/insights'
 import { mountSettings, onSettingsShown } from './views/settings'
 import { listenForAiActions, mountAi, onAiShown } from './views/ai'
 import { registerAiActions } from './editor/ai-actions'
+import { applyDiagnostics, clearAllMarkers } from './editor/markers'
 import {
   listenForAssistActions,
   mountAssist,
@@ -712,6 +713,33 @@ function bootVisualizerWindow(): void {
   document.documentElement.dataset['bettercallcompilerReady'] = 'true'
 }
 
+/**
+ * Renders daemon diagnostics as Monaco markers.
+ *
+ * A batch is applied wholesale: `FileDiagnostics` is the complete set for its
+ * file, so an empty array clears that file's markers — which is how a fixed
+ * error's squiggle disappears.
+ */
+function bindCompilerDiagnostics(): void {
+  window.betterCallCompiler.compiler.onDiagnosticsChanged((batch) => {
+    applyDiagnostics(batch.files)
+  })
+
+  window.betterCallCompiler.compiler.onStatusChanged((status) => {
+    // A restarting or failed daemon is no longer maintaining its markers, and
+    // leaving them would strand squiggles nobody is updating.
+    if (status.state === 'restarting' || status.state === 'failed') clearAllMarkers()
+  })
+
+  // The daemon may already have checked files before this window finished
+  // booting; pull whatever it has rather than waiting for the next edit.
+  void window.betterCallCompiler.compiler
+    .diagnostics({ relativePath: null })
+    .then((result) => {
+      if (result.ok) applyDiagnostics(result.value.files)
+    })
+}
+
 async function boot(): Promise<void> {
   // One bundle, two windows. The branch is first so nothing below it — Monaco,
   // the watcher, the git poll — is ever constructed in a window that only draws
@@ -732,6 +760,7 @@ async function boot(): Promise<void> {
   // resulting width change without being told.
   await mountWorkbenchLayout()
   listenForAiActions()
+  bindCompilerDiagnostics()
   registerWorkbenchCommands()
   bindGlobalKeys()
   watchForFileChanges()

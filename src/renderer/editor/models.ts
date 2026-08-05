@@ -1,5 +1,6 @@
 import type * as monacoNs from 'monaco-editor'
 import { languageForFile, monaco } from './monaco-setup'
+import { flushPendingMarkers } from './markers'
 import type { FileNode } from '../../shared/types'
 
 /**
@@ -106,6 +107,11 @@ export async function openFile(node: FileNode): Promise<boolean> {
   }
 
   model.onDidChangeContent(() => notify())
+
+  // The daemon reports on the whole invalidation set, most of which is not
+  // open. Anything parked for this file is drained now, so opening it shows
+  // its squiggles immediately instead of waiting for the next unrelated edit.
+  flushPendingMarkers(node.relativePath)
 
   documents.set(key, doc)
   order.push(key)
