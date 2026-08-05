@@ -184,6 +184,50 @@ async function loadToolchains(): Promise<void> {
   renderIndicator()
 }
 
+/* -------------------------- Visualizer foothold -------------------------- */
+
+export interface VisualizerStatus {
+  /** What the Visualizer is currently showing. */
+  readonly label: string
+  /** A short count beside it — nodes drawn. */
+  readonly detail: string
+  /** Restores the panel. The entry is useless if it is only a readout. */
+  readonly onActivate: () => void
+}
+
+let visualizerSlot: HTMLButtonElement | null = null
+let visualizerActivate: (() => void) | null = null
+
+/**
+ * The minimized Visualizer's one remaining trace, or null to remove it.
+ *
+ * A module-level export rather than a `StatusBarHandle` method for the same
+ * reason `rescanToolchains` is one: the caller is a view that never sees the
+ * handle — main.ts creates it, uses it for the bridge readout and drops it —
+ * and threading it out to the Visualizer would couple three modules to move one
+ * string.
+ */
+export function setVisualizerStatus(status: VisualizerStatus | null): void {
+  const slot = visualizerSlot
+  if (slot === null) return
+
+  if (status === null) {
+    visualizerActivate = null
+    slot.replaceChildren()
+    slot.hidden = true
+    return
+  }
+
+  visualizerActivate = status.onActivate
+  const strip = el('div', 'viz-status')
+  strip.append(
+    el('span', 'viz-status__label', status.label),
+    el('span', 'viz-status__count', status.detail)
+  )
+  slot.replaceChildren(strip)
+  slot.title = `${status.label} — minimized. Click to restore.`
+  slot.hidden = false
+}
 
 /* --------------------------------- mount -------------------------------- */
 
@@ -204,6 +248,19 @@ export function mountStatusBar(statusBar: HTMLElement): StatusBarHandle {
   host.append(bridge)
 
   host.append(el('span', 'status-bar__spacer'))
+
+  // Empty and hidden until the Visualizer is minimized. The listener is bound
+  // once here rather than in `setVisualizerStatus`, which runs on every
+  // debounced rebuild and would otherwise stack a handler per keystroke.
+  visualizerSlot = el('button', 'status-bar__item status-bar__item--button')
+  visualizerSlot.type = 'button'
+  visualizerSlot.hidden = true
+  visualizerSlot.setAttribute('aria-label', 'Restore the Visualizer')
+  visualizerSlot.addEventListener('click', (event) => {
+    event.stopPropagation()
+    visualizerActivate?.()
+  })
+  host.append(visualizerSlot)
 
   indicator = el('button', 'status-bar__item status-bar__item--button')
   indicator.type = 'button'

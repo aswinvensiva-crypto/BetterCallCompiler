@@ -56,7 +56,11 @@ export const INVOKE_CHANNEL_NAMES = [
   'ai:cancel',
   'ai:apply',
   'ai:revert',
-  'ai:log'
+  'ai:log',
+  'visualizer:openFloating',
+  'visualizer:closeFloating',
+  'visualizer:pushState',
+  'visualizer:requestReveal'
 ] as const
 
 export type InvokeChannel = (typeof INVOKE_CHANNEL_NAMES)[number]
@@ -71,7 +75,12 @@ export const EVENT_CHANNEL_NAMES = [
   'run:exit',
   'git:changed',
   'ai:delta',
-  'ai:done'
+  'ai:done',
+  // The two halves of the pop-out: state goes out to the floating window (the
+  // docked panel already holds what it would carry), reveals come back to the
+  // window that owns the editor.
+  'visualizer:stateChanged',
+  'visualizer:revealRequested'
 ] as const
 
 export type EventChannel = (typeof EVENT_CHANNEL_NAMES)[number]

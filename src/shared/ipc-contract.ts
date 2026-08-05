@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import type { EventChannel, InvokeChannel } from './ipc-channels'
+import { codeGraphSchema } from './code-graph'
 import {
   aiContextSchema,
   aiDoneSchema,
@@ -106,6 +107,23 @@ export interface ChannelSpec {
 
 const empty = z.strictObject({})
 const pathRequest = z.strictObject({ path: z.string().min(1) })
+
+/**
+ * The Visualizer's whole state in one message.
+ *
+ * One schema serves both the `visualizer:pushState` request and the
+ * `visualizer:stateChanged` payload because they are the same value on two hops
+ * of one trip: renderer → main → floating window. Declaring them separately
+ * would let the halves of a single round trip drift, and the drift would only
+ * show up as a `BAD_RESPONSE`-style failure in the window nobody is watching.
+ *
+ * `selectedNodeId` travels with the graph rather than on its own channel so the
+ * floating window can never paint a selection that belongs to a previous graph.
+ */
+const visualizerState = z.strictObject({
+  graph: codeGraphSchema,
+  selectedNodeId: z.string().nullable()
+})
 
 /**
  * THE invoke table: one zod request schema and one response schema per channel.
@@ -343,6 +361,54 @@ export const INVOKE_CHANNELS = {
   'ai:log': {
     request: empty,
     response: z.strictObject({ entries: z.array(aiLogEntrySchema) })
+  },
+
+  /**
+   * There is at most one floating Visualizer, so this is "show me the diagram
+   * window", not "make a diagram window". Asking twice raises the one that
+   * exists.
+   *
+   * `opened` reports whether a floating window is on screen *after* the call,
+   * deliberately not distinguishing "created" from "already there and now
+   * focused": the renderer drives a window-state control off it, and that
+   * control has one 'floating' state, not two.
+   */
+  'visualizer:openFloating': {
+    request: empty,
+    response: z.strictObject({ opened: z.boolean() })
+  },
+  'visualizer:closeFloating': {
+    request: empty,
+    response: empty
+  },
+  /**
+   * Push, not pull. The floating window is sandboxed with no filesystem and no
+   * workspace of its own, and re-deriving the graph there would mean a second
+   * AST walk that is allowed to disagree with the first. The window that owns
+   * the editor owns the graph and hands over the finished value.
+   *
+   * A no-op — never an error — when nothing is floating. The panel pushes on
+   * every graph change, and making it an error would force the renderer to
+   * track a window lifetime it does not control and cannot observe.
+   */
+  'visualizer:pushState': {
+    request: visualizerState,
+    response: empty
+  },
+
+  /**
+   * The other half of `visualizer:revealRequested`, and the only interaction in
+   * the app that has to cross from one window back to the other: the floating
+   * diagram's click-to-source wants to move an editor that is not in its window.
+   *
+   * It cannot be an event, because events only travel main → renderer. So the
+   * floating window invokes this, and main turns it into the event the *main*
+   * window is subscribed to. Two hops, no renderer-to-renderer channel, and
+   * neither window needs to know whether the other is alive.
+   */
+  'visualizer:requestReveal': {
+    request: z.strictObject({ line: z.number().int().positive() }),
+    response: empty
   }
 } as const satisfies Record<InvokeChannel, ChannelSpec>
 
@@ -358,7 +424,27 @@ export const EVENT_CHANNELS = {
   // snapshot that is already stale by the time it is rendered.
   'git:changed': { payload: z.strictObject({}) },
   'ai:delta': { payload: aiStreamDeltaSchema },
-  'ai:done': { payload: aiDoneSchema }
+  'ai:done': { payload: aiDoneSchema },
+
+  /** `visualizer:pushState` relayed to the floating window; same value, same schema. */
+  'visualizer:stateChanged': { payload: visualizerState },
+
+  /**
+   * Click-to-source from the floating window. The editor only exists in the
+   * main window, so a reveal has to travel back through main rather than being
+   * handled where it was clicked.
+   *
+   * Nothing in main emits this yet, and that is a known hole rather than an
+   * oversight: this step's contract adds no invoke channel carrying a reveal
+   * request *up* from the floating window, so there is no trigger. The name and
+   * payload are declared now because the preload derives
+   * `visualizer.onRevealRequested` from this table and the main window's
+   * subscription is being written against it — the missing half is the request,
+   * not this.
+   */
+  'visualizer:revealRequested': {
+    payload: z.strictObject({ line: z.number().int().positive() })
+  }
 } as const satisfies Record<EventChannel, { readonly payload: z.ZodType }>
 
 export type InvokeChannels = typeof INVOKE_CHANNELS

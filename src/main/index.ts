@@ -18,6 +18,7 @@ import { cancelAllRuns, setRunEmitters } from './runner'
 import { setGitChangeEmitter, startGitWatch, stopGitWatch } from './git-service'
 import { cancelAllAiStreams, setAiEmitters } from './ai-service'
 import { buildCspHeader, isAllowedExternalUrl, isInternalNavigation } from './security'
+import { closeVisualizerWindow, setVisualizerHostWindow } from './visualizer-window'
 
 /**
  * "Dev" means *served by the Vite dev server*, not merely "not packaged".
@@ -36,7 +37,14 @@ function isDevServerMode(): boolean {
 /** Directory containing the built renderer (out/renderer) in a packaged app. */
 const rendererRoot = join(__dirname, '../renderer')
 
-/** Origin the packaged renderer is served from. See `installAppProtocol`. */
+/**
+ * Origin the packaged renderer is served from. See `installAppProtocol`.
+ *
+ * `visualizer-window.ts` repeats this string rather than importing it: `ipc.ts`
+ * imports that module, so the edge back to here would close a cycle *and* pull
+ * this file's module-scope side effects into the unit tests. Change one, change
+ * the other — the failure is a blank floating window, not a silent one.
+ */
 const APP_ORIGIN = 'app://bettercallcompiler'
 
 /**
@@ -120,8 +128,17 @@ function createWindow(): BrowserWindow {
     (payload) => emitEvent(win, 'ai:done', payload)
   )
 
+  // Click-to-source in a floating diagram has to steer *this* window's editor,
+  // and the IPC handler cannot work that out for itself: the request arrives
+  // from the floating window, so `event.sender` names the one window that must
+  // not receive it.
+  setVisualizerHostWindow(win)
+
   // Orphaned shells and half-finished builds outlive the window unless every
-  // child is reaped explicitly.
+  // child is reaped explicitly. This is global teardown keyed to the *main*
+  // window's lifetime, which is why `visualizer-window.ts` installs its own
+  // `closed` handler instead of reusing this one — closing a diagram must not
+  // kill the user's terminals, builds and AI streams.
   win.on('closed', () => {
     disposeAllSessions()
     cancelAllRuns()
@@ -137,6 +154,13 @@ function createWindow(): BrowserWindow {
 
   win.on('closed', () => {
     mainWindow = null
+    setVisualizerHostWindow(null)
+    // A floating Visualizer that outlives its editor is a window with nothing
+    // behind it: it cannot be re-fed (`visualizer:pushState` comes from the
+    // main window) and on non-darwin it would hold `window-all-closed` back,
+    // leaving a running app the user has no way to reach. Closing it here means
+    // that state cannot be reached rather than being handled after the fact.
+    closeVisualizerWindow()
   })
 
   return win
@@ -177,6 +201,10 @@ function installAppProtocol(): void {
   protocol.handle('app', async (request) => {
     let requestPath: string
     try {
+      // `.pathname` only — never `request.url` whole, and never `.search`. That
+      // is what lets the floating window load `/index.html?mode=visualizer`
+      // through this handler: the query is invisible to the confinement check
+      // below, so it can neither widen nor confuse it.
       requestPath = decodeURIComponent(new URL(request.url).pathname)
     } catch {
       return new Response('bad request', { status: 400 })
@@ -303,8 +331,13 @@ if (!gotLock) {
 
     mainWindow = createWindow()
 
+    // The test used to be `getAllWindows().length === 0`, which was only ever
+    // correct while one window existed. A floating Visualizer keeps that count
+    // above zero, so on macOS — where closing the editor does not quit — the
+    // dock icon would stop bringing the editor back for as long as a diagram
+    // was open. Ask about the window we actually mean.
     app.on('activate', () => {
-      if (BrowserWindow.getAllWindows().length === 0) mainWindow = createWindow()
+      if (mainWindow === null || mainWindow.isDestroyed()) mainWindow = createWindow()
     })
   })
 

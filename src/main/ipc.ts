@@ -52,6 +52,12 @@ import { clearSecret, hasSecret, isEncryptionAvailable, setSecret } from './secr
 import { loadSettings, saveSettings } from './settings'
 import { cancelAiStream, startAiStream } from './ai-service'
 import { applyAiEdit, readAiLog, revertAiEdit } from './ai-log'
+import {
+  closeVisualizerWindow,
+  getVisualizerHostWindow,
+  getVisualizerWindow,
+  openVisualizerWindow
+} from './visualizer-window'
 
 export type InvokeHandler<C extends InvokeChannel> = (
   request: RequestOf<C>,
@@ -64,6 +70,22 @@ export type InvokeHandler<C extends InvokeChannel> = (
  * completeness test covers the same ground for anyone who bypasses tsc.
  */
 export type HandlerMap = { readonly [C in InvokeChannel]: InvokeHandler<C> }
+
+/**
+ * The last state pushed at the Visualizer, replayed when the floating window
+ * finishes loading.
+ *
+ * Without it, the obvious way to write a pop-out button — open the window, push
+ * the current graph — loses that push every time: the new window's renderer has
+ * not run yet, so nothing is subscribed to `visualizer:stateChanged` and the
+ * send lands nowhere. The window then sits empty until the user happens to edit
+ * something, which looks exactly like a broken feature. Buffering one value
+ * costs one graph of memory and removes the need for a readiness handshake that
+ * every later push would have to be sequenced behind.
+ *
+ * Kept across a close/reopen on purpose, so reopening paints immediately.
+ */
+let lastVisualizerState: RequestOf<'visualizer:pushState'> | null = null
 
 function describeError(error: unknown): string {
   if (error instanceof Error) return error.message
@@ -233,7 +255,52 @@ export function createHandlerMap(): HandlerMap {
 
     'ai:revert': async (request) => ({ entry: await revertAiEdit(request.id) }),
 
-    'ai:log': async () => ({ entries: await readAiLog() })
+    'ai:log': async () => ({ entries: await readAiLog() }),
+
+    // The sender is the parent for *positioning only* — the same way
+    // `fs:openFolder` hands the dialog a window to sit over. Passing it as
+    // Electron's `parent` option would make the diagram permanently on top of
+    // the editor, which is the opposite of what a second window is for.
+    'visualizer:openFloating': (_request, event) => ({
+      opened: openVisualizerWindow(BrowserWindow.fromWebContents(event.sender), (floating) => {
+        if (lastVisualizerState !== null) {
+          emitEvent(floating, 'visualizer:stateChanged', lastVisualizerState)
+        }
+      })
+    }),
+
+    'visualizer:closeFloating': () => {
+      closeVisualizerWindow()
+      return {}
+    },
+
+    // Relay, not broadcast: `emitEvent` targets one window and skips a
+    // destroyed one, and with no floating window this does nothing at all. The
+    // renderer pushes on every graph change without knowing whether anyone is
+    // listening, which is the only way it can avoid tracking a window lifetime
+    // that main owns.
+    //
+    // The state is validated twice on the way through — once as this request,
+    // once as the event payload — which for a large graph is two deep parses
+    // and two freezes per push. That is the price of the table being the only
+    // thing either side trusts, and it is paid per graph change, not per frame.
+    'visualizer:pushState': (request) => {
+      lastVisualizerState = request
+      const floating = getVisualizerWindow()
+      if (floating !== null) emitEvent(floating, 'visualizer:stateChanged', request)
+      return {}
+    },
+
+    // The return leg. `event.sender` is deliberately not consulted: it is the
+    // floating window, and the editor this has to move is in the other one.
+    // A closed main window makes this a no-op rather than an error — the
+    // floating window has no way to know it has been orphaned, and telling it
+    // would only give it something it cannot act on.
+    'visualizer:requestReveal': (request) => {
+      const host = getVisualizerHostWindow()
+      if (host !== null) emitEvent(host, 'visualizer:revealRequested', request)
+      return {}
+    }
   }
 }
 
