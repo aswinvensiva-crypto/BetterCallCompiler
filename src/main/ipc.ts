@@ -13,7 +13,15 @@ import {
   type ResponseOf,
   type Result
 } from '../shared/ipc-contract'
-import { stoppedCompilerStatus } from '../shared/types'
+import {
+  closeDocument as closeCompilerDocument,
+  compilerStatus,
+  dependentsOf as compilerDependentsOf,
+  diagnosticsFor,
+  openDocument as openCompilerDocument,
+  restartCompiler,
+  startCompiler
+} from './compiler-service'
 import {
   createDirectory,
   createFile,
@@ -113,6 +121,9 @@ export function createHandlerMap(): HandlerMap {
     'fs:openFolder': async (_request, event) => {
       const workspace = await openFolder(BrowserWindow.fromWebContents(event.sender))
       if (workspace.root !== null) await startGitWatch(workspace.root)
+      // Not awaited: the daemon indexes in the background, and blocking the
+      // open-folder response on it would stall the explorer behind a full walk.
+      startCompiler(workspace.root)
       return workspace
     },
 
@@ -303,18 +314,25 @@ export function createHandlerMap(): HandlerMap {
       return {}
     },
 
-    /* ------------------------------ compiler ------------------------------ *
-     * Stubs. The daemon lands in a later step; these exist now so the channel
-     * table, the handler map and the preload bridge are provably in lockstep
-     * before a line of worker code is written.
-     * ---------------------------------------------------------------------- */
+    /* ------------------------------ compiler ------------------------------ */
 
-    'compiler:status': () => ({ status: stoppedCompilerStatus() }),
-    'compiler:diagnostics': () => ({ files: [] }),
-    'compiler:dependents': () => ({ graph: { node: null, dependents: [], cycle: null } }),
-    'compiler:openDocument': () => ({ accepted: true as const }),
-    'compiler:closeDocument': () => ({ closed: true as const }),
-    'compiler:restart': () => ({ restarted: true as const })
+    'compiler:status': () => ({ status: compilerStatus() }),
+    'compiler:diagnostics': (request) => ({ files: diagnosticsFor(request.relativePath) }),
+    'compiler:dependents': async (request) => ({
+      graph: await compilerDependentsOf(request.relativePath)
+    }),
+    'compiler:openDocument': (request) => {
+      openCompilerDocument(request.relativePath, request.content, request.version)
+      return { accepted: true as const }
+    },
+    'compiler:closeDocument': (request) => {
+      closeCompilerDocument(request.relativePath)
+      return { closed: true as const }
+    },
+    'compiler:restart': () => {
+      restartCompiler()
+      return { restarted: true as const }
+    }
   }
 }
 
