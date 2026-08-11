@@ -56,6 +56,12 @@ import {
   mountCompilerIntelligence,
   onCompilerIntelligenceShown
 } from './views/compiler-intelligence'
+import {
+  listenForExplainRequests,
+  mountArtifacts,
+  onArtifactsShown,
+  setArtifactsViewActivator
+} from './views/artifacts'
 import { mountSearch, onSearchShown, setSearchQuery } from './views/search'
 import { openCommandPalette, registerCommands } from './workbench/command-palette'
 import { openQuickOpen, watchForFileChanges } from './workbench/quick-open'
@@ -492,6 +498,7 @@ async function mountSideBarViews(): Promise<void> {
   registerSideBarView({ id: 'settings', mount: mountSettings, onShow: onSettingsShown })
   registerSideBarView({ id: 'ai', mount: mountAi, onShow: onAiShown })
   registerSideBarView({ id: 'assist', mount: mountAssist, onShow: onAssistShown })
+  registerSideBarView({ id: 'artifacts', mount: mountArtifacts, onShow: onArtifactsShown })
 
   // The Visualizer docks on the right instead of in the side bar. Same view,
   // same handlers, a region three times as wide as the one a control-flow graph
@@ -515,6 +522,16 @@ async function mountSideBarViews(): Promise<void> {
   setAssistViewActivator(() => {
     setSelected('assist')
     return showSideBarView('assist')
+  })
+
+  // Bound at start-up rather than on first mount: the panel is lazily mounted
+  // like every other tool window, and an explanation requested before it has
+  // ever been opened must still be captured, or the first use of the feature
+  // streams into nothing.
+  listenForExplainRequests()
+  setArtifactsViewActivator(() => {
+    setSelected('artifacts')
+    void showSideBarView('artifacts')
   })
 
   await showSideBarView('explorer')
@@ -553,6 +570,7 @@ function registerWorkbenchCommands(): void {
     // in the activity bar and nowhere else, which meant the only way to open
     // them was to know which icon they are.
     { id: 'view.assist', title: 'View: Assist', run: showView('assist') },
+    { id: 'view.artifacts', title: 'View: Explanations', run: showView('artifacts') },
     {
       id: 'view.compiler',
       title: 'View: Compiler Intelligence',

@@ -157,6 +157,28 @@ export function linesAt(content: string, startLine: number, endLine: number): st
   return lines.slice(startLine - 1, Math.min(endLine, lines.length)).join('\n')
 }
 
+/**
+ * A title for an artifact, derived rather than asked for.
+ *
+ * Asking the model to name its own document costs a round trip's worth of
+ * instructions and returns something it invented. The enclosing symbol and the
+ * file are what a person will actually recognise in a list a week later.
+ *
+ * Lives here rather than in explain-service so the renderer — which is what
+ * calls `artifact:create`, because it is what accumulated the stream — names
+ * artifacts by the same rule main would have.
+ */
+export function titleForExplanation(
+  relativePath: string,
+  startLine: number,
+  symbolName: string | null,
+  isRevision: boolean
+): string {
+  const subject =
+    symbolName === null ? `${relativePath}:${startLine}` : `${symbolName} in ${relativePath}`
+  return isRevision ? `${subject} — revised` : subject
+}
+
 export type AnchorState = 'current' | 'stale' | 'missing'
 
 /**

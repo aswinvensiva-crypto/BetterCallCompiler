@@ -44,6 +44,15 @@ import {
   resizeSession,
   writeToSession
 } from './terminal'
+import {
+  anchorStates,
+  commentOnArtifact,
+  createArtifact,
+  linkCommentReply,
+  listArtifacts,
+  readArtifact
+} from './artifact-store'
+import { startExplain } from './explain-service'
 import { listToolchains, rescanToolchains } from './toolchains'
 import { cancelRun, startRun } from './runner'
 import {
@@ -101,6 +110,19 @@ function describeError(error: unknown): string {
   if (error instanceof Error) return error.message
   if (typeof error === 'string') return error
   return 'unknown error'
+}
+
+/**
+ * Tells whoever asked that the artifact list has moved.
+ *
+ * Sent back to the window that made the request rather than broadcast. Every
+ * artifact mutation originates in a renderer, so `event.sender` is exactly the
+ * surface that needs to re-read — and a broadcast would also wake the floating
+ * visualizer window, which has no artifact view to update.
+ */
+function notifyArtifactsChanged(event: IpcMainInvokeEvent): void {
+  const window = BrowserWindow.fromWebContents(event.sender)
+  if (window !== null) emitEvent(window, 'artifact:changed', {})
 }
 
 /**
@@ -334,7 +356,57 @@ export function createHandlerMap(): HandlerMap {
       restartCompiler()
       return { restarted: true as const }
     },
-    'compiler:passes': () => ({ passes: compilerPasses() })
+    'compiler:passes': () => ({ passes: compilerPasses() }),
+
+    /* ------------------------------ artifacts ----------------------------- */
+
+    'explain:start': async (request) => ({
+      started: await startExplain({
+        context: request.context,
+        // Read here rather than sent by the renderer: the prior artifact is the
+        // stored record, and letting the caller supply its text would let the
+        // document a revision claims to revise differ from the one on disk.
+        priorArtifact: request.supersedes === null ? null : await readArtifact(request.supersedes),
+        question: request.question
+      })
+    }),
+
+    'artifact:list': async () => ({ artifacts: await listArtifacts() }),
+
+    'artifact:get': async (request) => ({
+      artifact: await readArtifact(request.id),
+      anchorStates: (await anchorStates(request.id)) as Record<
+        string,
+        'current' | 'stale' | 'missing'
+      >
+    }),
+
+    'artifact:create': async (request, event) => {
+      const artifact = await createArtifact({
+        kind: request.kind,
+        title: request.title,
+        model: request.model,
+        promptHash: request.promptHash,
+        contextSent: request.contextSent,
+        markdown: request.markdown,
+        supersedes: request.supersedes
+      })
+
+      // Linked after the reply exists, so a crash between the two leaves an
+      // unanswered comment rather than a comment pointing at nothing.
+      if (request.supersedes !== null && request.answersCommentId !== null) {
+        await linkCommentReply(request.supersedes, request.answersCommentId, artifact.id)
+      }
+
+      notifyArtifactsChanged(event)
+      return { artifact }
+    },
+
+    'artifact:comment': async (request, event) => {
+      const artifact = await commentOnArtifact(request.id, request.sectionId, request.body)
+      notifyArtifactsChanged(event)
+      return { artifact }
+    }
   }
 }
 

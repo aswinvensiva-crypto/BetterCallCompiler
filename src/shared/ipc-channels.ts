@@ -67,7 +67,12 @@ export const INVOKE_CHANNEL_NAMES = [
   'compiler:openDocument',
   'compiler:closeDocument',
   'compiler:restart',
-  'compiler:passes'
+  'compiler:passes',
+  'explain:start',
+  'artifact:list',
+  'artifact:get',
+  'artifact:create',
+  'artifact:comment'
 ] as const
 
 export type InvokeChannel = (typeof INVOKE_CHANNEL_NAMES)[number]
@@ -90,7 +95,10 @@ export const EVENT_CHANNEL_NAMES = [
   'visualizer:revealRequested',
   'compiler:diagnosticsChanged',
   'compiler:statusChanged',
-  'compiler:passCompleted'
+  'compiler:passCompleted',
+  // Payload-free, like `git:changed`: the view re-reads the list itself, so the
+  // event cannot carry a snapshot that is already stale by the time it renders.
+  'artifact:changed'
 ] as const
 
 export type EventChannel = (typeof EVENT_CHANNEL_NAMES)[number]

@@ -15,6 +15,9 @@ import {
   gitCommitSchema,
   gitFileDiffSchema,
   githubInsightsSchema,
+  artifactKindSchema,
+  artifactSchema,
+  artifactSummarySchema,
   compilerPassSchema,
   compilerStatusSchema,
   dependencyQuerySchema,
@@ -460,6 +463,73 @@ export const INVOKE_CHANNELS = {
   'compiler:passes': {
     request: empty,
     response: z.strictObject({ passes: z.array(compilerPassSchema) })
+  },
+
+  /* ------------------------------ artifacts ----------------------------- */
+
+  /**
+   * Starts an Explain stream. Deltas arrive on the existing `ai:delta` /
+   * `ai:done` channels — it is the same provider and the same transport, and a
+   * parallel pair of channels would mean two copies of the cancellation and
+   * completion handling for no difference the renderer can observe.
+   */
+  'explain:start': {
+    request: z.strictObject({
+      context: aiContextSchema,
+      /** The artifact being revised, when answering a comment on it. */
+      supersedes: z.string().nullable(),
+      /** The comment being answered, so the reply can be linked back to it. */
+      commentId: z.string().nullable(),
+      question: z.string().nullable()
+    }),
+    response: z.strictObject({ started: aiStartedSchema })
+  },
+  'artifact:list': {
+    request: empty,
+    response: z.strictObject({ artifacts: z.array(artifactSummarySchema) })
+  },
+  /**
+   * Anchor states ride along with the artifact rather than earning a channel.
+   * They are computed on read and are meaningless apart from the artifact they
+   * describe, so a caller that fetched one without the other would be holding
+   * a document it cannot render honestly.
+   */
+  'artifact:get': {
+    request: z.strictObject({ id: z.string().min(1) }),
+    response: z.strictObject({
+      artifact: artifactSchema,
+      /** Keyed `sectionId:anchorIndex`. */
+      anchorStates: z.record(z.string(), z.enum(['current', 'stale', 'missing']))
+    })
+  },
+  /**
+   * Stores a completed reply as an artifact.
+   *
+   * The renderer sends the finished markdown, the same division of labour as
+   * `ai:apply`: it accumulated the stream, so it is what holds the result, and
+   * main never has to reconstruct text it did not receive.
+   */
+  'artifact:create': {
+    request: z.strictObject({
+      kind: artifactKindSchema,
+      title: z.string().min(1),
+      model: z.string(),
+      promptHash: z.string(),
+      contextSent: z.string(),
+      markdown: z.string().min(1),
+      supersedes: z.string().nullable(),
+      /** When set, the comment on `supersedes` that this artifact answers. */
+      answersCommentId: z.string().nullable()
+    }),
+    response: z.strictObject({ artifact: artifactSchema })
+  },
+  'artifact:comment': {
+    request: z.strictObject({
+      id: z.string().min(1),
+      sectionId: z.string().nullable(),
+      body: z.string().min(1)
+    }),
+    response: z.strictObject({ artifact: artifactSchema })
   }
 } as const satisfies Record<InvokeChannel, ChannelSpec>
 
@@ -505,7 +575,11 @@ export const EVENT_CHANNELS = {
   // Deliberately NOT folded onto statusChanged. Status is a small object that
   // fires constantly; a pass carries up to 500 trace events. Merging them would
   // make every state transition pay the cost of the observability payload.
-  'compiler:passCompleted': { payload: compilerPassSchema }
+  'compiler:passCompleted': { payload: compilerPassSchema },
+  // Payload-free, like `git:changed`. An artifact carries its full text and its
+  // comment thread; pushing that on every change would put a document on the
+  // wire each time someone types a comment, to say only that something moved.
+  'artifact:changed': { payload: z.strictObject({}) }
 } as const satisfies Record<EventChannel, { readonly payload: z.ZodType }>
 
 export type InvokeChannels = typeof INVOKE_CHANNELS

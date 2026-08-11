@@ -264,8 +264,30 @@ function finish(stream: ActiveStream, done: Omit<AiDone, 'streamId'>): void {
  * looking for.
  */
 export async function startAiStream(mode: AiMode, context: AiContext): Promise<AiStarted> {
-  const settings = await loadSettings()
   const { system, user } = buildPrompt(mode, context)
+  return startPromptStream(mode, system, user, MAX_TOKENS[mode])
+}
+
+/**
+ * Streams an arbitrary prompt through the same provider, transport and event
+ * channels as the three built-in modes.
+ *
+ * Extracted from `startAiStream` unchanged so the Explain artifact can have its
+ * own prompt shape — which asks for headings and citations, and would be wrong
+ * for the inline panel — without a second copy of the abort handling, the
+ * cancellation bookkeeping and the delta plumbing. Those are the parts where a
+ * divergent copy goes wrong quietly.
+ *
+ * `mode` is still one of the three: it labels the stream for the log and the
+ * panel, and an artifact request is an `explain` by any reading.
+ */
+export async function startPromptStream(
+  mode: AiMode,
+  system: string,
+  user: string,
+  maxTokens: number
+): Promise<AiStarted> {
+  const settings = await loadSettings()
   const promptHash = hashPrompt(system, user)
 
   const streamId = `ai-${++sequence}`
@@ -289,7 +311,7 @@ export async function startAiStream(mode: AiMode, context: AiContext): Promise<A
         model: settings.aiModel,
         system,
         user,
-        maxTokens: MAX_TOKENS[mode],
+        maxTokens,
         signal: controller.signal,
         onText: (delta) => {
           if (record.finished) return
