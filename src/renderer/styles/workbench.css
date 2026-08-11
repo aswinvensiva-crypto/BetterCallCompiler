@@ -2547,3 +2547,249 @@ body.workbench--resizing-y * {
   font-family: var(--bcc-font-mono);
   word-break: break-word;
 }
+
+/* ------------------------- compiler intelligence ------------------------- */
+
+.ci {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.ci-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 6px 8px 0;
+  border-bottom: 1px solid var(--bcc-border);
+  flex: 0 0 auto;
+}
+
+.ci-tabs__tab {
+  padding: 4px 10px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--bcc-fg-muted);
+  font-size: var(--bcc-font-size-sm);
+  cursor: pointer;
+}
+
+.ci-tabs__tab:hover {
+  color: var(--bcc-fg);
+}
+
+.ci-tabs__tab[aria-selected='true'] {
+  color: var(--bcc-fg);
+  border-bottom-color: var(--bcc-accent);
+}
+
+.ci-section {
+  padding: 10px 12px;
+  overflow-y: auto;
+  /* The tab strip is fixed; only the content scrolls, so switching tabs does
+     not scroll the strip out of reach on a short dock. */
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.ci-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
+  gap: 8px;
+}
+
+.ci-stat {
+  padding: 8px 10px;
+  background: var(--bcc-bg-inset);
+  border: 1px solid var(--bcc-border);
+  border-radius: 4px;
+}
+
+.ci-stat__value {
+  font-size: 20px;
+  font-variant-numeric: tabular-nums;
+  color: var(--bcc-fg);
+}
+
+.ci-stat__value--good {
+  color: var(--bcc-success);
+}
+
+.ci-stat__value--warn {
+  color: var(--bcc-warning);
+}
+
+.ci-stat__label {
+  margin-top: 2px;
+  font-size: var(--bcc-font-size-sm);
+  color: var(--bcc-fg-subtle);
+  line-height: 1.3;
+}
+
+.ci-headline {
+  margin: 12px 0;
+  color: var(--bcc-fg-muted);
+  font-size: var(--bcc-font-size-sm);
+  line-height: 1.5;
+}
+
+.ci-headline strong {
+  color: var(--bcc-fg);
+}
+
+.ci-note {
+  margin: 0 0 10px;
+  color: var(--bcc-fg-subtle);
+  font-size: var(--bcc-font-size-sm);
+}
+
+.ci-budget__title {
+  font-size: var(--bcc-font-size-sm);
+  color: var(--bcc-fg-muted);
+  margin-bottom: 6px;
+}
+
+.ci-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 72px;
+  padding: 4px;
+  background: var(--bcc-bg-inset);
+  border: 1px solid var(--bcc-border);
+  border-radius: 4px;
+}
+
+.ci-bar {
+  flex: 1 1 auto;
+  min-width: 3px;
+  background: var(--bcc-success);
+  border-radius: 1px;
+}
+
+.ci-bar--over {
+  background: var(--bcc-warning);
+}
+
+.ci-budget__legend {
+  margin-top: 6px;
+  font-size: var(--bcc-font-size-sm);
+  color: var(--bcc-fg-subtle);
+  font-variant-numeric: tabular-nums;
+}
+
+.ci-trace__row {
+  padding: 6px 0;
+  border-bottom: 1px solid var(--bcc-border);
+}
+
+.ci-trace__head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ci-trace__key {
+  flex: 1 1 auto;
+  font-family: var(--bcc-font-mono);
+  font-size: var(--bcc-font-size-sm);
+  color: var(--bcc-fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ci-trace__ms,
+.ci-table__ms {
+  font-variant-numeric: tabular-nums;
+  font-size: var(--bcc-font-size-sm);
+  color: var(--bcc-fg-subtle);
+}
+
+.ci-trace__why {
+  margin-top: 3px;
+  font-size: var(--bcc-font-size-sm);
+  color: var(--bcc-fg-muted);
+  line-height: 1.4;
+}
+
+.ci-tag {
+  padding: 1px 6px;
+  border-radius: 8px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  background: var(--bcc-bg-active);
+  color: var(--bcc-fg-muted);
+  flex: 0 0 auto;
+}
+
+/* The three outcomes that mean "work was avoided" share the success colour, so
+   a glance down the list shows how much of the pass was free. */
+.ci-tag--durable,
+.ci-tag--validated,
+.ci-tag--fresh {
+  background: color-mix(in srgb, var(--bcc-success) 22%, transparent);
+  color: var(--bcc-success);
+}
+
+.ci-tag--cutoff {
+  background: color-mix(in srgb, var(--bcc-accent) 22%, transparent);
+  color: var(--bcc-accent-hover);
+}
+
+.ci-tag--recomputed,
+.ci-tag--miss {
+  background: color-mix(in srgb, var(--bcc-warning) 20%, transparent);
+  color: var(--bcc-warning);
+}
+
+.ci-table__row,
+.ci-history__row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--bcc-border);
+}
+
+.ci-table__path {
+  flex: 1 1 auto;
+  font-family: var(--bcc-font-mono);
+  font-size: var(--bcc-font-size-sm);
+  color: var(--bcc-fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ci-table__counts {
+  font-size: var(--bcc-font-size-sm);
+  color: var(--bcc-fg-subtle);
+  flex: 0 0 auto;
+}
+
+.ci-history__id {
+  font-variant-numeric: tabular-nums;
+  font-size: var(--bcc-font-size-sm);
+  color: var(--bcc-fg-subtle);
+  flex: 0 0 auto;
+}
+
+.ci-history__text {
+  flex: 1 1 auto;
+  font-size: var(--bcc-font-size-sm);
+  color: var(--bcc-fg-muted);
+}
+
+.ci-history__ms {
+  font-variant-numeric: tabular-nums;
+  font-size: var(--bcc-font-size-sm);
+  color: var(--bcc-fg-subtle);
+  flex: 0 0 auto;
+}
+
+.ci-history__ms--over {
+  color: var(--bcc-warning);
+}

@@ -52,6 +52,10 @@ import {
   setVisualizerFloatHandler,
   setVisualizerRevealHandler
 } from './views/visualizer/visualizer-panel'
+import {
+  mountCompilerIntelligence,
+  onCompilerIntelligenceShown
+} from './views/compiler-intelligence'
 import { mountSearch, onSearchShown, setSearchQuery } from './views/search'
 import { openCommandPalette, registerCommands } from './workbench/command-palette'
 import { openQuickOpen, watchForFileChanges } from './workbench/quick-open'
@@ -494,6 +498,11 @@ async function mountSideBarViews(): Promise<void> {
   // was previously being folded into.
   mountRightDock(requireEl('right-dock-title'), requireEl('right-dock-body'))
   registerRightDockView({ id: 'visualizer', mount: mountVisualizer, onShow: onVisualizerShown })
+  registerRightDockView({
+    id: 'compiler',
+    mount: mountCompilerIntelligence,
+    onShow: onCompilerIntelligenceShown
+  })
 
   mountActivityBar(requireEl('activity-bar'), (id) => {
     // Run and Problems open bottom-panel views rather than side-bar ones.
@@ -544,6 +553,14 @@ function registerWorkbenchCommands(): void {
     // in the activity bar and nowhere else, which meant the only way to open
     // them was to know which icon they are.
     { id: 'view.assist', title: 'View: Assist', run: showView('assist') },
+    {
+      id: 'view.compiler',
+      title: 'View: Compiler Intelligence',
+      run: () => {
+        setSelected('compiler')
+        void showRightDockView('compiler')
+      }
+    },
     {
       id: 'view.visualizer',
       title: 'View: Visualizer',

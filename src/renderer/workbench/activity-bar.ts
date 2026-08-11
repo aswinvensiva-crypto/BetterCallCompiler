@@ -95,6 +95,15 @@ export const ACTIVITY_ITEMS: readonly ActivityItem[] = [
     region: 'rightdock'
   },
   {
+    // The second right-dock item, and for the same reason as the first: a trace
+    // list and a latency chart need width the side bar does not have.
+    id: 'compiler',
+    label: 'Compiler Intelligence',
+    icon: 'M4 17l4-6 3 4 3-7 3 5M3 3v18h18',
+    enabled: true,
+    region: 'rightdock'
+  },
+  {
     id: 'settings',
     label: 'Settings',
     icon:

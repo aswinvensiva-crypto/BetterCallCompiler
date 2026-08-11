@@ -1,0 +1,189 @@
+import type { CompilerPass, CompilerTraceEvent } from './types'
+
+/**
+ * Pure statistics over the daemon's check passes.
+ *
+ * Separated from the view for the same reason `visualizer-layout.ts` and
+ * `assist-analysis.ts` are: the arithmetic is the part that can be wrong in a
+ * way nobody notices, and it should be testable without a DOM. The view below
+ * it only turns these numbers into elements.
+ */
+
+/* --------------------------------- latency -------------------------------- */
+
+/**
+ * The p-th percentile, nearest-rank.
+ *
+ * Nearest-rank rather than linear interpolation because every value here is a
+ * real measured pass. Interpolating invents a duration that never happened, and
+ * the whole point of this panel is that the numbers on it are observations
+ * rather than estimates.
+ */
+export function percentile(values: readonly number[], p: number): number {
+  if (values.length === 0) return 0
+
+  const sorted = [...values].sort((a, b) => a - b)
+  const rank = Math.ceil((p / 100) * sorted.length)
+  const index = Math.min(Math.max(rank - 1, 0), sorted.length - 1)
+  return sorted[index] ?? 0
+}
+
+export interface LatencySummary {
+  readonly count: number
+  readonly p50: number
+  readonly p95: number
+  readonly worst: number
+  /** Passes that finished inside the 100ms interactive budget. */
+  readonly withinBudget: number
+}
+
+/**
+ * 100ms, the number matklad names as the IDE budget in "Three Architectures for
+ * a Responsive IDE" — long enough to be achievable, short enough that missing
+ * it is felt as lag rather than measured.
+ */
+export const BUDGET_MS = 100
+
+/**
+ * Latency over the passes a user would actually feel.
+ *
+ * `index` passes are excluded deliberately. A cold index is a one-off that
+ * takes seconds by design, and leaving it in the sample drags p95 up so far
+ * that the interactive numbers — the ones being claimed — become invisible.
+ * Reporting a cold start inside a typing-latency figure would be flattering in
+ * the wrong direction and useless in both.
+ */
+export function latencyOf(passes: readonly CompilerPass[]): LatencySummary {
+  const interactive = passes.filter((pass) => pass.reason !== 'index')
+  const durations = interactive.map((pass) => pass.totalMs)
+
+  return {
+    count: durations.length,
+    p50: percentile(durations, 50),
+    p95: percentile(durations, 95),
+    worst: durations.length === 0 ? 0 : Math.max(...durations),
+    withinBudget: durations.filter((ms) => ms <= BUDGET_MS).length
+  }
+}
+
+/* ---------------------------------- work ---------------------------------- */
+
+export interface WorkSummary {
+  readonly requested: number
+  readonly recomputed: number
+  readonly reused: number
+  /** Percentage of requested files answered without running the type checker. */
+  readonly savedPercent: number
+}
+
+/** Totals across a set of passes — the headline pair, aggregated. */
+export function workOf(passes: readonly CompilerPass[]): WorkSummary {
+  let requested = 0
+  let recomputed = 0
+  let reused = 0
+
+  for (const pass of passes) {
+    requested += pass.requested
+    recomputed += pass.recomputed
+    reused += pass.reused
+  }
+
+  return {
+    requested,
+    recomputed,
+    reused,
+    // Guarded rather than clamped: with nothing requested the honest answer is
+    // zero saved, not a division by zero rendered as NaN in the UI.
+    savedPercent: requested === 0 ? 0 : Math.round((reused / requested) * 100)
+  }
+}
+
+/* --------------------------------- hotspots ------------------------------- */
+
+export interface Hotspot {
+  /** Workspace-relative path, with the query namespace stripped. */
+  readonly path: string
+  readonly totalMs: number
+  readonly checks: number
+  readonly reuses: number
+}
+
+/**
+ * The files that cost the most, worst first.
+ *
+ * Ranked by total time rather than by number of checks. A file checked twice
+ * for 400ms each is a bigger problem than one checked forty times for 1ms, and
+ * ranking by count would show the second and hide the first.
+ */
+export function hotspotsOf(passes: readonly CompilerPass[], limit = 10): Hotspot[] {
+  const byPath = new Map<string, { totalMs: number; checks: number; reuses: number }>()
+
+  for (const pass of passes) {
+    for (const event of pass.events) {
+      const colon = event.key.indexOf(':')
+      if (colon < 0) continue
+      const namespace = event.key.slice(0, colon)
+      // Only the diagnostics query. Signature and text events describe the same
+      // files, and counting all three would triple every number for no meaning.
+      if (namespace !== 'diag') continue
+
+      const path = event.key.slice(colon + 1)
+      const entry = byPath.get(path) ?? { totalMs: 0, checks: 0, reuses: 0 }
+      entry.totalMs += event.ms
+      if (event.outcome === 'fresh' || event.outcome === 'durable' || event.outcome === 'validated') {
+        entry.reuses++
+      } else {
+        entry.checks++
+      }
+      byPath.set(path, entry)
+    }
+  }
+
+  return [...byPath.entries()]
+    .map(([path, entry]) => ({ path, ...entry }))
+    .sort((a, b) => b.totalMs - a.totalMs || a.path.localeCompare(b.path))
+    .slice(0, limit)
+}
+
+/* ------------------------------- explanation ------------------------------ */
+
+/**
+ * Plain-English reason a file was in the pass.
+ *
+ * This is the sentence the whole feature exists to produce. Every other IDE can
+ * say "there is an error here"; none of them will say why the compiler looked
+ * at this file at all, which is the thing that explains where the time went.
+ */
+export function explainOutcome(event: CompilerTraceEvent): string {
+  switch (event.outcome) {
+    case 'miss':
+      return 'Checked for the first time — nothing was cached for it yet.'
+    case 'fresh':
+      return 'Already checked in this same revision; served untouched.'
+    case 'durable':
+      return `Skipped entirely: nothing at ${event.durability} durability or below has changed, so its ${event.depsWalked === 0 ? 'dependencies were never walked' : 'dependencies were skipped'}.`
+    case 'validated':
+      return `Dependencies checked (${event.depsWalked}) and none had moved, so the cached result still holds.`
+    case 'cutoff':
+      return 'Recomputed because an import changed, but the result was identical — so nothing downstream had to be touched.'
+    case 'recomputed':
+      return 'Recomputed, and the result changed — dependents were invalidated.'
+  }
+}
+
+/** A one-line summary of a pass, for the history list. */
+export function describePass(pass: CompilerPass): string {
+  const trigger =
+    pass.reason === 'index'
+      ? 'Workspace indexed'
+      : pass.reason === 'buffer'
+        ? 'Unsaved buffer'
+        : 'File changed on disk'
+
+  if (pass.requested === 0) return `${trigger} — nothing to check`
+
+  return (
+    `${trigger} — ${pass.requested} file${pass.requested === 1 ? '' : 's'} in the ` +
+    `invalidation set, ${pass.recomputed} type-checked, ${pass.reused} reused`
+  )
+}
