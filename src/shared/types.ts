@@ -676,6 +676,96 @@ export function stoppedCompilerStatus(): CompilerStatus {
   }
 }
 
+/* -------------------------------- artifacts ------------------------------- */
+
+/**
+ * A durable, code-anchored explanation.
+ *
+ * The behaviour reproduced here is Antigravity's: an agent's explanation is not
+ * a chat message that scrolls away, it is an artifact that persists, cites
+ * specific code, and can be commented on — and the comment steers the agent
+ * rather than starting a fresh conversation.
+ *
+ * What this adds that a chat transcript cannot: an anchor carries a hash of the
+ * lines it described, so an artifact read a week later can say "this part is
+ * describing code that has since changed" instead of pointing confidently at
+ * whatever now occupies those line numbers.
+ */
+export const codeAnchorSchema = z.strictObject({
+  relativePath: z.string(),
+  startLine: z.number().int().positive(),
+  endLine: z.number().int().positive(),
+  symbol: z.string().nullable(),
+  /** Hash of the anchored lines at the moment the artifact was written. */
+  snapshotHash: z.string()
+})
+export type CodeAnchorRecord = z.infer<typeof codeAnchorSchema>
+
+export const artifactSectionSchema = z.strictObject({
+  id: z.string().min(1),
+  heading: z.string(),
+  markdown: z.string(),
+  anchors: z.array(codeAnchorSchema)
+})
+export type ArtifactSectionRecord = z.infer<typeof artifactSectionSchema>
+
+export const artifactCommentSchema = z.strictObject({
+  id: z.string().min(1),
+  /** Null for a comment on the artifact as a whole. */
+  sectionId: z.string().nullable(),
+  body: z.string(),
+  createdAt: z.string(),
+  /**
+   * The artifact the agent produced in reply, if it has answered.
+   *
+   * A reply is a NEW artifact rather than an edit to this one. Sections are
+   * immutable by construction: an explanation you can silently rewrite is not
+   * evidence of what was said, which is the same reason ai-log.ts appends a
+   * revert entry rather than amending the original.
+   */
+  respondedInArtifactId: z.string().nullable()
+})
+export type ArtifactComment = z.infer<typeof artifactCommentSchema>
+
+export const artifactKindSchema = z.enum(['explanation', 'walkthrough'])
+export type ArtifactKind = z.infer<typeof artifactKindSchema>
+
+export const artifactSchema = z.strictObject({
+  id: z.string().min(1),
+  kind: artifactKindSchema,
+  title: z.string(),
+  createdAt: z.string(),
+  model: z.string(),
+  /** Same 16-hex convention as ai-log.ts, from `hashPrompt`. */
+  promptHash: z.string(),
+  /**
+   * The exact text the model received, verbatim.
+   *
+   * Stored rather than reconstructed, for the reason `renderContext` exists at
+   * all: a viewer that rebuilds its own approximation of the prompt drifts, and
+   * the transparency claim quietly becomes false.
+   */
+  contextSent: z.string(),
+  sections: z.array(artifactSectionSchema),
+  comments: z.array(artifactCommentSchema),
+  /** The artifact this one answers, when it was produced from a comment. */
+  supersedes: z.string().nullable()
+})
+export type Artifact = z.infer<typeof artifactSchema>
+
+/** List rows: enough to render the index without loading every artifact. */
+export const artifactSummarySchema = z.strictObject({
+  id: z.string(),
+  kind: artifactKindSchema,
+  title: z.string(),
+  createdAt: z.string(),
+  sectionCount: z.number().int().nonnegative(),
+  commentCount: z.number().int().nonnegative(),
+  unansweredCommentCount: z.number().int().nonnegative(),
+  supersedes: z.string().nullable()
+})
+export type ArtifactSummary = z.infer<typeof artifactSummarySchema>
+
 /* --------------------------- compiler intelligence ------------------------ */
 
 /**
