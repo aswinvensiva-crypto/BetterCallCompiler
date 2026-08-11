@@ -19,9 +19,19 @@ import {
   type Cycle
 } from '../shared/dependency-graph'
 import { lineStartsOf, rangeFromSpan } from '../shared/diagnostic-position'
+import {
+  QueryCycleError,
+  createEngine,
+  queryKey,
+  type Engine,
+  type QueryTrace
+} from '../shared/query-engine'
+import { moduleSignature } from './module-signature'
 import type {
   BuildGraphSummary,
   CompilerDaemonState,
+  CompilerPass,
+  CompilerTraceEvent,
   DependencyNode,
   DiagnosticMessage,
   DiagnosticSeverity,
@@ -257,15 +267,30 @@ function indexWorkspace(root: string): void {
   loadConfig(root)
   moduleCache = resolutionCache()
 
+  // Every memo describes a workspace that no longer exists, and the compiler
+  // options may have changed underneath them. Inputs go too, because this walk
+  // re-seeds all of them.
+  engine.clear()
+  engineTexts.clear()
+  // Versions are deliberately NOT cleared. They must stay monotonic across a
+  // re-index or the LanguageService, whose document registry outlives this
+  // call, sees a version it has already cached and keeps a stale snapshot.
+  for (const [path, version] of textVersions) textVersions.set(path, version + 1)
+
   for (const absolute of walk(root)) {
     const text = readIfPossible(absolute)
     if (text === null) continue
 
+    const relativePath = toRelative(root, absolute)
     upsertNode(graph, {
-      relativePath: toRelative(root, absolute),
+      relativePath,
       imports: importsOf(root, absolute, text),
       mtimeMs: mtimeOf(absolute)
     })
+
+    // Seeded, not computed. Writing an input is the cheap half; nothing is
+    // checked until something asks.
+    writeText(relativePath, text)
   }
 
   cycles = assignComponents(graph)
@@ -279,13 +304,21 @@ function indexWorkspace(root: string): void {
   reportState('idle')
 }
 
-function applyChanges(root: string, changed: readonly string[], removed: readonly string[]): void {
+function applyChanges(
+  root: string,
+  changed: readonly string[],
+  removed: readonly string[],
+  reason: CompilerPass['reason'] = 'watch'
+): void {
   if (changed.length === 0 && removed.length === 0) return
 
   busySince = Date.now()
   reportState('checking')
 
-  for (const relativePath of removed) removeNode(graph, relativePath)
+  for (const relativePath of removed) {
+    removeNode(graph, relativePath)
+    engine.removeInput(queryKey(Q_TEXT, relativePath))
+  }
 
   for (const relativePath of changed) {
     if (!SOURCE_EXTENSIONS.has(extensionOf(relativePath))) continue
@@ -295,6 +328,7 @@ function applyChanges(root: string, changed: readonly string[], removed: readonl
       // Reported as changed but unreadable — treat it as gone rather than
       // leaving a node describing content nobody can read.
       removeNode(graph, relativePath)
+      engine.removeInput(queryKey(Q_TEXT, relativePath))
       continue
     }
 
@@ -303,6 +337,11 @@ function applyChanges(root: string, changed: readonly string[], removed: readonl
       imports: importsOf(root, absolute, text),
       mtimeMs: mtimeOf(absolute)
     })
+
+    // Returns false when the bytes are identical, which a watcher reports far
+    // more often than people expect — a save with no edit, a touch, an editor
+    // rewriting a file on focus loss. Nothing downstream is invalidated then.
+    setTextInput(root, relativePath)
   }
 
   if (graph.dirty) cycles = assignComponents(graph)
@@ -310,10 +349,15 @@ function applyChanges(root: string, changed: readonly string[], removed: readonl
   // A changed file invalidates itself and everything that transitively imports
   // it — that reverse walk is the whole point of the graph, and what makes a
   // squiggle appear in a dependent file the user never touched.
+  //
+  // The walk still names the same files it always did. What changed is what
+  // asking about them costs: a dependent whose imports' SIGNATURES have not
+  // moved is answered from memo, so a body edit no longer drags the type
+  // checker across the transitive closure.
   const affected = invalidationSet(graph, [...changed, ...removed]).filter((file) =>
     graph.nodes.has(file)
   )
-  checkFiles(root, affected)
+  checkFiles(root, affected, reason)
 
   busySince = null
   reportState('idle', affected.length)
@@ -384,13 +428,23 @@ function createService(root: string): ts.LanguageService {
       const relativePath = toRelative(root, fileName)
       const overlay = overlays.get(relativePath)
       if (overlay !== undefined) return `o${overlay.version}`
-      return String(documentVersions.get(relativePath) ?? mtimeOf(fileName))
+      // A counter the daemon controls, NOT mtime. See `textVersions` for why
+      // the filesystem clock is not usable as a change signal here.
+      return `d${textVersions.get(relativePath) ?? documentVersions.get(relativePath) ?? 0}`
     },
     getScriptSnapshot: (fileName) => {
+      const relativePath = toRelative(root, fileName)
+
       // Overlay first: the daemon must check the buffer the user is looking at,
       // not the last thing written to disk.
-      const overlay = overlays.get(toRelative(root, fileName))
+      const overlay = overlays.get(relativePath)
       if (overlay !== undefined) return ts.ScriptSnapshot.fromString(overlay.content)
+
+      // Then the engine's own copy, which is what every query was computed
+      // against. Reading disk here instead would let the service and the engine
+      // disagree about the same file within one pass.
+      const held = engineTexts.get(relativePath)
+      if (held !== undefined) return ts.ScriptSnapshot.fromString(held)
 
       const text = readIfPossible(fileName)
       return text === null ? undefined : ts.ScriptSnapshot.fromString(text)
@@ -451,41 +505,136 @@ function cycleDiagnostic(root: string, relativePath: string, cycle: Cycle): Diag
   }
 }
 
+/* ------------------------------ query layer ------------------------------- */
+
 /**
- * Checks a set of files and posts their diagnostics.
+ * Query namespaces.
  *
- * Files with an overlay are checked first — they are what the user is looking
- * at, and getting a squiggle onto the visible file before the rest of the
- * workspace is what makes this feel live rather than batch.
- *
- * Syntactic diagnostics are skipped for files with an overlay: Monaco's own
- * bundled TS worker already reports those instantly and locally for open
- * models, and reporting them here too would draw every syntax error twice.
+ * `text` is the only input; everything else is derived and therefore lazy.
+ * Short names because they appear in every trace line and in the Compiler
+ * Intelligence view, where `diag:src/app.ts` reads and
+ * `semanticDiagnostics:src/app.ts` does not.
  */
-function checkFiles(root: string, files: readonly string[]): void {
+const Q_TEXT = 'text'
+const Q_SIG = 'sig'
+const Q_DIAG = 'diag'
+
+/** Trace lines for the pass currently in flight. */
+let passEvents: QueryTrace[] = []
+let passCounter = 0
+
+/**
+ * Capped, because a cold index over 20 000 files would otherwise build a
+ * 60 000-entry array and structured-clone it across the port. The panel shows
+ * the most expensive work, so the cap drops the tail rather than the head —
+ * and `stats` on the pass still counts everything, so the totals stay honest
+ * even when the list is truncated.
+ */
+const MAX_TRACE_EVENTS = 500
+
+const engine: Engine = createEngine({
+  onTrace: (trace) => {
+    if (passEvents.length < MAX_TRACE_EVENTS) passEvents.push(trace)
+  }
+})
+
+function ensureService(root: string): ts.LanguageService {
   if (service === null) service = createService(root)
+  return service
+}
 
-  const ordered = [
-    ...files.filter((file) => overlays.has(file)),
-    ...files.filter((file) => !overlays.has(file))
-  ]
+/**
+ * Pulls the signatures a file's imports contribute, recording the edges.
+ *
+ * The subtlety is import cycles, which are ordinary TypeScript. Inside a
+ * strongly-connected component, asking for a member's signature would ask for
+ * this file's signature again and the engine would report a query cycle. So
+ * within a component the dependency is on the raw TEXT of the other members —
+ * an input, so it terminates — and only edges leaving the component use
+ * signatures. Across components the import graph is a DAG by construction, so
+ * that half can never cycle.
+ *
+ * `componentId` is already maintained by `assignComponents`; this reuses it
+ * rather than re-deriving cycle membership.
+ */
+function pullImportSignatures(relativePath: string, ctx: { get<T>(key: string): T }): void {
+  const node = graph.nodes.get(relativePath)
+  if (node === undefined) return
 
-  const produced: FileDiagnostics[] = []
-  const nowDirty = new Set<string>()
+  for (const imported of node.imports) {
+    const target = graph.nodes.get(imported)
+    // An edge pointing at nothing is a deleted or unresolved file. Its
+    // diagnostics are the dependent's problem to report, and there is no
+    // signature to depend on.
+    if (target === undefined) continue
 
-  for (const relativePath of ordered) {
+    if (target.componentId === node.componentId) {
+      ctx.get(queryKey(Q_TEXT, imported))
+    } else {
+      ctx.get(queryKey(Q_SIG, imported))
+    }
+  }
+}
+
+/**
+ * A module's public type surface.
+ *
+ * Depends on its own text AND on its imports' signatures, which is what makes
+ * the chain transitive: C changes, so B's signature is revalidated, and only if
+ * B's own exported types actually moved does A get rechecked. Depending on text
+ * alone would leave a hole exactly where a file re-exports or infers from
+ * something it imports.
+ */
+engine.defineQuery(Q_SIG, (relativePath, ctx) => {
+  ctx.get(queryKey(Q_TEXT, relativePath))
+  pullImportSignatures(relativePath, ctx)
+
+  const root = workspaceRoot
+  if (root === null) return 'no-root'
+
+  const program = ensureService(root).getProgram()
+  const sourceFile = program?.getSourceFile(toAbsolute(root, relativePath))
+  if (program === undefined || sourceFile === undefined) return 'absent'
+
+  return moduleSignature(program.getTypeChecker(), sourceFile)
+})
+
+/**
+ * One file's diagnostics.
+ *
+ * The dependency set is the whole point: own text, plus the SIGNATURES of the
+ * imports — not their text. An edit to a function body in an imported module
+ * moves that module's text and not its signature, the signature query cuts off,
+ * and this memo validates without the type checker running at all. That is the
+ * saving, and on a wide graph it is the difference between one check and
+ * hundreds.
+ */
+engine.defineQuery(
+  Q_DIAG,
+  (relativePath, ctx) => {
+    ctx.get(queryKey(Q_TEXT, relativePath))
+    pullImportSignatures(relativePath, ctx)
+
+    const root = workspaceRoot
+    if (root === null) return []
+
     const absolute = toAbsolute(root, relativePath)
+    const languageService = ensureService(root)
 
     let raw: ts.Diagnostic[]
     try {
-      const semantic = service.getSemanticDiagnostics(absolute)
+      const semantic = languageService.getSemanticDiagnostics(absolute)
+      // Skipped for files with an overlay: Monaco's own bundled TS worker
+      // already reports these instantly and locally for open models, and
+      // reporting them here too would draw every syntax error twice.
       const syntactic = overlays.has(relativePath)
         ? []
-        : service.getSyntacticDiagnostics(absolute)
+        : languageService.getSyntacticDiagnostics(absolute)
       raw = [...semantic, ...syntactic]
     } catch {
-      // A file the program cannot load is not a reason to abandon the pass.
-      continue
+      // A file the program cannot load yields nothing rather than abandoning
+      // the pass — the same tolerance the imperative version had.
+      return []
     }
 
     const text = overlays.get(relativePath)?.content ?? readIfPossible(absolute) ?? ''
@@ -498,12 +647,186 @@ function checkFiles(root: string, files: readonly string[]): void {
     const cycle = cycleFor(cycles, relativePath)
     if (cycle !== null) diagnostics.push(cycleDiagnostic(root, relativePath, cycle))
 
+    return diagnostics
+  },
+  // Structural equality, not Object.is. Every pass builds fresh objects, so
+  // reference equality would never cut off and the mechanism would be dead on
+  // the one query it matters most for.
+  (a, b) => JSON.stringify(a) === JSON.stringify(b)
+)
+
+/**
+ * The text the engine currently holds for each file, and a counter that moves
+ * whenever it does.
+ *
+ * These exist because the LanguageService host used to derive its script
+ * version from `mtimeMs`, and mtime is not a reliable change signal. Two writes
+ * inside the same filesystem timestamp tick — which is a millisecond on NTFS,
+ * and coarser on some volumes — produce the SAME version, so the service keeps
+ * serving its cached snapshot and type-checks text that no longer exists.
+ *
+ * The symptom is diagnostics that lag exactly one pass behind: break a file and
+ * nothing appears, fix it and the error from the previous edit shows up. Found
+ * by test/query/run-cutoff-proof.mjs, which writes files milliseconds apart;
+ * it is rarer at human typing speed but it is not rare enough to leave in.
+ *
+ * With the engine holding every file's text there is now a better source of
+ * truth than the filesystem's clock, so the host reads from here and mtime is
+ * off the correctness path entirely. It still feeds the graph's `mtimeMs`,
+ * which is display only.
+ */
+const engineTexts = new Map<string, string>()
+const textVersions = new Map<string, number>()
+
+/** Writes text to the engine and to the host's view of it, together. */
+function writeText(relativePath: string, text: string): boolean {
+  const changed = engine.setInput(queryKey(Q_TEXT, relativePath), text, 'workspace')
+  if (changed) {
+    engineTexts.set(relativePath, text)
+    textVersions.set(relativePath, (textVersions.get(relativePath) ?? 0) + 1)
+  }
+  return changed
+}
+
+/** Writes a file's text as an engine input. Returns true if it actually moved. */
+function setTextInput(root: string, relativePath: string): boolean {
+  const absolute = toAbsolute(root, relativePath)
+  const text = overlays.get(relativePath)?.content ?? readIfPossible(absolute)
+
+  if (text === null) {
+    engineTexts.delete(relativePath)
+    textVersions.set(relativePath, (textVersions.get(relativePath) ?? 0) + 1)
+    return engine.removeInput(queryKey(Q_TEXT, relativePath))
+  }
+
+  return writeText(relativePath, text)
+}
+
+function toTraceEvent(trace: QueryTrace): CompilerTraceEvent {
+  return {
+    key: trace.key,
+    outcome: trace.outcome,
+    durability: trace.durability,
+    ms: trace.ms,
+    depth: trace.depth,
+    depsWalked: trace.depsWalked
+  }
+}
+
+/**
+ * Publishes what the pass actually did.
+ *
+ * `recomputed` counts only `diag:` keys that reached the type checker, and
+ * `reused` the ones served from memo. Those two are the headline pair: the gap
+ * between them is the work the signature cutoff saved, and it is the number
+ * worth putting in front of a user.
+ *
+ * Deliberately derived from the trace rather than from separate counters. One
+ * source of truth means the panel cannot disagree with itself, and a capped
+ * trace still reports accurate totals because the cap is applied after these
+ * are counted.
+ */
+function reportPass(
+  reason: CompilerPass['reason'],
+  requested: number,
+  startedAt: number,
+  before: ReturnType<Engine['stats']>
+): void {
+  let recomputed = 0
+  let reused = 0
+
+  for (const event of passEvents) {
+    if (!event.key.startsWith(`${Q_DIAG}:`)) continue
+    // `cutoff` counts as recomputed, which is not the obvious grouping. It
+    // means the type checker DID run and the answer happened to be identical —
+    // the work was done. Only fresh/durable/validated were served without
+    // touching the checker, and those are the ones the cutoff actually saved.
+    // Filing cutoff under "reused" would overstate the saving by exactly the
+    // file the user just edited, in every single pass.
+    if (event.outcome === 'fresh' || event.outcome === 'durable' || event.outcome === 'validated') {
+      reused++
+    } else {
+      recomputed++
+    }
+  }
+
+  const after = engine.stats()
+
+  post({
+    type: 'pass',
+    pass: {
+      id: ++passCounter,
+      reason,
+      requested,
+      recomputed,
+      reused,
+      totalMs: Date.now() - startedAt,
+      events: passEvents.map(toTraceEvent),
+      stats: {
+        revision: after.revision,
+        memoCount: after.memoCount,
+        // Deltas, not lifetime totals: the panel is showing one pass, and a
+        // running total would make every pass look busier than the last.
+        hits: after.hits - before.hits,
+        misses: after.misses - before.misses,
+        recomputes: after.recomputes - before.recomputes,
+        cutoffs: after.cutoffs - before.cutoffs,
+        durableSkips: after.durableSkips - before.durableSkips
+      }
+    }
+  })
+
+  passEvents = []
+}
+
+/**
+ * Checks a set of files and posts their diagnostics.
+ *
+ * Files with an overlay are checked first — they are what the user is looking
+ * at, and getting a squiggle onto the visible file before the rest of the
+ * workspace is what makes this feel live rather than batch.
+ */
+function checkFiles(root: string, files: readonly string[], reason: CompilerPass['reason']): void {
+  ensureService(root)
+
+  const ordered = [
+    ...files.filter((file) => overlays.has(file)),
+    ...files.filter((file) => !overlays.has(file))
+  ]
+
+  const produced: FileDiagnostics[] = []
+  const nowDirty = new Set<string>()
+
+  passEvents = []
+  const startedAt = Date.now()
+  const before = engine.stats()
+
+  for (const relativePath of ordered) {
+    const absolute = toAbsolute(root, relativePath)
+
+    let diagnostics: DiagnosticMessage[]
+    try {
+      diagnostics = engine.get<DiagnosticMessage[]>(queryKey(Q_DIAG, relativePath))
+    } catch (error) {
+      // A query cycle is a bug in the dependency wiring rather than in the
+      // user's code, and it must not cost them the rest of the pass.
+      if (!(error instanceof QueryCycleError)) throw error
+      continue
+    }
+
     const version = (emittedVersions.get(relativePath) ?? 0) + 1
     emittedVersions.set(relativePath, version)
 
     produced.push({ relativePath, path: absolute, diagnostics, version })
     if (diagnostics.length > 0) nowDirty.add(relativePath)
   }
+
+  // NOTE: the pass is reported at the END of this function, after the
+  // diagnostics have gone out. Announcing "the pass is done" before its results
+  // are on the wire is a lie a consumer can act on — and did: the first version
+  // of run-cutoff-proof.mjs read the pass, looked for the diagnostics that had
+  // not been sent yet, and reported a correctness failure that was purely
+  // ordering. Diagnostics are the payload; the pass is the receipt.
 
   // Clean sweep: anything that had diagnostics last pass but was not re-checked
   // this pass gets an explicit empty set, or its squiggles never clear.
@@ -526,6 +849,8 @@ function checkFiles(root: string, files: readonly string[]): void {
   previouslyDirty = nowDirty
 
   if (produced.length > 0) post({ type: 'diagnostics', files: produced, settled: true })
+
+  reportPass(reason, ordered.length, startedAt, before)
 }
 
 function describeNode(root: string, relativePath: string): DependencyNode | null {
@@ -566,7 +891,9 @@ function handle(request: WorkerRequest): void {
         version: request.version
       })
       bumpVersion(request.relativePath)
-      if (workspaceRoot !== null) applyChanges(workspaceRoot, [request.relativePath], [])
+      if (workspaceRoot !== null) {
+        applyChanges(workspaceRoot, [request.relativePath], [], 'buffer')
+      }
       return
 
     case 'closeDocument':
@@ -574,6 +901,10 @@ function handle(request: WorkerRequest): void {
       // The buffer is gone, so the next check must read disk rather than serve
       // a snapshot the host still thinks is current.
       bumpVersion(request.relativePath)
+      // The engine's input must follow. Without this it keeps serving the
+      // discarded buffer's text, and closing a tab with unsaved changes would
+      // leave diagnostics describing text that exists nowhere.
+      if (workspaceRoot !== null) setTextInput(workspaceRoot, request.relativePath)
       return
 
     case 'dependents': {

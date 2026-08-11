@@ -675,3 +675,81 @@ export function stoppedCompilerStatus(): CompilerStatus {
     detail: null
   }
 }
+
+/* --------------------------- compiler intelligence ------------------------ */
+
+/**
+ * Why one query returned what it returned.
+ *
+ * Mirrors `QueryOutcome` in query-engine.ts. Restated here as a zod enum rather
+ * than imported because everything crossing to the renderer is validated at the
+ * boundary, and the engine module is deliberately free of dependencies — it
+ * must stay importable by a worker that has no zod.
+ */
+export const queryOutcomeSchema = z.enum([
+  'miss',
+  'fresh',
+  'durable',
+  'validated',
+  'cutoff',
+  'recomputed'
+])
+export type QueryOutcomeName = z.infer<typeof queryOutcomeSchema>
+
+export const queryDurabilitySchema = z.enum(['workspace', 'external', 'lib'])
+export type QueryDurabilityName = z.infer<typeof queryDurabilitySchema>
+
+/**
+ * One line of the daemon's working. This is the entire data source for the
+ * Compiler Intelligence view, which exists to answer the question no IDE on the
+ * market answers: not "what is wrong with my code" but "what did the compiler
+ * just do, and why".
+ */
+export const compilerTraceEventSchema = z.strictObject({
+  /** `namespace:argument`, e.g. `diagnostics:src/app.ts`. */
+  key: z.string(),
+  outcome: queryOutcomeSchema,
+  durability: queryDurabilitySchema,
+  ms: z.number().nonnegative(),
+  depth: z.number().int().nonnegative(),
+  depsWalked: z.number().int().nonnegative()
+})
+export type CompilerTraceEvent = z.infer<typeof compilerTraceEventSchema>
+
+export const queryEngineStatsSchema = z.strictObject({
+  revision: z.number().int().nonnegative(),
+  memoCount: z.number().int().nonnegative(),
+  hits: z.number().int().nonnegative(),
+  misses: z.number().int().nonnegative(),
+  recomputes: z.number().int().nonnegative(),
+  cutoffs: z.number().int().nonnegative(),
+  /** Dependency walks avoided outright by the durability tier. */
+  durableSkips: z.number().int().nonnegative()
+})
+export type QueryEngineStats = z.infer<typeof queryEngineStatsSchema>
+
+/**
+ * One completed check pass, as the panel sees it.
+ *
+ * `requested` vs `recomputed` is the pair the whole feature is built to show:
+ * how many files the invalidation walk asked about, against how many actually
+ * needed the type checker. The gap is the work the signature cutoff saved, and
+ * it is the number to point at when comparing against an editor that rechecks
+ * everything.
+ */
+export const compilerPassSchema = z.strictObject({
+  /** Monotonic within a daemon lifetime; resets on restart. */
+  id: z.number().int().nonnegative(),
+  /** What triggered it — a saved file, an unsaved buffer, or the initial index. */
+  reason: z.enum(['index', 'watch', 'buffer']),
+  /** Files named by the invalidation walk. */
+  requested: z.number().int().nonnegative(),
+  /** Files whose diagnostics the type checker actually had to produce. */
+  recomputed: z.number().int().nonnegative(),
+  /** Files served from memo because their imports' signatures had not moved. */
+  reused: z.number().int().nonnegative(),
+  totalMs: z.number().nonnegative(),
+  events: z.array(compilerTraceEventSchema),
+  stats: queryEngineStatsSchema
+})
+export type CompilerPass = z.infer<typeof compilerPassSchema>

@@ -15,6 +15,7 @@ import {
   gitCommitSchema,
   gitFileDiffSchema,
   githubInsightsSchema,
+  compilerPassSchema,
   compilerStatusSchema,
   dependencyQuerySchema,
   diagnosticsBatchSchema,
@@ -450,6 +451,15 @@ export const INVOKE_CHANNELS = {
   'compiler:restart': {
     request: empty,
     response: z.strictObject({ restarted: z.literal(true) })
+  },
+  /**
+   * Recent check passes, newest last. A pull as well as an event, because the
+   * Compiler Intelligence view is lazily mounted: opening it between passes
+   * must show the history rather than an empty chart until the user types.
+   */
+  'compiler:passes': {
+    request: empty,
+    response: z.strictObject({ passes: z.array(compilerPassSchema) })
   }
 } as const satisfies Record<InvokeChannel, ChannelSpec>
 
@@ -491,7 +501,11 @@ export const EVENT_CHANNELS = {
   // undo the batching that makes them affordable.
   'compiler:diagnosticsChanged': { payload: diagnosticsBatchSchema },
   // The graph summary rides on status instead of earning a third channel.
-  'compiler:statusChanged': { payload: compilerStatusSchema }
+  'compiler:statusChanged': { payload: compilerStatusSchema },
+  // Deliberately NOT folded onto statusChanged. Status is a small object that
+  // fires constantly; a pass carries up to 500 trace events. Merging them would
+  // make every state transition pay the cost of the observability payload.
+  'compiler:passCompleted': { payload: compilerPassSchema }
 } as const satisfies Record<EventChannel, { readonly payload: z.ZodType }>
 
 export type InvokeChannels = typeof INVOKE_CHANNELS

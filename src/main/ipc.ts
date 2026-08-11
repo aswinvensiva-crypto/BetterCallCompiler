@@ -15,6 +15,7 @@ import {
 } from '../shared/ipc-contract'
 import {
   closeDocument as closeCompilerDocument,
+  compilerPasses,
   compilerStatus,
   dependentsOf as compilerDependentsOf,
   diagnosticsFor,
@@ -332,7 +333,8 @@ export function createHandlerMap(): HandlerMap {
     'compiler:restart': () => {
       restartCompiler()
       return { restarted: true as const }
-    }
+    },
+    'compiler:passes': () => ({ passes: compilerPasses() })
   }
 }
 

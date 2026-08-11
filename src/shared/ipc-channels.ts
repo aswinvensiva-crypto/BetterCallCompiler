@@ -66,7 +66,8 @@ export const INVOKE_CHANNEL_NAMES = [
   'compiler:dependents',
   'compiler:openDocument',
   'compiler:closeDocument',
-  'compiler:restart'
+  'compiler:restart',
+  'compiler:passes'
 ] as const
 
 export type InvokeChannel = (typeof INVOKE_CHANNEL_NAMES)[number]
@@ -88,7 +89,8 @@ export const EVENT_CHANNEL_NAMES = [
   'visualizer:stateChanged',
   'visualizer:revealRequested',
   'compiler:diagnosticsChanged',
-  'compiler:statusChanged'
+  'compiler:statusChanged',
+  'compiler:passCompleted'
 ] as const
 
 export type EventChannel = (typeof EVENT_CHANNEL_NAMES)[number]
