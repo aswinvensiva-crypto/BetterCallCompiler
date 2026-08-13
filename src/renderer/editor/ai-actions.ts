@@ -25,6 +25,21 @@ export interface AiActionDetail {
   readonly context: AiContext
 }
 
+/**
+ * Fired when the user asks for an Explain ARTIFACT. The Artifacts view listens.
+ *
+ * A separate event from `AI_ACTION_EVENT` rather than a fourth mode on it. The
+ * two produce different things — one a streamed answer in a panel, the other a
+ * stored document — and they are consumed by different views. Folding them
+ * together would mean every listener of the AI event had to learn to ignore a
+ * mode it cannot render.
+ */
+export const EXPLAIN_ARTIFACT_EVENT = 'bettercallcompiler:explain-artifact'
+
+export interface ExplainArtifactDetail {
+  readonly context: AiContext
+}
+
 /** A whole 800-line class is not context, it is noise around the selection. */
 const MAX_SYMBOL_CHARS = 4000
 
@@ -109,6 +124,30 @@ export function registerAiActions(editor: monacoNs.editor.IStandaloneCodeEditor)
       precondition: 'editorHasSelection',
       run: () => dispatch(mode)
     })
+  })
+
+  /**
+   * The artifact action, alongside the three rather than replacing one.
+   *
+   * Ctrl+K deliberately still opens the streamed panel. That binding is what
+   * people already reach for when they want a quick answer they will dismiss,
+   * and quietly repointing it at something that writes a file into the
+   * workspace would be a surprise. Producing a durable record is a deliberate
+   * act and gets a deliberate gesture.
+   */
+  editor.addAction({
+    id: 'bettercallcompiler.explain.artifact',
+    label: 'BetterCallCompiler: Explain as Artifact',
+    contextMenuGroupId: 'bettercallcompiler-ai',
+    contextMenuOrder: modes.length,
+    precondition: 'editorHasSelection',
+    run: () => {
+      const context = buildContext(editor)
+      if (context === null) return
+      document.dispatchEvent(
+        new CustomEvent<ExplainArtifactDetail>(EXPLAIN_ARTIFACT_EVENT, { detail: { context } })
+      )
+    }
   })
 
   /**

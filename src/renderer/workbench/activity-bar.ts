@@ -95,6 +95,25 @@ export const ACTIVITY_ITEMS: readonly ActivityItem[] = [
     region: 'rightdock'
   },
   {
+    // "Explanations" is the durable artifact panel; "Assistant" above is the
+    // streamed chat one. Distinct names and distinct icons, the same rule the
+    // Assist/Assistant pair already follows.
+    id: 'artifacts',
+    label: 'Explanations',
+    icon: 'M6 3h9l4 4v14H6zM15 3v4h4M9 12h7M9 16h5',
+    enabled: true,
+    region: 'sidebar'
+  },
+  {
+    // The second right-dock item, and for the same reason as the first: a trace
+    // list and a latency chart need width the side bar does not have.
+    id: 'compiler',
+    label: 'Compiler Intelligence',
+    icon: 'M4 17l4-6 3 4 3-7 3 5M3 3v18h18',
+    enabled: true,
+    region: 'rightdock'
+  },
+  {
     id: 'settings',
     label: 'Settings',
     icon:

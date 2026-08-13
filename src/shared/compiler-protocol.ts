@@ -1,6 +1,7 @@
 import type {
   BuildGraphSummary,
   CompilerDaemonState,
+  CompilerPass,
   DependencyQuery,
   FileDiagnostics
 } from './types'
@@ -108,12 +109,26 @@ export interface WorkerFailure {
   readonly detail: string
 }
 
+/**
+ * The daemon's working, for one completed check pass.
+ *
+ * Sent separately from `diagnostics` rather than folded into it because the two
+ * have different audiences and different failure modes. Diagnostics must arrive;
+ * a trace is observability and is capped and droppable. Merging them would make
+ * a chatty trace able to delay a squiggle.
+ */
+export interface PassMessage {
+  readonly type: 'pass'
+  readonly pass: CompilerPass
+}
+
 export type WorkerMessage =
   | ReadyMessage
   | StateMessage
   | DiagnosticsMessage
   | DependentsResponse
   | PongMessage
+  | PassMessage
   | WorkerFailure
 
 /* -------------------------------- guards --------------------------------- */
@@ -136,6 +151,7 @@ export function isWorkerMessage(value: unknown): value is WorkerMessage {
     type === 'diagnostics' ||
     type === 'dependentsResult' ||
     type === 'pong' ||
+    type === 'pass' ||
     type === 'failure'
   )
 }

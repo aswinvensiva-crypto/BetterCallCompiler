@@ -10,10 +10,26 @@
 /**
  * The exact policy required by the security invariants. Shipped builds get this
  * string verbatim; a unit test asserts it character-for-character.
+ *
+ * `'wasm-unsafe-eval'` is the one addition tree-sitter forces, and it is worth
+ * being precise about what it does and does not permit.
+ *
+ * It permits exactly one thing: compiling and instantiating a WebAssembly
+ * module from a buffer. It does NOT enable `eval`, `new Function`, or inline
+ * scripts — that is `'unsafe-eval'`, a strictly larger grant which this does not
+ * include and which the development policy uses only because Vite's HMR client
+ * requires it. The token exists in the spec precisely so that a page needing
+ * WebAssembly does not have to ask for JavaScript evaluation as well.
+ *
+ * The bytes it compiles never come from the network. `connect-src 'none'` is
+ * unchanged, so the renderer still cannot fetch anything from anywhere; the
+ * `.wasm` files are read by main from `resources/tree-sitter/` and handed over
+ * IPC (see wasm-assets.ts). The grant is therefore "run the WebAssembly the
+ * main process chose to give you", not "run WebAssembly from wherever".
  */
 export const PRODUCTION_CSP =
   "default-src 'self'; " +
-  "script-src 'self'; " +
+  "script-src 'self' 'wasm-unsafe-eval'; " +
   "style-src 'self' 'unsafe-inline'; " +
   "img-src 'self' data:; " +
   "connect-src 'none'"

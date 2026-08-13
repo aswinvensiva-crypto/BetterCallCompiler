@@ -675,3 +675,171 @@ export function stoppedCompilerStatus(): CompilerStatus {
     detail: null
   }
 }
+
+/* -------------------------------- artifacts ------------------------------- */
+
+/**
+ * A durable, code-anchored explanation.
+ *
+ * The behaviour reproduced here is Antigravity's: an agent's explanation is not
+ * a chat message that scrolls away, it is an artifact that persists, cites
+ * specific code, and can be commented on — and the comment steers the agent
+ * rather than starting a fresh conversation.
+ *
+ * What this adds that a chat transcript cannot: an anchor carries a hash of the
+ * lines it described, so an artifact read a week later can say "this part is
+ * describing code that has since changed" instead of pointing confidently at
+ * whatever now occupies those line numbers.
+ */
+export const codeAnchorSchema = z.strictObject({
+  relativePath: z.string(),
+  startLine: z.number().int().positive(),
+  endLine: z.number().int().positive(),
+  symbol: z.string().nullable(),
+  /** Hash of the anchored lines at the moment the artifact was written. */
+  snapshotHash: z.string()
+})
+export type CodeAnchorRecord = z.infer<typeof codeAnchorSchema>
+
+export const artifactSectionSchema = z.strictObject({
+  id: z.string().min(1),
+  heading: z.string(),
+  markdown: z.string(),
+  anchors: z.array(codeAnchorSchema)
+})
+export type ArtifactSectionRecord = z.infer<typeof artifactSectionSchema>
+
+export const artifactCommentSchema = z.strictObject({
+  id: z.string().min(1),
+  /** Null for a comment on the artifact as a whole. */
+  sectionId: z.string().nullable(),
+  body: z.string(),
+  createdAt: z.string(),
+  /**
+   * The artifact the agent produced in reply, if it has answered.
+   *
+   * A reply is a NEW artifact rather than an edit to this one. Sections are
+   * immutable by construction: an explanation you can silently rewrite is not
+   * evidence of what was said, which is the same reason ai-log.ts appends a
+   * revert entry rather than amending the original.
+   */
+  respondedInArtifactId: z.string().nullable()
+})
+export type ArtifactComment = z.infer<typeof artifactCommentSchema>
+
+export const artifactKindSchema = z.enum(['explanation', 'walkthrough'])
+export type ArtifactKind = z.infer<typeof artifactKindSchema>
+
+export const artifactSchema = z.strictObject({
+  id: z.string().min(1),
+  kind: artifactKindSchema,
+  title: z.string(),
+  createdAt: z.string(),
+  model: z.string(),
+  /** Same 16-hex convention as ai-log.ts, from `hashPrompt`. */
+  promptHash: z.string(),
+  /**
+   * The exact text the model received, verbatim.
+   *
+   * Stored rather than reconstructed, for the reason `renderContext` exists at
+   * all: a viewer that rebuilds its own approximation of the prompt drifts, and
+   * the transparency claim quietly becomes false.
+   */
+  contextSent: z.string(),
+  sections: z.array(artifactSectionSchema),
+  comments: z.array(artifactCommentSchema),
+  /** The artifact this one answers, when it was produced from a comment. */
+  supersedes: z.string().nullable()
+})
+export type Artifact = z.infer<typeof artifactSchema>
+
+/** List rows: enough to render the index without loading every artifact. */
+export const artifactSummarySchema = z.strictObject({
+  id: z.string(),
+  kind: artifactKindSchema,
+  title: z.string(),
+  createdAt: z.string(),
+  sectionCount: z.number().int().nonnegative(),
+  commentCount: z.number().int().nonnegative(),
+  unansweredCommentCount: z.number().int().nonnegative(),
+  supersedes: z.string().nullable()
+})
+export type ArtifactSummary = z.infer<typeof artifactSummarySchema>
+
+/* --------------------------- compiler intelligence ------------------------ */
+
+/**
+ * Why one query returned what it returned.
+ *
+ * Mirrors `QueryOutcome` in query-engine.ts. Restated here as a zod enum rather
+ * than imported because everything crossing to the renderer is validated at the
+ * boundary, and the engine module is deliberately free of dependencies — it
+ * must stay importable by a worker that has no zod.
+ */
+export const queryOutcomeSchema = z.enum([
+  'miss',
+  'fresh',
+  'durable',
+  'validated',
+  'cutoff',
+  'recomputed'
+])
+export type QueryOutcomeName = z.infer<typeof queryOutcomeSchema>
+
+export const queryDurabilitySchema = z.enum(['workspace', 'external', 'lib'])
+export type QueryDurabilityName = z.infer<typeof queryDurabilitySchema>
+
+/**
+ * One line of the daemon's working. This is the entire data source for the
+ * Compiler Intelligence view, which exists to answer the question no IDE on the
+ * market answers: not "what is wrong with my code" but "what did the compiler
+ * just do, and why".
+ */
+export const compilerTraceEventSchema = z.strictObject({
+  /** `namespace:argument`, e.g. `diagnostics:src/app.ts`. */
+  key: z.string(),
+  outcome: queryOutcomeSchema,
+  durability: queryDurabilitySchema,
+  ms: z.number().nonnegative(),
+  depth: z.number().int().nonnegative(),
+  depsWalked: z.number().int().nonnegative()
+})
+export type CompilerTraceEvent = z.infer<typeof compilerTraceEventSchema>
+
+export const queryEngineStatsSchema = z.strictObject({
+  revision: z.number().int().nonnegative(),
+  memoCount: z.number().int().nonnegative(),
+  hits: z.number().int().nonnegative(),
+  misses: z.number().int().nonnegative(),
+  recomputes: z.number().int().nonnegative(),
+  cutoffs: z.number().int().nonnegative(),
+  /** Dependency walks avoided outright by the durability tier. */
+  durableSkips: z.number().int().nonnegative()
+})
+export type QueryEngineStats = z.infer<typeof queryEngineStatsSchema>
+
+/**
+ * One completed check pass, as the panel sees it.
+ *
+ * `requested` vs `recomputed` is the pair the whole feature is built to show:
+ * how many files the invalidation walk asked about, against how many actually
+ * needed the type checker. The gap is the work the signature cutoff saved, and
+ * it is the number to point at when comparing against an editor that rechecks
+ * everything.
+ */
+export const compilerPassSchema = z.strictObject({
+  /** Monotonic within a daemon lifetime; resets on restart. */
+  id: z.number().int().nonnegative(),
+  /** What triggered it — a saved file, an unsaved buffer, or the initial index. */
+  reason: z.enum(['index', 'watch', 'buffer']),
+  /** Files named by the invalidation walk. */
+  requested: z.number().int().nonnegative(),
+  /** Files whose diagnostics the type checker actually had to produce. */
+  recomputed: z.number().int().nonnegative(),
+  /** Files served from memo because their imports' signatures had not moved. */
+  reused: z.number().int().nonnegative(),
+  totalMs: z.number().nonnegative(),
+  events: z.array(compilerTraceEventSchema),
+  stats: queryEngineStatsSchema
+})
+export type CompilerPass = z.infer<typeof compilerPassSchema>

@@ -10,6 +10,7 @@ import {
 } from '../shared/compiler-protocol'
 import type {
   CompilerDaemonState,
+  CompilerPass,
   CompilerStatus,
   DependencyQuery,
   DiagnosticsBatch,
@@ -89,6 +90,17 @@ const diagnosticsByPath = new Map<string, FileDiagnostics>()
 /** Open buffers, replayed after a restart so the daemon never loses them. */
 const openDocuments = new Map<string, { content: string; version: number }>()
 
+/**
+ * Recent check passes, newest last.
+ *
+ * Bounded rather than unbounded: this is observability for a long-running
+ * process, and each pass carries up to 500 trace events. An unbounded history
+ * is a memory leak that only shows up after an hour of typing — the exact
+ * failure a daemon must not have.
+ */
+const MAX_PASS_HISTORY = 50
+let passes: CompilerPass[] = []
+
 let pendingDiagnostics: FileDiagnostics[] = []
 let pendingSettled = false
 let flushTimer: ReturnType<typeof setTimeout> | null = null
@@ -107,13 +119,16 @@ const pendingDependents = new Map<number, (query: DependencyQuery) => void>()
 
 let emitDiagnostics: ((batch: DiagnosticsBatch) => void) | null = null
 let emitStatus: ((status: CompilerStatus) => void) | null = null
+let emitPass: ((pass: CompilerPass) => void) | null = null
 
 export function setCompilerEmitters(
   onDiagnostics: (batch: DiagnosticsBatch) => void,
-  onStatus: (status: CompilerStatus) => void
+  onStatus: (status: CompilerStatus) => void,
+  onPass?: (pass: CompilerPass) => void
 ): void {
   emitDiagnostics = onDiagnostics
   emitStatus = onStatus
+  emitPass = onPass ?? null
 }
 
 /** Overridden by tests; production spawns the real worker file. */
@@ -297,6 +312,15 @@ function receive(message: WorkerMessage): void {
       scheduleFlush()
       return
 
+    case 'pass':
+      passes.push(message.pass)
+      if (passes.length > MAX_PASS_HISTORY) passes = passes.slice(-MAX_PASS_HISTORY)
+      // Emitted immediately rather than batched with diagnostics. The panel is
+      // showing how fast the daemon is; delaying the evidence through the same
+      // 50ms debounce would make it report its own latency wrong.
+      emitPass?.(message.pass)
+      return
+
     case 'dependentsResult': {
       const resolve = pendingDependents.get(message.requestId)
       pendingDependents.delete(message.requestId)
@@ -394,6 +418,10 @@ export function stopCompiler(): void {
 
   diagnosticsByPath.clear()
   openDocuments.clear()
+  // A restarted daemon re-derives everything from cold, so its timings are not
+  // comparable with the previous one's. Keeping the old passes would put a warm
+  // p95 next to a cold one in the same chart and make the number meaningless.
+  passes = []
   pendingDiagnostics = []
   pendingChanged = new Set()
   pendingRemoved = new Set()
@@ -409,6 +437,18 @@ export function restartCompiler(): void {
   const root = workspaceRoot
   stopCompiler()
   startCompiler(root)
+}
+
+/**
+ * Recent passes, newest last.
+ *
+ * A pull rather than only an event stream, for the same reason
+ * `diagnosticsByPath` is authoritative: the Compiler Intelligence view is
+ * lazily mounted, and a panel opened between passes must be able to show
+ * history instead of an empty chart until the user happens to type.
+ */
+export function compilerPasses(): CompilerPass[] {
+  return [...passes]
 }
 
 export function diagnosticsFor(relativePath: string | null): FileDiagnostics[] {
@@ -455,6 +495,8 @@ export function resetCompilerForTests(): void {
   workspaceRoot = null
   emitDiagnostics = null
   emitStatus = null
+  emitPass = null
+  passes = []
   restarts = 0
   restartTimestamps = []
   missedHeartbeats = 0

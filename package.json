@@ -17,6 +17,7 @@
     "test:watch": "vitest",
     "test:e2e": "playwright test",
     "test:asar": "node test/asar/run-matrix.mjs",
+    "test:query": "node test/query/run-cutoff-proof.mjs",
     "test:gc": "node test/gc/run-gc-control.mjs",
     "rebuild": "electron-rebuild",
     "build:win": "npm run build && electron-builder --win --config electron-builder.yml",
@@ -36,6 +37,7 @@
     "node-pty": "1.1.0",
     "simple-git": "3.36.0",
     "typescript": "5.9.3",
+    "web-tree-sitter": "^0.26.12",
     "zod": "4.4.3"
   },
   "devDependencies": {
@@ -43,6 +45,7 @@
     "@playwright/test": "1.62.1",
     "@types/babel__traverse": "^7.28.0",
     "@types/node": "24.13.3",
+    "@vscode/tree-sitter-wasm": "^0.3.1",
     "electron": "43.2.0",
     "electron-builder": "26.15.3",
     "electron-vite": "5.0.0",

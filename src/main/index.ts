@@ -127,7 +127,8 @@ function createWindow(): BrowserWindow {
   })
   setCompilerEmitters(
     (batch) => emitEvent(win, 'compiler:diagnosticsChanged', batch),
-    (status) => emitEvent(win, 'compiler:statusChanged', status)
+    (status) => emitEvent(win, 'compiler:statusChanged', status),
+    (pass) => emitEvent(win, 'compiler:passCompleted', pass)
   )
   // Started here, not where the argv folder is adopted: that runs before this
   // window exists, so a daemon booted there would emit its first status into a

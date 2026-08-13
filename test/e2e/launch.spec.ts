@@ -32,8 +32,9 @@ test('app launches and renders the workbench with a clean console', async () => 
     }
 
     // The renderer actually ran: these nodes are created in main.ts, not markup.
-    // Assist, Visualizer and Problems bring this to 10.
-    await expect(window.locator('.activity-bar__item')).toHaveCount(10)
+    // Assist, Visualizer and Problems brought this to 10; Compiler Intelligence
+    // and Explanations make 12.
+    await expect(window.locator('.activity-bar__item')).toHaveCount(12)
     await expect(window.locator('.editor-placeholder__mark')).toHaveText('BetterCallCompiler')
 
     // With step 12 done, every activity item is live. The bar renders anything
@@ -49,6 +50,8 @@ test('app launches and renders the workbench with a clean console', async () => 
       'assist',
       'visualizer',
       'problems',
+      'compiler',
+      'artifacts',
       'settings'
     ]) {
       await expect(window.locator(`.activity-bar__item[data-view-id="${id}"]`)).toBeEnabled()
