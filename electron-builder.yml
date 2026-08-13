@@ -35,6 +35,37 @@ extraResources:
     filter:
       - lib.*.d.ts
 
+  # Tree-sitter ships as WebAssembly, and the renderer cannot fetch it: the
+  # production CSP is `connect-src 'none'`, so every network-shaped load —
+  # fetch, XHR, instantiateStreaming — is refused. The bytes therefore arrive
+  # over IPC instead, and main reads them from here.
+  #
+  # extraResources rather than a `files` entry, for the same reason lib.*.d.ts
+  # is here: this is runtime DATA, and shipping it inside app.asar would mean
+  # reading it back out of an archive for no benefit. It also keeps ~6 MB of
+  # grammars out of the renderer bundle, where it would be parsed at start-up.
+  - from: node_modules/web-tree-sitter
+    to: tree-sitter
+    filter:
+      - web-tree-sitter.wasm
+  # Grammars come from @vscode/tree-sitter-wasm rather than the more obvious
+  # tree-sitter-wasms. That package is built with tree-sitter-cli 0.20, and
+  # web-tree-sitter 0.26 refuses its grammars outright — `Language.load`
+  # rejects on the ABI check with an EMPTY error message, so the symptom is a
+  # syntax layer that silently never loads rather than anything that looks like
+  # a version problem. VS Code ships these same files in production against a
+  # current runtime, which is exactly the compatibility guarantee wanted here.
+  - from: node_modules/@vscode/tree-sitter-wasm/wasm
+    to: tree-sitter
+    filter:
+      # Only the languages something actually consumes. The package also
+      # carries C++, C#, Ruby and others at several MB each, and nothing reads
+      # those trees yet. Adding one is a line here when something does.
+      - tree-sitter-typescript.wasm
+      - tree-sitter-tsx.wasm
+      - tree-sitter-javascript.wasm
+      - tree-sitter-python.wasm
+
 # node-pty 1.1.0 is a Node-API addon — it depends on node-addon-api, ships no
 # binding.gyp, and carries prebuilds for every platform it supports. Node-API is
 # ABI-stable across Node and Electron versions by design, which is exactly why

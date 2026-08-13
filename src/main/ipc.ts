@@ -53,6 +53,7 @@ import {
   readArtifact
 } from './artifact-store'
 import { startExplain } from './explain-service'
+import { isWasmAssetName, readWasmAsset } from './wasm-assets'
 import { listToolchains, rescanToolchains } from './toolchains'
 import { cancelRun, startRun } from './runner'
 import {
@@ -406,6 +407,20 @@ export function createHandlerMap(): HandlerMap {
       const artifact = await commentOnArtifact(request.id, request.sectionId, request.body)
       notifyArtifactsChanged(event)
       return { artifact }
+    },
+
+    /* -------------------------------- wasm -------------------------------- */
+
+    'wasm:read': async (request) => {
+      // Checked against the allow-list here rather than inside the reader, so an
+      // unknown name is rejected before it reaches any filesystem call at all.
+      if (!isWasmAssetName(request.name)) {
+        throw new BetterCallCompilerServiceError(
+          'BAD_REQUEST',
+          `unknown WebAssembly asset: ${request.name}`
+        )
+      }
+      return { base64: await readWasmAsset(request.name) }
     }
   }
 }

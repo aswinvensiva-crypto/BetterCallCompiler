@@ -530,6 +530,20 @@ export const INVOKE_CHANNELS = {
       body: z.string().min(1)
     }),
     response: z.strictObject({ artifact: artifactSchema })
+  },
+
+  /**
+   * WebAssembly bytes, base64.
+   *
+   * The renderer cannot fetch a `.wasm` — `connect-src 'none'` refuses every
+   * network-shaped load, including `instantiateStreaming` — so tree-sitter's
+   * runtime and grammars arrive over IPC instead. `name` is a key into an
+   * allow-list in wasm-assets.ts, never a path: there is nothing to traverse
+   * because the renderer never names a location.
+   */
+  'wasm:read': {
+    request: z.strictObject({ name: z.string().min(1) }),
+    response: z.strictObject({ base64: z.string() })
   }
 } as const satisfies Record<InvokeChannel, ChannelSpec>
 

@@ -12,7 +12,7 @@ describe('content security policy', () => {
   // well-meaning edit that "tidies" it is exactly what this test exists to catch.
   it('ships the exact required production policy', () => {
     expect(PRODUCTION_CSP).toBe(
-      "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'none'"
+      "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'none'"
     )
   })
 
@@ -23,7 +23,30 @@ describe('content security policy', () => {
 
   it('never lets the renderer reach the network in production', () => {
     expect(PRODUCTION_CSP).toContain("connect-src 'none'")
-    expect(PRODUCTION_CSP).not.toContain('unsafe-eval')
+  })
+
+  /**
+   * `'wasm-unsafe-eval'` is permitted; `'unsafe-eval'` is not.
+   *
+   * The original assertion here was `not.toContain('unsafe-eval')`, which now
+   * matches `'wasm-unsafe-eval'` by substring and would have failed the moment
+   * tree-sitter arrived. That is the test doing its job — but the fix is to say
+   * what was actually meant, not to loosen it. The two tokens are different
+   * grants: one compiles a WebAssembly module from a buffer, the other enables
+   * `eval` and `new Function` on JavaScript. Only the first is wanted, and only
+   * in production, where the bytes come from main over IPC rather than from
+   * anywhere a page could reach.
+   */
+  it('permits WebAssembly compilation without permitting JavaScript eval', () => {
+    expect(PRODUCTION_CSP).toContain("'wasm-unsafe-eval'")
+
+    // Every `unsafe-eval` occurrence must be the wasm-prefixed one.
+    const bare = PRODUCTION_CSP.match(/(^|[\s'])unsafe-eval/g) ?? []
+    expect(bare).toEqual([])
+
+    // And it is scoped to script-src rather than sprayed across the policy.
+    const scriptSrc = /script-src ([^;]*)/.exec(PRODUCTION_CSP)?.[1] ?? ''
+    expect(scriptSrc).toBe("'self' 'wasm-unsafe-eval'")
   })
 
   it('relaxes only localhost transports in dev', () => {

@@ -62,6 +62,14 @@ import {
   onArtifactsShown,
   setArtifactsViewActivator
 } from './views/artifacts'
+import {
+  applyEdit as applySyntaxEdit,
+  closeDocument as closeSyntaxDocument,
+  flowSignatureFor,
+  hasDocument as hasSyntaxDocument,
+  openDocument as openSyntaxDocument,
+  supportsLanguage
+} from './editor/syntax-tree'
 import { mountSearch, onSearchShown, setSearchQuery } from './views/search'
 import { openCommandPalette, registerCommands } from './workbench/command-palette'
 import { openQuickOpen, watchForFileChanges } from './workbench/quick-open'
@@ -142,6 +150,9 @@ function mountEditor(editorHost: HTMLElement, tabBar: HTMLElement): void {
     editor.focus()
   }
   setVisualizerRevealHandler(revealInEditor)
+  // Before the Visualizer feed, deliberately: Monaco fires content listeners in
+  // registration order, so the tree is current before anything reads it.
+  registerSyntaxFeed(editor)
   registerVisualizerFeed(editor)
   // A detached diagram reveals through the same function, so a click means the
   // same thing whichever window it happened in.
@@ -223,6 +234,7 @@ function mountEditor(editorHost: HTMLElement, tabBar: HTMLElement): void {
 function registerVisualizerFeed(editor: monacoNs.editor.IStandaloneCodeEditor): void {
   let timer: number | null = null
   let rebuildKey = ''
+  let flowSignature: string | null = null
 
   const rebuild = (): void => {
     const model = editor.getModel()
@@ -238,7 +250,35 @@ function registerVisualizerFeed(editor: monacoNs.editor.IStandaloneCodeEditor): 
       `-${selection.endLineNumber}:${selection.endColumn}`
     const key = selection.isEmpty() ? `file ${buffer}` : `sel ${buffer} ${range}`
     if (key === rebuildKey) return
+    const previousKey = rebuildKey
     rebuildKey = key
+
+    /**
+     * Early cutoff, from the tree-sitter tree.
+     *
+     * The version-id guard above only catches a bare cursor move. Every actual
+     * EDIT changes the version, so until now every keystroke paid for a full
+     * Babel parse of the file plus a complete graph rebuild — and most
+     * keystrokes cannot change the diagram at all. Renaming a local, editing a
+     * string, changing an operand: identical control flow, identical graph.
+     *
+     * `controlFlowSignature` is the same trick `moduleSignature` plays in the
+     * daemon, one layer up. When it has not moved, there is nothing to draw.
+     *
+     * Only for whole-file mode: with a selection the graphed text is a slice,
+     * and a signature of the whole file says nothing about whether that slice
+     * changed.
+     */
+    if (selection.isEmpty() && previousKey.startsWith('file ')) {
+      const next = flowSignatureFor(model.uri.toString())
+      if (next !== null && next === flowSignature) {
+        highlightVisualizerLine(selection.positionLineNumber)
+        return
+      }
+      flowSignature = next
+    } else if (selection.isEmpty()) {
+      flowSignature = flowSignatureFor(model.uri.toString())
+    }
 
     if (selection.isEmpty()) {
       renderVisualizer(model.getValue(), 1, 'file')
@@ -262,6 +302,72 @@ function registerVisualizerFeed(editor: monacoNs.editor.IStandaloneCodeEditor): 
   })
   editor.onDidChangeModelContent(schedule)
   editor.onDidChangeModel(schedule)
+}
+
+/**
+ * Keeps a tree-sitter tree in step with the editor's model.
+ *
+ * Registered separately from the Visualizer feed, and before it, because the
+ * ordering is load-bearing: Monaco calls content listeners synchronously in
+ * registration order, so the tree is already up to date by the time anything
+ * debounced reads its signature 300ms later.
+ *
+ * Every failure path here is a silent no-op that leaves the previous behaviour
+ * intact. An unsupported language, a missing grammar, a build with no wasm
+ * shipped — all of them mean `flowSignatureFor` answers null and the Visualizer
+ * rebuilds exactly as it did before. This layer is an optimisation, and an
+ * optimisation whose absence breaks the feature is not one.
+ */
+function registerSyntaxFeed(editor: monacoNs.editor.IStandaloneCodeEditor): void {
+  const adopt = (model: monacoNs.editor.ITextModel | null): void => {
+    if (model === null) return
+    const languageId = model.getLanguageId()
+    if (!supportsLanguage(languageId)) return
+    void openSyntaxDocument(model.uri.toString(), languageId, model.getValue())
+  }
+
+  adopt(editor.getModel())
+  editor.onDidChangeModel(() => adopt(editor.getModel()))
+
+  editor.onDidChangeModelContent((event) => {
+    const model = editor.getModel()
+    if (model === null) return
+
+    const key = model.uri.toString()
+    if (!hasSyntaxDocument(key)) {
+      // The grammar may have finished loading after the model opened, or the
+      // language may have changed under it. Either way, start from the current
+      // text rather than trying to replay edits the tree never saw.
+      adopt(model)
+      return
+    }
+
+    const text = model.getValue()
+    for (const change of event.changes) {
+      const applied = applySyntaxEdit(
+        key,
+        {
+          rangeOffset: change.rangeOffset,
+          rangeLength: change.rangeLength,
+          text: change.text,
+          startLine: change.range.startLineNumber,
+          startColumn: change.range.startColumn,
+          endLine: change.range.endLineNumber,
+          endColumn: change.range.endColumn
+        },
+        text
+      )
+      // A rejected edit leaves the tree describing text that no longer exists,
+      // which is worse than no tree at all: the signature would then be
+      // confidently wrong and the Visualizer would stop updating. Drop it and
+      // re-parse from scratch.
+      if (!applied.ok) {
+        closeSyntaxDocument(key)
+        adopt(model)
+        return
+      }
+    }
+  })
 }
 
 /**

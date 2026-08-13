@@ -72,7 +72,8 @@ export const INVOKE_CHANNEL_NAMES = [
   'artifact:list',
   'artifact:get',
   'artifact:create',
-  'artifact:comment'
+  'artifact:comment',
+  'wasm:read'
 ] as const
 
 export type InvokeChannel = (typeof INVOKE_CHANNEL_NAMES)[number]
