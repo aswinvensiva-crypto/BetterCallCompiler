@@ -1,0 +1,118 @@
+name: CI
+
+# Windows only, and not for want of ambition.
+#
+# This is a Windows desktop application: electron-builder targets `--win` with
+# NSIS, node-pty ships Windows prebuilds, the toolchain probe knows about the
+# Windows Store Python stub, and `path-confinement.test.ts` asserts against
+# drive letters and directory junctions. On ubuntu the unit suite would fail on
+# path assertions and every E2E spec would need xvfb to launch Electron at all.
+# A matrix here would buy a second set of results that mean nothing.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# A force-push should not leave the previous run burning a Windows runner, which
+# bills at ten times the Linux rate.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # The fast gate. Typecheck and 500-odd unit tests, no build, no Electron —
+  # this is what catches the ordinary mistake, and it should report in a couple
+  # of minutes rather than behind a ten-minute packaging step.
+  check:
+    name: Typecheck and unit tests
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      # Electron's postinstall pulls a ~100 MB binary. Keyed on the lockfile
+      # because that is what pins the version; without this every run
+      # re-downloads it.
+      - name: Cache the Electron download
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\electron\Cache
+          key: electron-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: electron-${{ runner.os }}-
+
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Unit tests
+        run: npm test
+
+  # The slow gate. Everything here needs `out/`, so it builds first.
+  e2e:
+    name: Build and end-to-end
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Cache the Electron download
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\electron\Cache
+          key: electron-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: electron-${{ runner.os }}-
+
+      - name: Install
+        run: npm ci
+
+      # `npm run build` runs the typecheck again. Left alone rather than
+      # optimised away: this job has to be able to produce a shippable `out/`
+      # on its own, and sharing an artifact from `check` to save ninety seconds
+      # would couple the two jobs for no real gain.
+      - name: Build
+        run: npm run build
+
+      # No `playwright install`. These specs drive Electron through
+      # `_electron.launch`, which uses the Electron binary npm already
+      # installed — there is no Chromium to download.
+      - name: End-to-end
+        run: npm run test:e2e
+
+      # The proof that the signature cutoff is real, driven against the built
+      # worker rather than a fake. Cheap, and it fails loudly if the daemon
+      # silently reverts to rechecking everything.
+      - name: Incremental cutoff proof
+        run: npm run test:query
+
+      # Screenshots, traces and the error-context markdown Playwright writes for
+      # a failure. Without these a red E2E run on a machine nobody can reach is
+      # a stack trace and a guess.
+      - name: Upload failure artefacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-results
+          path: |
+            test-results/
+            playwright-report/
+          retention-days: 7
+          if-no-files-found: ignore
