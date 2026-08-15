@@ -1,0 +1,101 @@
+name: Release
+
+# The CD half: turn a tag into downloadable Windows installers.
+#
+# `workflow_dispatch` is here so this can be proved without cutting a tag —
+# run it by hand, check the artefacts, and only then tag. A release pipeline
+# whose first execution is also its first test is one that fails in front of an
+# audience.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    name: Build Windows installers
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Cache the Electron download
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\electron\Cache
+          key: electron-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: electron-${{ runner.os }}-
+
+      - name: Install
+        run: npm ci
+
+      # A tag that does not typecheck or pass its tests should not become a
+      # download. This duplicates the CI job deliberately: a tag can be pushed
+      # to a commit CI never ran on.
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Unit tests
+        run: npm test
+
+      # Produces the NSIS installer and the portable exe declared in
+      # electron-builder.yml. Unsigned — the same as a local build, and the
+      # README already documents that this triggers SmartScreen and that
+      # removing it needs an OV/EV certificate through CSC_LINK and
+      # CSC_KEY_PASSWORD. Adding those as secrets is the only change needed
+      # here to sign.
+      #
+      # `--publish never` rather than the `build:win` script. electron-builder
+      # decides on its own whether to publish when it is on CI and can see a
+      # token, and the default policy would upload from a tag build before
+      # anyone had looked at it. Saying never here means the release step below
+      # is the ONLY thing that can create a release, which is what makes a
+      # dispatch run safe to rehearse.
+      # Same heap ceiling as the CI build, for the same reason — this runs the
+      # very same `npm run build`. Raising it only in CI would leave the release
+      # to fail identically, but later, and on a tag.
+      - name: Package
+        run: npm run build && npx electron-builder --win --publish never --config electron-builder.yml
+        env:
+          NODE_OPTIONS: --max-old-space-size=8192
+
+      - name: Upload installers as build artefacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installers
+          path: |
+            dist/*.exe
+            dist/*.blockmap
+            dist/latest.yml
+          retention-days: 14
+          if-no-files-found: error
+
+      # Only for a real tag. A manual dispatch stops at the artefact above,
+      # which is what makes this workflow safe to rehearse.
+      - name: Publish the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: |
+            dist/*.exe
+            dist/*.blockmap
+            dist/latest.yml
+          # Draft, not published. The last human check before a binary carrying
+          # this project's name is downloadable is a person opening the release
+          # and pressing publish.
+          generate_release_notes: true

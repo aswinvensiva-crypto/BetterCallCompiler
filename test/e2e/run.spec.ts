@@ -38,6 +38,43 @@ test.beforeAll(async () => {
   window = await app.firstWindow()
   await window.waitForSelector('html[data-bettercallcompiler-ready="true"]')
 
+  // Pin the window size, because this spec reads the terminal through the DOM.
+  //
+  // xterm renders ONLY the rows currently in view — `.xterm-rows` is the
+  // viewport, not the buffer, and the 10 000 lines of scrollback configured in
+  // run.ts are not in the DOM at all. So how many rows the console has decides
+  // whether a line written earlier is still assertable.
+  //
+  // index.ts asks for 1440x900, but a window is clamped to the work area, and
+  // a CI runner's virtual display is 1024x768. That silently cost ~170px of
+  // height, the FitAddon gave the console fewer rows, and the first line of
+  // output had scrolled out of the DOM before the assertions ran — which is
+  // why three tests here passed on a developer machine and failed on CI.
+  //
+  // Setting the bounds explicitly makes the row count a property of the test
+  // rather than of the display it happens to run on. Larger than the runner's
+  // screen is deliberate and fine: the offscreen part still lays out and still
+  // renders, and Playwright's mouse works in page coordinates, so the
+  // traceback-click test below can still hit a row that is past the bottom of
+  // a physical 768px display.
+  await (await app.browserWindow(window)).evaluate((browserWindow) => {
+    browserWindow.setBounds({ x: 0, y: 0, width: 1440, height: 900 })
+  })
+  // Wait for the resize to actually reach the page — setBounds returns before
+  // it does, and a test that read the row count too early would be racing.
+  //
+  // Not `viewportSize()`: that reports Playwright's emulated viewport, and an
+  // Electron window has none, so it is null. Not `window.innerHeight` either —
+  // inside the callback `window` resolves lexically to this file's Page
+  // binding, so it would run correctly in the page and fail to typecheck. The
+  // cast is for tsconfig.node.json, which carries no DOM lib, and is the same
+  // shape as the bridge lookup below.
+  await expect
+    .poll(() =>
+      window.evaluate(() => (globalThis as unknown as { innerHeight: number }).innerHeight)
+    )
+    .toBeGreaterThan(820)
+
   toolchains = await window.evaluate(async () => {
     const bridge = (globalThis as unknown as Record<string, unknown>)['betterCallCompiler'] as {
       toolchain: { list: (r: Record<string, never>) => Promise<unknown> }
