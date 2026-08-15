@@ -65,8 +65,13 @@ jobs:
       # anyone had looked at it. Saying never here means the release step below
       # is the ONLY thing that can create a release, which is what makes a
       # dispatch run safe to rehearse.
+      # Same heap ceiling as the CI build, for the same reason — this runs the
+      # very same `npm run build`. Raising it only in CI would leave the release
+      # to fail identically, but later, and on a tag.
       - name: Package
         run: npm run build && npx electron-builder --win --publish never --config electron-builder.yml
+        env:
+          NODE_OPTIONS: --max-old-space-size=8192
 
       - name: Upload installers as build artefacts
         uses: actions/upload-artifact@v4

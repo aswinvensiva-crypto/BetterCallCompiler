@@ -88,8 +88,17 @@ jobs:
       # optimised away: this job has to be able to produce a shippable `out/`
       # on its own, and sharing an artifact from `check` to save ninety seconds
       # would couple the two jobs for no real gain.
+      # Bundling the renderer pulls Monaco through rollup, and that is what
+      # exhausted the default heap on the runner. The cap is raised rather than
+      # the bundle split because splitting it would change what ships.
+      #
+      # 8192, not 4096. Node sizes its default old-space from total RAM, and on
+      # a 16 GB runner that default is already ~4300 MB — passing 4096 would
+      # LOWER the ceiling and make the failure more likely, not less.
       - name: Build
         run: npm run build
+        env:
+          NODE_OPTIONS: --max-old-space-size=8192
 
       # No `playwright install`. These specs drive Electron through
       # `_electron.launch`, which uses the Electron binary npm already
