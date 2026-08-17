@@ -1,6 +1,6 @@
 import type * as monacoNs from 'monaco-editor'
 import { languageForFile } from './language-id'
-import { monaco } from './monaco-setup'
+import { loadMonaco } from './monaco-setup'
 import type { GitFileDiff } from '../../shared/types'
 
 /**
@@ -79,11 +79,13 @@ export function mountDiffEditor(container: HTMLElement, onClose: () => void): vo
  * editor's own tests locate `.monaco-editor` expecting one. Deferring also means
  * a session that never opens a diff never pays for a second Monaco instance.
  */
-function ensureDiffEditor(): monacoNs.editor.IStandaloneDiffEditor | null {
+function ensureDiffEditor(
+  ns: typeof monacoNs
+): monacoNs.editor.IStandaloneDiffEditor | null {
   if (diffEditor !== null) return diffEditor
   if (body === null) return null
 
-  diffEditor = monaco.editor.createDiffEditor(body, {
+  diffEditor = ns.editor.createDiffEditor(body, {
     theme: 'bettercallcompiler-dark',
     automaticLayout: true,
     readOnly: true,
@@ -101,8 +103,12 @@ function ensureDiffEditor(): monacoNs.editor.IStandaloneDiffEditor | null {
   return diffEditor
 }
 
-export function showDiff(diff: GitFileDiff): void {
-  const editor = ensureDiffEditor()
+export async function showDiff(diff: GitFileDiff): Promise<void> {
+  // Awaited rather than given a synchronous no-op fallback: a diff that quietly
+  // fails to open is worse than one that takes a moment.
+  const ns = await loadMonaco()
+
+  const editor = ensureDiffEditor(ns)
   if (editor === null || host === null) return
 
   disposeModels()
@@ -110,8 +116,8 @@ export function showDiff(diff: GitFileDiff): void {
   const language = languageForFile(diff.path)
   // Deliberately model-less URIs: `createModel` with an explicit URI would
   // collide with the editing model for the same file and Monaco throws.
-  original = monaco.editor.createModel(diff.original, language)
-  modified = monaco.editor.createModel(diff.modified, language)
+  original = ns.editor.createModel(diff.original, language)
+  modified = ns.editor.createModel(diff.modified, language)
 
   editor.setModel({ original, modified })
 

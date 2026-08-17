@@ -140,7 +140,8 @@ function renderProposal(): HTMLElement {
   review.type = 'button'
   review.addEventListener('click', () => {
     if (proposal === null || context === null) return
-    showDiff({
+    // `void`: this is a synchronous click handler, and showDiff is now async.
+    void showDiff({
       path: context.relativePath,
       original: proposal.original,
       modified: proposal.modified,
