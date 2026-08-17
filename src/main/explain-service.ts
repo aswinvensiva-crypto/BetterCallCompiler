@@ -1,5 +1,12 @@
 import { formatAnchor } from '../shared/artifact-format'
-import type { AiContext, AiStarted, Artifact } from '../shared/types'
+import type {
+  AiContext,
+  AiStarted,
+  Artifact,
+  DiagnosticMessage,
+  DiagnosticSeverity,
+  FileDiagnostics
+} from '../shared/types'
 import { hashPrompt, renderContext, startPromptStream } from './ai-service'
 import { dependentsOf } from './compiler-service'
 
@@ -35,6 +42,166 @@ const MAX_TOKENS = 3000
  * what depends on that.
  */
 const NEIGHBOUR_LIMIT = 12
+
+/**
+ * How many diagnostics from the selected lines are listed individually.
+ *
+ * Past this the model is being handed a compiler log rather than context, and
+ * a selection with fifty errors in it is usually one broken thing reported
+ * fifty times. The remainder is counted rather than dropped silently.
+ */
+const MAX_REGION_DIAGNOSTICS = 10
+
+/** Errors first: what stops the build outranks what merely warns about it. */
+const SEVERITY_RANK: Readonly<Record<DiagnosticSeverity, number>> = {
+  error: 0,
+  warning: 1,
+  info: 2,
+  hint: 3
+}
+
+/**
+ * What the daemon has to say about the selected lines.
+ *
+ * The three outcomes are deliberately distinct, and conflating the first two is
+ * the mistake this type exists to prevent:
+ *
+ *   `known: false`      — the daemon has never checked this file. It has NO
+ *                         opinion. Reporting that as "no problems" would tell
+ *                         the model a file is clean when nothing looked at it.
+ *   `known: true`, empty — checked, and genuinely clean. That is information.
+ *   `known: true`, full  — checked, and here is what is wrong.
+ */
+export type RegionDiagnostics =
+  | { readonly known: false }
+  | {
+      readonly known: true
+      readonly inRegion: readonly DiagnosticMessage[]
+      readonly elsewhere: readonly DiagnosticMessage[]
+      readonly truncated: number
+    }
+
+/**
+ * Splits one file's diagnostics into those describing the selection and the rest.
+ *
+ * Lives here rather than in `src/shared` because the cap, the ordering and the
+ * definition of "the region" are Explain's policy rather than shared facts —
+ * the same reason `renderNeighbours` is here and not in dependency-graph.ts.
+ *
+ * Takes `FileDiagnostics[]` because that is exactly what `diagnosticsFor`
+ * returns, so the caller has no reshaping to get wrong.
+ */
+export function selectRegionDiagnostics(
+  files: readonly FileDiagnostics[],
+  relativePath: string,
+  startLine: number,
+  endLine: number
+): RegionDiagnostics {
+  const entry = files.find((file) => file.relativePath === relativePath)
+  if (entry === undefined) return { known: false }
+
+  const inRegion: DiagnosticMessage[] = []
+  const elsewhere: DiagnosticMessage[] = []
+
+  for (const diagnostic of entry.diagnostics) {
+    // Overlap, not containment. A diagnostic whose range straddles the top or
+    // the bottom of the selection is describing the selected code — requiring
+    // full containment would drop exactly the multi-line errors that are
+    // hardest to read.
+    const overlaps = diagnostic.startLine <= endLine && diagnostic.endLine >= startLine
+    if (overlaps) inRegion.push(diagnostic)
+    else elsewhere.push(diagnostic)
+  }
+
+  // Deterministic, so the same daemon state produces the same prompt — which is
+  // what makes `hashPrompt` meaningful and lets the tests assert exact strings.
+  inRegion.sort(
+    (a, b) =>
+      SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity] ||
+      a.startLine - b.startLine ||
+      a.startColumn - b.startColumn ||
+      a.code.localeCompare(b.code)
+  )
+
+  return {
+    known: true,
+    inRegion: inRegion.slice(0, MAX_REGION_DIAGNOSTICS),
+    elsewhere,
+    truncated: Math.max(0, inRegion.length - MAX_REGION_DIAGNOSTICS)
+  }
+}
+
+/** `2 errors, 1 warning` — counts only, because the rest is not being listed. */
+function summarise(diagnostics: readonly DiagnosticMessage[]): string {
+  const counts = new Map<DiagnosticSeverity, number>()
+  for (const diagnostic of diagnostics) {
+    counts.set(diagnostic.severity, (counts.get(diagnostic.severity) ?? 0) + 1)
+  }
+
+  const order: readonly DiagnosticSeverity[] = ['error', 'warning', 'info', 'hint']
+  return order
+    .filter((severity) => (counts.get(severity) ?? 0) > 0)
+    .map((severity) => {
+      const n = counts.get(severity) ?? 0
+      return `${n} ${n === 1 ? severity : `${severity}s`}`
+    })
+    .join(', ')
+}
+
+/**
+ * The compiler's view of the selection, as prompt text.
+ *
+ * This is the part neither VS Code's nor Antigravity's explain does: the model
+ * is told what the type system actually reports for these lines, so the
+ * explanation is grounded in the checker rather than in the model's reading of
+ * the syntax.
+ *
+ * An unknown region renders as the empty string, and the caller omits the
+ * section entirely — so a file the daemon has never seen produces a prompt
+ * byte-identical to the one this feature replaced.
+ *
+ * The provenance clause is load-bearing rather than decoration. `FileDiagnostics.version`
+ * is an emission counter, not a document version, so nothing here can prove
+ * these diagnostics describe the exact buffer the user just selected. Saying
+ * which check they came from is the honest form of that limitation.
+ */
+export function renderRegionDiagnostics(
+  region: RegionDiagnostics,
+  startLine: number,
+  endLine: number
+): string {
+  if (!region.known) return ''
+
+  const lines: string[] = []
+
+  if (region.inRegion.length > 0) {
+    lines.push(
+      `What the compiler reports for lines ${startLine}-${endLine} ` +
+        `(from the daemon's most recent check of this file):`
+    )
+    for (const diagnostic of region.inRegion) {
+      lines.push(
+        `  ${diagnostic.startLine}:${diagnostic.startColumn} ${diagnostic.severity} ` +
+          `${diagnostic.code}: ${diagnostic.message}`
+      )
+    }
+    if (region.truncated > 0) lines.push(`  (and ${region.truncated} more)`)
+    if (region.elsewhere.length > 0) {
+      lines.push(`Elsewhere in this file: ${summarise(region.elsewhere)}.`)
+    }
+    lines.push('Explain what in this code produces these, rather than restating the messages.')
+    return lines.join('\n')
+  }
+
+  if (region.elsewhere.length > 0) {
+    return (
+      `The compiler reports nothing for lines ${startLine}-${endLine}. ` +
+      `Elsewhere in this file: ${summarise(region.elsewhere)}.`
+    )
+  }
+
+  return 'The compiler reports no problems anywhere in this file.'
+}
 
 const SYSTEM_PROMPT =
   'You are a precise code explainer embedded in an IDE. You are producing a ' +
