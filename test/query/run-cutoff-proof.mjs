@@ -181,6 +181,24 @@ try {
   console.log('\n--- revert ---')
   const revertedApp = reverted.diagnostics.find((file) => file.relativePath === 'app.ts')
   check('app.ts diagnostics cleared', revertedApp?.diagnostics.length, 0)
+
+  /* --- deleting a file must invalidate whatever imported it ----------------- */
+
+  // The reverse edges live on the node being deleted, so `applyChanges` has to
+  // ask who depended on lib.ts BEFORE removing it. When it asked afterwards, the
+  // answer was always "nobody": the invalidation set came back holding only
+  // lib.ts, which the filter then dropped for no longer existing, and app.ts was
+  // never rechecked. Its import silently kept resolving to the file's ghost
+  // until some unrelated edit happened to touch it.
+  rmSync(join(root, 'lib.ts'))
+  worker.postMessage({ type: 'filesChanged', changed: [], removed: ['lib.ts'] })
+  const deleted = await nextPass(worker)
+
+  console.log('\n--- lib.ts deleted, while app.ts still imports it ---')
+  check('files type-checked', deleted.pass.recomputed, 1)
+  const orphaned = deleted.diagnostics.find((file) => file.relativePath === 'app.ts')
+  const orphanCodes = (orphaned?.diagnostics ?? []).map((diagnostic) => diagnostic.code)
+  check('TS2307 raised in app.ts, which was never edited', orphanCodes.includes('TS2307'), true)
 } finally {
   await worker.terminate()
   rmSync(root, { recursive: true, force: true })

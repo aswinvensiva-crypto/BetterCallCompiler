@@ -315,6 +315,22 @@ function applyChanges(
   busySince = Date.now()
   reportState('checking')
 
+  /**
+   * Who imported the files that are going away.
+   *
+   * Captured BEFORE the nodes are removed, and that ordering is the entire
+   * point. `dependentsOf` starts from `graph.nodes.get(relativePath)`, so once
+   * `removeNode` has run it returns an empty array — the reverse edges die with
+   * the node. Removing first and asking afterwards, which is what this function
+   * used to do, meant deleting a file never invalidated anything that imported
+   * it, and the importers never got their "Cannot find module" until some
+   * unrelated edit happened to touch them.
+   */
+  const orphanedDependents: string[] = []
+  for (const relativePath of removed) {
+    orphanedDependents.push(...dependentsOf(graph, relativePath))
+  }
+
   for (const relativePath of removed) {
     removeNode(graph, relativePath)
     engine.removeInput(queryKey(Q_TEXT, relativePath))
@@ -326,7 +342,9 @@ function applyChanges(
     const text = overlays.get(relativePath)?.content ?? readIfPossible(absolute)
     if (text === null) {
       // Reported as changed but unreadable — treat it as gone rather than
-      // leaving a node describing content nobody can read.
+      // leaving a node describing content nobody can read. Same capture-first
+      // rule as the removals above: this is a deletion by another name.
+      orphanedDependents.push(...dependentsOf(graph, relativePath))
       removeNode(graph, relativePath)
       engine.removeInput(queryKey(Q_TEXT, relativePath))
       continue
@@ -354,9 +372,11 @@ function applyChanges(
   // asking about them costs: a dependent whose imports' SIGNATURES have not
   // moved is answered from memo, so a body edit no longer drags the type
   // checker across the transitive closure.
-  const affected = invalidationSet(graph, [...changed, ...removed]).filter((file) =>
-    graph.nodes.has(file)
-  )
+  const affected = invalidationSet(graph, [
+    ...changed,
+    ...removed,
+    ...orphanedDependents
+  ]).filter((file) => graph.nodes.has(file))
   checkFiles(root, affected, reason)
 
   busySince = null
@@ -586,6 +606,19 @@ function pullImportSignatures(relativePath: string, ctx: { get<T>(key: string): 
  * something it imports.
  */
 engine.defineQuery(Q_SIG, (relativePath, ctx) => {
+  // A module that has left the graph has no public surface, and asking for its
+  // text would be worse than useless: `text:` is an INPUT, so once
+  // `removeInput` has dropped it there is no compute function behind that
+  // namespace and resolving it throws.
+  //
+  // The engine already refuses to VALIDATE against a vanished dependency
+  // (query-engine.ts treats a missing memo as a change), which is what makes a
+  // dependent recompute. This is the other half: the recompute itself must not
+  // walk back into the file that is gone. Returning a distinct constant rather
+  // than 'absent' matters — a signature that CHANGED is what forces every
+  // importer to recheck and discover its now-unresolvable import.
+  if (!graph.nodes.has(relativePath)) return 'deleted'
+
   ctx.get(queryKey(Q_TEXT, relativePath))
   pullImportSignatures(relativePath, ctx)
 
