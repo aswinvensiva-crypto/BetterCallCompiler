@@ -121,12 +121,12 @@ function renderEditorPlaceholder(host: HTMLElement): void {
  * being torn down and rebuilt — that is what preserves undo history and view
  * state across tab switches.
  */
-function mountEditor(editorHost: HTMLElement, tabBar: HTMLElement): void {
+async function mountEditor(editorHost: HTMLElement, tabBar: HTMLElement): Promise<void> {
   const surface = el('div', 'editor-surface')
   surface.id = 'editor-surface'
   editorHost.append(surface)
 
-  const editor = createEditor(surface)
+  const editor = await createEditor(surface)
   attachEditor(editor)
   mountTabs(tabBar)
 
@@ -902,7 +902,7 @@ async function boot(): Promise<void> {
   renderEditorPlaceholder(requireEl('editor-host'))
   await renderStatusBar(requireEl('status-bar'))
 
-  mountEditor(requireEl('editor-host'), requireEl('tab-bar'))
+  await mountEditor(requireEl('editor-host'), requireEl('tab-bar'))
   mountPanel(requireEl('panel'), requireEl('panel-tabs'), requireEl('panel-body'))
   await mountSideBarViews()
   // After the docks exist, so restoring an open right dock has something to

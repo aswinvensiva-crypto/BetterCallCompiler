@@ -1,3 +1,4 @@
+import type * as monacoNs from 'monaco-editor'
 import * as monaco from 'monaco-editor'
 // monaco-editor 0.56 exposes an exports map of `"./*": "./esm/vs/*.js"`, so the
 // familiar `monaco-editor/esm/vs/...` specifier resolves to `esm/vs/esm/vs/...`
@@ -51,12 +52,67 @@ self.MonacoEnvironment = {
 
 const THEME = 'bettercallcompiler-dark'
 
+/**
+ * The subset of `monaco-editor/languages/features/typescript/register` used here.
+ *
+ * Named structurally rather than as `typeof import(...)` so that
+ * `configureLanguageDefaults` states what it needs instead of what module it
+ * happens to come from.
+ */
+interface TsRegister {
+  readonly typescriptDefaults: typeof typescriptDefaults
+  readonly javascriptDefaults: typeof javascriptDefaults
+}
+
+/**
+ * The loaded Monaco namespace, and the promise that is loading it.
+ *
+ * Two accessors rather than one, because the callers genuinely differ. Anything
+ * that can wait uses `loadMonaco`. `markers.ts` cannot: it is driven straight
+ * from an IPC event handler, so it asks `monacoRuntime()` and takes its existing
+ * not-yet-available path when the answer is null.
+ *
+ * `loading` is what makes concurrent callers share one load. Without it, an
+ * editor mount racing a file open would evaluate Monaco's module body twice.
+ */
+let runtime: typeof monacoNs | null = null
+let loading: Promise<typeof monacoNs> | null = null
+
+/** The runtime if it is already here, and null if it is not. Never waits. */
+export function monacoRuntime(): typeof monacoNs | null {
+  return runtime
+}
+
+/**
+ * Loads Monaco, configures it, and remembers it.
+ *
+ * Idempotent through `loading` rather than through a boolean, so a second caller
+ * arriving mid-load waits for the first one's promise instead of starting again.
+ */
+export function loadMonaco(): Promise<typeof monacoNs> {
+  if (runtime !== null) return Promise.resolve(runtime)
+  if (loading !== null) return loading
+
+  loading = (async () => {
+    const ns = monaco
+    const register: TsRegister = { typescriptDefaults, javascriptDefaults }
+
+    defineTheme(ns)
+    configureLanguageDefaults(register)
+
+    runtime = ns
+    return ns
+  })()
+
+  return loading
+}
+
 let themeDefined = false
 
 /** Matches the workbench palette so the editor does not look bolted on. */
-function defineTheme(): void {
+function defineTheme(ns: typeof monacoNs): void {
   if (themeDefined) return
-  monaco.editor.defineTheme(THEME, {
+  ns.editor.defineTheme(THEME, {
     base: 'vs-dark',
     inherit: true,
     // `rules: []` inherited vs-dark's syntax colours wholesale, which is half of
@@ -133,7 +189,7 @@ function defineTheme(): void {
 }
 
 export interface EditorHandle {
-  readonly editor: monaco.editor.IStandaloneCodeEditor
+  readonly editor: monacoNs.editor.IStandaloneCodeEditor
 }
 
 let languageDefaultsConfigured = false
@@ -153,10 +209,10 @@ let languageDefaultsConfigured = false
  * whole workspace — and it publishes under its own marker owner, so the two
  * never collide.
  */
-function configureLanguageDefaults(): void {
+function configureLanguageDefaults(register: TsRegister): void {
   if (languageDefaultsConfigured) return
 
-  for (const defaults of [typescriptDefaults, javascriptDefaults]) {
+  for (const defaults of [register.typescriptDefaults, register.javascriptDefaults]) {
     defaults.setDiagnosticsOptions({
       noSemanticValidation: true,
       // `noSyntaxValidation`, not `noSyntacticValidation` — the option is
@@ -170,11 +226,12 @@ function configureLanguageDefaults(): void {
   languageDefaultsConfigured = true
 }
 
-export function createEditor(host: HTMLElement): monaco.editor.IStandaloneCodeEditor {
-  defineTheme()
-  configureLanguageDefaults()
+export async function createEditor(
+  host: HTMLElement
+): Promise<monacoNs.editor.IStandaloneCodeEditor> {
+  const ns = await loadMonaco()
 
-  return monaco.editor.create(host, {
+  return ns.editor.create(host, {
     theme: THEME,
     model: null,
     automaticLayout: true,
