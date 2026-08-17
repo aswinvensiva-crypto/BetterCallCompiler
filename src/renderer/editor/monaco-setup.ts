@@ -1,4 +1,4 @@
-import * as monaco from 'monaco-editor'
+import type * as monacoNs from 'monaco-editor'
 // monaco-editor 0.56 exposes an exports map of `"./*": "./esm/vs/*.js"`, so the
 // familiar `monaco-editor/esm/vs/...` specifier resolves to `esm/vs/esm/vs/...`
 // and fails. The prefix belongs to the map, not the specifier.
@@ -7,17 +7,18 @@ import JsonWorker from 'monaco-editor/language/json/json.worker?worker'
 import CssWorker from 'monaco-editor/language/css/css.worker?worker'
 import HtmlWorker from 'monaco-editor/language/html/html.worker?worker'
 import TsWorker from 'monaco-editor/language/typescript/ts.worker?worker'
-// monaco 0.56 moved these off `monaco.languages.typescript`, which is now just
-// `{ deprecated: true }`. They live in their own module under `languages`
-// (plural) — a different path from the `language` (singular) worker imports
-// above, which is easy to mistype into a module that does not exist.
-import {
-  javascriptDefaults,
-  typescriptDefaults
-} from 'monaco-editor/languages/features/typescript/register'
 
 /**
  * Monaco worker wiring.
+ *
+ * These five imports and the assignment below stay STATIC, and that is
+ * load-bearing rather than an oversight now that Monaco itself is dynamic. Vite
+ * emits each `?worker` as its own asset, and the imported binding is a small
+ * constructor referencing that URL — so they do not drag Monaco's core back into
+ * the entry chunk. Making them dynamic risks Vite falling back to a blob: worker,
+ * which `script-src 'self'` refuses. MonacoEnvironment must also be installed
+ * before Monaco's module body runs, which module scope guarantees and a lazy path
+ * does not.
  *
  * Monaco's default loader fetches workers from a CDN or builds them from a blob
  * URL. Both are dead ends here: `connect-src 'none'` forbids the former and
@@ -51,12 +52,83 @@ self.MonacoEnvironment = {
 
 const THEME = 'bettercallcompiler-dark'
 
+/**
+ * The subset of `monaco-editor/languages/features/typescript/register` used here.
+ *
+ * Named structurally rather than as `typeof import(...)` so that
+ * `configureLanguageDefaults` states what it needs instead of what module it
+ * happens to come from.
+ */
+interface TsRegister {
+  readonly typescriptDefaults: LanguageDefaults
+  readonly javascriptDefaults: LanguageDefaults
+}
+
+/** Only the one method this module calls. */
+interface LanguageDefaults {
+  setDiagnosticsOptions(options: {
+    noSemanticValidation: boolean
+    noSyntaxValidation: boolean
+    noSuggestionDiagnostics: boolean
+  }): void
+}
+
+/**
+ * The loaded Monaco namespace, and the promise that is loading it.
+ *
+ * Two accessors rather than one, because the callers genuinely differ. Anything
+ * that can wait uses `loadMonaco`. `markers.ts` cannot: it is driven straight
+ * from an IPC event handler, so it asks `monacoRuntime()` and takes its existing
+ * not-yet-available path when the answer is null.
+ *
+ * `loading` is what makes concurrent callers share one load. Without it, an
+ * editor mount racing a file open would evaluate Monaco's module body twice.
+ */
+let runtime: typeof monacoNs | null = null
+let loading: Promise<typeof monacoNs> | null = null
+
+/** The runtime if it is already here, and null if it is not. Never waits. */
+export function monacoRuntime(): typeof monacoNs | null {
+  return runtime
+}
+
+/**
+ * Loads Monaco, configures it, and remembers it.
+ *
+ * Idempotent through `loading` rather than through a boolean, so a second caller
+ * arriving mid-load waits for the first one's promise instead of starting again.
+ */
+export function loadMonaco(): Promise<typeof monacoNs> {
+  if (runtime !== null) return Promise.resolve(runtime)
+  if (loading !== null) return loading
+
+  loading = (async () => {
+    // Both in parallel: the register module pulls Monaco's TypeScript language
+    // support, which is the largest single part of the payload, and serialising
+    // the two would add its latency to the editor's first paint for nothing.
+    const [ns, register] = await Promise.all([
+      import('monaco-editor'),
+      // `languages` plural here, and `language` singular in the worker imports
+      // above. Different modules; the wrong one does not exist.
+      import('monaco-editor/languages/features/typescript/register') as Promise<TsRegister>
+    ])
+
+    defineTheme(ns)
+    configureLanguageDefaults(register)
+
+    runtime = ns
+    return ns
+  })()
+
+  return loading
+}
+
 let themeDefined = false
 
 /** Matches the workbench palette so the editor does not look bolted on. */
-function defineTheme(): void {
+function defineTheme(ns: typeof monacoNs): void {
   if (themeDefined) return
-  monaco.editor.defineTheme(THEME, {
+  ns.editor.defineTheme(THEME, {
     base: 'vs-dark',
     inherit: true,
     // `rules: []` inherited vs-dark's syntax colours wholesale, which is half of
@@ -132,68 +204,8 @@ function defineTheme(): void {
   themeDefined = true
 }
 
-/**
- * Language inference from the file extension. Monaco can guess from a model URI
- * for known extensions, but being explicit keeps the status bar honest and lets
- * us cover the extensions the toolchain probe cares about.
- */
-const LANGUAGE_BY_EXTENSION: Readonly<Record<string, string>> = {
-  ts: 'typescript',
-  tsx: 'typescript',
-  mts: 'typescript',
-  cts: 'typescript',
-  js: 'javascript',
-  jsx: 'javascript',
-  mjs: 'javascript',
-  cjs: 'javascript',
-  json: 'json',
-  jsonc: 'json',
-  html: 'html',
-  htm: 'html',
-  css: 'css',
-  scss: 'scss',
-  less: 'less',
-  md: 'markdown',
-  markdown: 'markdown',
-  py: 'python',
-  pyw: 'python',
-  c: 'c',
-  h: 'c',
-  cpp: 'cpp',
-  cc: 'cpp',
-  cxx: 'cpp',
-  hpp: 'cpp',
-  cs: 'csharp',
-  go: 'go',
-  rs: 'rust',
-  java: 'java',
-  rb: 'ruby',
-  php: 'php',
-  sh: 'shell',
-  bash: 'shell',
-  ps1: 'powershell',
-  yml: 'yaml',
-  yaml: 'yaml',
-  toml: 'ini',
-  ini: 'ini',
-  xml: 'xml',
-  sql: 'sql',
-  tf: 'hcl',
-  dockerfile: 'dockerfile'
-}
-
-export function languageForFile(fileName: string): string {
-  const lower = fileName.toLowerCase()
-  if (lower === 'dockerfile' || lower.startsWith('dockerfile.')) return 'dockerfile'
-  if (lower === 'makefile') return 'plaintext'
-
-  const dot = lower.lastIndexOf('.')
-  if (dot < 0) return 'plaintext'
-  return LANGUAGE_BY_EXTENSION[lower.slice(dot + 1)] ?? 'plaintext'
-}
-
 export interface EditorHandle {
-  readonly editor: monaco.editor.IStandaloneCodeEditor
+  readonly editor: monacoNs.editor.IStandaloneCodeEditor
 }
 
 let languageDefaultsConfigured = false
@@ -213,10 +225,10 @@ let languageDefaultsConfigured = false
  * whole workspace — and it publishes under its own marker owner, so the two
  * never collide.
  */
-function configureLanguageDefaults(): void {
+function configureLanguageDefaults(register: TsRegister): void {
   if (languageDefaultsConfigured) return
 
-  for (const defaults of [typescriptDefaults, javascriptDefaults]) {
+  for (const defaults of [register.typescriptDefaults, register.javascriptDefaults]) {
     defaults.setDiagnosticsOptions({
       noSemanticValidation: true,
       // `noSyntaxValidation`, not `noSyntacticValidation` — the option is
@@ -230,11 +242,12 @@ function configureLanguageDefaults(): void {
   languageDefaultsConfigured = true
 }
 
-export function createEditor(host: HTMLElement): monaco.editor.IStandaloneCodeEditor {
-  defineTheme()
-  configureLanguageDefaults()
+export async function createEditor(
+  host: HTMLElement
+): Promise<monacoNs.editor.IStandaloneCodeEditor> {
+  const ns = await loadMonaco()
 
-  return monaco.editor.create(host, {
+  return ns.editor.create(host, {
     theme: THEME,
     model: null,
     automaticLayout: true,
@@ -254,4 +267,3 @@ export function createEditor(host: HTMLElement): monaco.editor.IStandaloneCodeEd
   })
 }
 
-export { monaco }

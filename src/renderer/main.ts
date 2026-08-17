@@ -121,12 +121,57 @@ function renderEditorPlaceholder(host: HTMLElement): void {
  * being torn down and rebuilt — that is what preserves undo history and view
  * state across tab switches.
  */
-function mountEditor(editorHost: HTMLElement, tabBar: HTMLElement): void {
+async function mountEditor(editorHost: HTMLElement, tabBar: HTMLElement): Promise<void> {
   const surface = el('div', 'editor-surface')
   surface.id = 'editor-surface'
   editorHost.append(surface)
 
-  const editor = createEditor(surface)
+  // Everything document-level is bound BEFORE Monaco is awaited, so the shell is
+  // interactive while the editor loads. A file clicked in the explorer during
+  // that window still resolves, because openFile awaits loadMonaco itself —
+  // without this hoist the event would simply be dropped on the floor.
+  //
+  // The editor-scoped actions below stay where they are: they need the instance.
+  const placeholder = document.getElementById('editor-placeholder')
+  const syncPlaceholder = (): void => {
+    const hasDocument = activeDocument() !== null
+    if (placeholder !== null) placeholder.hidden = hasDocument
+    surface.hidden = !hasDocument
+  }
+  syncPlaceholder()
+
+  document.addEventListener(OPEN_FILE_EVENT, (event) => {
+    const node = (event as CustomEvent<FileNode>).detail
+    void openFile(node).then(syncPlaceholder)
+  })
+
+  document.addEventListener('keydown', (event) => {
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
+      event.preventDefault()
+      void saveActive().then((saved) => {
+        if (!saved) notifyError('Could not save the file.')
+      })
+    }
+  })
+
+  // Ctrl+F5 — VS Code's "Run Without Debugging". Plain F5 is deliberately left
+  // alone: it means "start debugging", and there is no debugger until M2.
+  document.addEventListener('keydown', (event) => {
+    if (event.key !== 'F5' || !event.ctrlKey) return
+    event.preventDefault()
+    void saveThenRun()
+  })
+
+  // A file changed on disk (git checkout, another editor) is reloaded only when
+  // our buffer is clean — never clobbering unsaved work.
+  window.betterCallCompiler.fs.onWatchEvent((watchEvent) => {
+    if (watchEvent.type === 'change') void reloadFromDisk(watchEvent.path)
+  })
+
+  const observer = new MutationObserver(syncPlaceholder)
+  observer.observe(tabBar, { childList: true })
+
+  const editor = await createEditor(surface)
   attachEditor(editor)
   mountTabs(tabBar)
 
@@ -158,19 +203,6 @@ function mountEditor(editorHost: HTMLElement, tabBar: HTMLElement): void {
   // same thing whichever window it happened in.
   connectFloatingVisualizer(revealInEditor)
 
-  const placeholder = document.getElementById('editor-placeholder')
-  const syncPlaceholder = (): void => {
-    const hasDocument = activeDocument() !== null
-    if (placeholder !== null) placeholder.hidden = hasDocument
-    surface.hidden = !hasDocument
-  }
-  syncPlaceholder()
-
-  document.addEventListener(OPEN_FILE_EVENT, (event) => {
-    const node = (event as CustomEvent<FileNode>).detail
-    void openFile(node).then(syncPlaceholder)
-  })
-
   // Monaco owns Ctrl+S while focused; the document listener covers the case
   // where focus is in the explorer or the tab bar.
   editor.addAction({
@@ -182,31 +214,6 @@ function mountEditor(editorHost: HTMLElement, tabBar: HTMLElement): void {
     }
   })
 
-  document.addEventListener('keydown', (event) => {
-    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
-      event.preventDefault()
-      void saveActive().then((saved) => {
-        if (!saved) notifyError('Could not save the file.')
-      })
-    }
-  })
-
-  // Ctrl+F5 — VS Code's "Run Without Debugging". Plain F5 is deliberately left
-  // alone: it means "start debugging", and there is no debugger until M2.
-  document.addEventListener('keydown', (event) => {
-    if (event.key !== 'F5' || !event.ctrlKey) return
-    event.preventDefault()
-    void saveThenRun()
-  })
-
-  // A file changed on disk (git checkout, another editor) is reloaded only when
-  // our buffer is clean — never clobbering unsaved work.
-  window.betterCallCompiler.fs.onWatchEvent((watchEvent) => {
-    if (watchEvent.type === 'change') void reloadFromDisk(watchEvent.path)
-  })
-
-  const observer = new MutationObserver(syncPlaceholder)
-  observer.observe(tabBar, { childList: true })
 }
 
 /**
@@ -860,6 +867,10 @@ function bootVisualizerWindow(): void {
     void window.betterCallCompiler.visualizer.requestReveal({ line })
   })
 
+  // Both markers together. This window has no editor and never will, so there is
+  // no gap between "shell up" and "ready" to describe — and a spec waiting on
+  // either one behaves identically here.
+  document.documentElement.dataset['bettercallcompilerShell'] = 'true'
   document.documentElement.dataset['bettercallcompilerReady'] = 'true'
 }
 
@@ -902,7 +913,6 @@ async function boot(): Promise<void> {
   renderEditorPlaceholder(requireEl('editor-host'))
   await renderStatusBar(requireEl('status-bar'))
 
-  mountEditor(requireEl('editor-host'), requireEl('tab-bar'))
   mountPanel(requireEl('panel'), requireEl('panel-tabs'), requireEl('panel-body'))
   await mountSideBarViews()
   // After the docks exist, so restoring an open right dock has something to
@@ -914,6 +924,21 @@ async function boot(): Promise<void> {
   registerWorkbenchCommands()
   bindGlobalKeys()
   watchForFileChanges()
+
+  // The shell is painted and interactive: activity bar, explorer, panel, status
+  // bar, commands and global keys are all live. Monaco has not loaded yet.
+  //
+  // A SECOND marker rather than moving the existing one. `bettercallcompilerReady`
+  // keeps its exact meaning — set last, once the editor exists — which is what
+  // leaves the twenty-four specs that wait on it untouched. Weakening it to mean
+  // "shell is up" would have made every one of them race Monaco.
+  //
+  // registerWorkbenchCommands' `when: () => activeDocument() !== null` and
+  // bindGlobalKeys' read of activeDocument()?.model are both already null-safe
+  // against an empty documents map, so moving them ahead of the editor is sound.
+  document.documentElement.dataset['bettercallcompilerShell'] = 'true'
+
+  await mountEditor(requireEl('editor-host'), requireEl('tab-bar'))
 
   // Readiness marker. The workbench regions are static markup, so their mere
   // presence says nothing about whether the renderer has booted — a test that

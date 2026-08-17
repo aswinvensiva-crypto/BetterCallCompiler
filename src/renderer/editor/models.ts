@@ -1,5 +1,6 @@
 import type * as monacoNs from 'monaco-editor'
-import { languageForFile, monaco } from './monaco-setup'
+import { languageForFile } from './language-id'
+import { loadMonaco } from './monaco-setup'
 import { flushPendingMarkers } from './markers'
 import type { FileNode } from '../../shared/types'
 
@@ -79,8 +80,8 @@ export function anyDirty(): boolean {
 }
 
 /** Monaco keys models by URI; a stable per-file URI is what dedupes them. */
-function uriFor(node: FileNode): monacoNs.Uri {
-  return monaco.Uri.parse(`bettercallcompiler:///${encodeURI(node.relativePath)}`)
+function uriFor(ns: typeof monacoNs, node: FileNode): monacoNs.Uri {
+  return ns.Uri.parse(`bettercallcompiler:///${encodeURI(node.relativePath)}`)
 }
 
 /**
@@ -127,10 +128,15 @@ export async function openFile(node: FileNode): Promise<boolean> {
   const result = await window.betterCallCompiler.fs.readFile({ path: node.path })
   if (!result.ok) return false
 
-  const uri = uriFor(node)
+  // Awaited here rather than relying on boot order, which makes opening a file
+  // self-sufficient: a click in the explorer during the Monaco load resolves once
+  // it arrives instead of being dropped.
+  const ns = await loadMonaco()
+
+  const uri = uriFor(ns, node)
   const model =
-    monaco.editor.getModel(uri) ??
-    monaco.editor.createModel(result.value.content, languageForFile(node.name), uri)
+    ns.editor.getModel(uri) ??
+    ns.editor.createModel(result.value.content, languageForFile(node.name), uri)
 
   const doc: OpenDocument = {
     node,

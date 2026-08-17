@@ -126,7 +126,7 @@ async function openDiff(change: GitFileChange, staged: boolean): Promise<void> {
     return
   }
   openDiffPath = change.path
-  showDiff(result.value.diff)
+  await showDiff(result.value.diff)
   render()
 }
 

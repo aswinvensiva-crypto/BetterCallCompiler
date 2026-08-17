@@ -1,5 +1,5 @@
 import type * as monacoNs from 'monaco-editor'
-import { monaco } from './monaco-setup'
+import { monacoRuntime } from './monaco-setup'
 import type { ModelExtent } from '../../shared/diagnostic-position'
 import { toMonacoMarkers } from '../../shared/marker-mapping'
 import type { FileDiagnostics } from '../../shared/types'
@@ -36,11 +36,14 @@ const pending = new Map<string, FileDiagnostics>()
 /** Last applied version per file, so a late batch cannot overwrite a newer one. */
 const appliedVersions = new Map<string, number>()
 
-function modelFor(relativePath: string): monacoNs.editor.ITextModel | null {
+function modelFor(
+  ns: typeof monacoNs,
+  relativePath: string
+): monacoNs.editor.ITextModel | null {
   // Must match `uriFor` in models.ts exactly — two spellings of the same URI
   // would silently address different models.
-  const uri = monaco.Uri.parse(`bettercallcompiler:///${encodeURI(relativePath)}`)
-  return monaco.editor.getModel(uri)
+  const uri = ns.Uri.parse(`bettercallcompiler:///${encodeURI(relativePath)}`)
+  return ns.editor.getModel(uri)
 }
 
 function extentOf(model: monacoNs.editor.ITextModel): ModelExtent {
@@ -50,9 +53,13 @@ function extentOf(model: monacoNs.editor.ITextModel): ModelExtent {
   }
 }
 
-function apply(file: FileDiagnostics, model: monacoNs.editor.ITextModel): void {
+function apply(
+  ns: typeof monacoNs,
+  file: FileDiagnostics,
+  model: monacoNs.editor.ITextModel
+): void {
   const markers = toMonacoMarkers(file, extentOf(model))
-  monaco.editor.setModelMarkers(
+  ns.editor.setModelMarkers(
     model,
     MARKER_OWNER,
     markers as unknown as monacoNs.editor.IMarkerData[]
@@ -62,17 +69,24 @@ function apply(file: FileDiagnostics, model: monacoNs.editor.ITextModel): void {
 
 /** Applies a batch, parking anything whose model is not open yet. */
 export function applyDiagnostics(files: readonly FileDiagnostics[]): void {
+  // Synchronous on purpose, because this is called straight from the
+  // compiler:diagnosticsChanged handler. When Monaco has not finished loading,
+  // `ns` is null and every file takes the SAME path a not-yet-open file already
+  // takes: it parks in `pending` and drains from flushPendingMarkers when the
+  // model appears. No new code path, and nothing is lost.
+  const ns = monacoRuntime()
+
   for (const file of files) {
     const applied = appliedVersions.get(file.relativePath)
     if (applied !== undefined && applied > file.version) continue
 
-    const model = modelFor(file.relativePath)
-    if (model === null) {
+    const model = ns === null ? null : modelFor(ns, file.relativePath)
+    if (model === null || ns === null) {
       pending.set(file.relativePath, file)
       continue
     }
     pending.delete(file.relativePath)
-    apply(file, model)
+    apply(ns, file, model)
   }
 }
 
@@ -81,18 +95,29 @@ export function flushPendingMarkers(relativePath: string): void {
   const file = pending.get(relativePath)
   if (file === undefined) return
 
-  const model = modelFor(relativePath)
+  // Reached from openFile, which awaits loadMonaco first, so the runtime is
+  // present by construction here. Checked rather than asserted anyway.
+  const ns = monacoRuntime()
+  if (ns === null) return
+
+  const model = modelFor(ns, relativePath)
   if (model === null) return
 
   pending.delete(relativePath)
-  apply(file, model)
+  apply(ns, file, model)
 }
 
 /** Drops everything — used when the daemon restarts or a workspace closes. */
 export function clearAllMarkers(): void {
   pending.clear()
   appliedVersions.clear()
-  for (const model of monaco.editor.getModels()) {
-    monaco.editor.setModelMarkers(model, MARKER_OWNER, [])
+
+  // Nothing to clear in an editor that was never loaded, and asking for its
+  // models would load it.
+  const ns = monacoRuntime()
+  if (ns === null) return
+
+  for (const model of ns.editor.getModels()) {
+    ns.editor.setModelMarkers(model, MARKER_OWNER, [])
   }
 }
