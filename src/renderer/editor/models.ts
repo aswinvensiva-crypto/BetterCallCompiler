@@ -1,5 +1,6 @@
 import type * as monacoNs from 'monaco-editor'
-import { languageForFile, monaco } from './monaco-setup'
+import { languageForFile } from './language-id'
+import { monaco } from './monaco-setup'
 import { flushPendingMarkers } from './markers'
 import type { FileNode } from '../../shared/types'
 

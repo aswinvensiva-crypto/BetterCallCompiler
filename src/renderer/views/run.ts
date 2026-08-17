@@ -3,7 +3,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import { findErrorLinks, isAbsoluteLike } from '../../shared/error-links'
 import type { FileNode, RunExit, RunStarted, Workspace } from '../../shared/types'
 import { activeDocument, revealLocation } from '../editor/models'
-import { languageForFile } from '../editor/monaco-setup'
+import { languageForFile } from '../editor/language-id'
 import { notify, notifyError } from '../workbench/notifications'
 import { packById, type PackContext } from '../bundled-packs/web'
 
