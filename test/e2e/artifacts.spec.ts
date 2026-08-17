@@ -39,6 +39,18 @@ const MARKDOWN = [
   'An empty name yields a trailing space. [[src/lib.ts:2]]'
 ].join('\n')
 
+/** Deliberately fails to compile: TS2345 on line 5. */
+const BROKEN = [
+  'export function twice(n: number): number {',
+  '  return n * 2',
+  '}',
+  '',
+  "export const wrong = twice('nope')"
+].join('\n')
+
+/** Diagnostics are debounced and a full check takes real time. */
+const DAEMON_TIMEOUT = 25_000
+
 let fixture = ''
 let app: ElectronApplication
 let window: Page
@@ -48,6 +60,28 @@ test.beforeAll(async () => {
   fixture = await mkdtemp(join(tmpdir(), 'bcc-artifacts-e2e-'))
   await mkdir(join(fixture, 'src'), { recursive: true })
   await writeFile(join(fixture, 'src', 'lib.ts'), SOURCE)
+
+  // A tsconfig and a file that genuinely fails to compile, so the Explain
+  // grounding can be proved against the real daemon rather than a stub. Same
+  // options as the Problems fixture. src/lib.ts is clean and stays clean, so
+  // every existing test in this spec is unaffected — verified by running the
+  // spec with this fixture change and nothing else.
+  await writeFile(
+    join(fixture, 'tsconfig.json'),
+    JSON.stringify({
+      compilerOptions: {
+        strict: true,
+        noEmit: true,
+        target: 'ES2022',
+        module: 'ESNext',
+        moduleResolution: 'Bundler'
+      },
+      include: ['src']
+    })
+  )
+  // src/broken.ts is deliberately NOT written here — see the Explain test, which
+  // creates it after launch so the watcher fires. Indexing the workspace does
+  // not type-check it; only a change does.
 
   app = await electron.launch({
     args: [MAIN_ENTRY, isolatedUserData('artifacts'), `--folder=${fixture}`],
@@ -254,6 +288,71 @@ test('explanations survive a reload of the window', async () => {
 
   await openList()
   await expect(window.locator('.artifact-row')).toHaveCount(2)
+})
+
+test("the Explain prompt carries the compiler's real diagnostic for the selected lines", async () => {
+  // The whole chain, with nothing stubbed: chokidar sees the file, the worker
+  // thread type-checks it with a real ts.LanguageService, the result lands in
+  // the supervisor's map, and the Explain prompt reads it back out.
+  //
+  // Written HERE rather than in the fixture, and that is load-bearing: indexing
+  // the workspace builds the graph but checks nothing, so a file present at
+  // launch has no diagnostics until something changes it. Creating it now is
+  // what makes the watcher fire.
+  await writeFile(join(fixture, 'src', 'broken.ts'), BROKEN)
+
+  const brokenDiagnostics = async (): Promise<number> =>
+    window.evaluate(async () => {
+      const bridge = (globalThis as unknown as Record<string, unknown>)[
+        'betterCallCompiler'
+      ] as {
+        compiler: {
+          diagnostics: (r: { relativePath: string | null }) => Promise<unknown>
+        }
+      }
+      const result = (await bridge.compiler.diagnostics({
+        relativePath: 'src/broken.ts'
+      })) as { value?: { files: { diagnostics: unknown[] }[] } }
+      return result.value?.files[0]?.diagnostics.length ?? 0
+    })
+
+  // Waited for rather than raced. Without this the prompt could legitimately
+  // come back ungrounded simply because the check had not finished.
+  await expect.poll(brokenDiagnostics, { timeout: DAEMON_TIMEOUT }).toBeGreaterThan(0)
+
+  const started = await window.evaluate(async (root: string) => {
+    const bridge = (globalThis as unknown as Record<string, unknown>)[
+      'betterCallCompiler'
+    ] as { explain: { start: (r: unknown) => Promise<unknown> } }
+
+    return (await bridge.explain.start({
+      context: {
+        filePath: `${root}/src/broken.ts`,
+        relativePath: 'src/broken.ts',
+        languageId: 'typescript',
+        selection: {
+          text: "export const wrong = twice('nope')",
+          startLine: 5,
+          startColumn: 1,
+          endLine: 5,
+          endColumn: 34
+        },
+        enclosingSymbol: null,
+        imports: []
+      },
+      supersedes: null,
+      commentId: null,
+      question: null
+    })) as { ok: boolean; value?: { started: { contextSent: string } } }
+  }, fixture.replaceAll('\\', '/'))
+
+  // This resolves even with no API key: startPromptStream builds the result and
+  // returns it BEFORE firing the provider in an un-awaited IIFE, so the missing
+  // key surfaces later on ai:done as a toast rather than a rejection here. That
+  // is what makes the grounding provable on CI.
+  expect(started.ok).toBe(true)
+  expect(started.value?.started.contextSent).toContain('What the compiler reports for lines 5-5')
+  expect(started.value?.started.contextSent).toContain('TS2345')
 })
 
 test('raises no console errors or CSP violations', async () => {

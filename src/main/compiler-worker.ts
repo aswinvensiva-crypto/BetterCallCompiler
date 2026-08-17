@@ -315,6 +315,22 @@ function applyChanges(
   busySince = Date.now()
   reportState('checking')
 
+  /**
+   * Who imported the files that are going away.
+   *
+   * Captured BEFORE the nodes are removed, and that ordering is the entire
+   * point. `dependentsOf` starts from `graph.nodes.get(relativePath)`, so once
+   * `removeNode` has run it returns an empty array — the reverse edges die with
+   * the node. Removing first and asking afterwards, which is what this function
+   * used to do, meant deleting a file never invalidated anything that imported
+   * it, and the importers never got their "Cannot find module" until some
+   * unrelated edit happened to touch them.
+   */
+  const orphanedDependents: string[] = []
+  for (const relativePath of removed) {
+    orphanedDependents.push(...dependentsOf(graph, relativePath))
+  }
+
   for (const relativePath of removed) {
     removeNode(graph, relativePath)
     engine.removeInput(queryKey(Q_TEXT, relativePath))
@@ -326,7 +342,9 @@ function applyChanges(
     const text = overlays.get(relativePath)?.content ?? readIfPossible(absolute)
     if (text === null) {
       // Reported as changed but unreadable — treat it as gone rather than
-      // leaving a node describing content nobody can read.
+      // leaving a node describing content nobody can read. Same capture-first
+      // rule as the removals above: this is a deletion by another name.
+      orphanedDependents.push(...dependentsOf(graph, relativePath))
       removeNode(graph, relativePath)
       engine.removeInput(queryKey(Q_TEXT, relativePath))
       continue
@@ -354,9 +372,11 @@ function applyChanges(
   // asking about them costs: a dependent whose imports' SIGNATURES have not
   // moved is answered from memo, so a body edit no longer drags the type
   // checker across the transitive closure.
-  const affected = invalidationSet(graph, [...changed, ...removed]).filter((file) =>
-    graph.nodes.has(file)
-  )
+  const affected = invalidationSet(graph, [
+    ...changed,
+    ...removed,
+    ...orphanedDependents
+  ]).filter((file) => graph.nodes.has(file))
   checkFiles(root, affected, reason)
 
   busySince = null
@@ -532,8 +552,43 @@ let passCounter = 0
  */
 const MAX_TRACE_EVENTS = 500
 
+/**
+ * Per-pass totals, counted here rather than derived from `passEvents`.
+ *
+ * They have to be. The cap below is applied BEFORE the push, so a pass over
+ * more than about 160 files — three events each — silently stops recording, and
+ * anything counted by walking the array afterwards would report the size of the
+ * cap rather than the size of the work. The panel's headline sentence is built
+ * from these numbers, so it would have quietly understated every large pass.
+ *
+ * Counted for `diag:` keys only, which is exactly the set of files the pass was
+ * asked about: `diag:` is never pulled as a dependency — the queries reach for
+ * `text:` and `sig:` and nothing else — so every diagnostics trace is a
+ * top-level get, one per file.
+ */
+let passRecomputed = 0
+let passReused = 0
+
 const engine: Engine = createEngine({
   onTrace: (trace) => {
+    if (trace.key.startsWith(`${Q_DIAG}:`)) {
+      // `cutoff` counts as recomputed, which is not the obvious grouping. It
+      // means the type checker DID run and the answer happened to be identical
+      // — the work was done. Only fresh/durable/validated were served without
+      // touching the checker, and those are the ones the cutoff actually saved.
+      // Filing cutoff under "reused" would overstate the saving by exactly the
+      // file the user just edited, in every single pass.
+      if (
+        trace.outcome === 'fresh' ||
+        trace.outcome === 'durable' ||
+        trace.outcome === 'validated'
+      ) {
+        passReused++
+      } else {
+        passRecomputed++
+      }
+    }
+
     if (passEvents.length < MAX_TRACE_EVENTS) passEvents.push(trace)
   }
 })
@@ -586,6 +641,19 @@ function pullImportSignatures(relativePath: string, ctx: { get<T>(key: string): 
  * something it imports.
  */
 engine.defineQuery(Q_SIG, (relativePath, ctx) => {
+  // A module that has left the graph has no public surface, and asking for its
+  // text would be worse than useless: `text:` is an INPUT, so once
+  // `removeInput` has dropped it there is no compute function behind that
+  // namespace and resolving it throws.
+  //
+  // The engine already refuses to VALIDATE against a vanished dependency
+  // (query-engine.ts treats a missing memo as a change), which is what makes a
+  // dependent recompute. This is the other half: the recompute itself must not
+  // walk back into the file that is gone. Returning a distinct constant rather
+  // than 'absent' matters — a signature that CHANGED is what forces every
+  // importer to recheck and discover its now-unresolvable import.
+  if (!graph.nodes.has(relativePath)) return 'deleted'
+
   ctx.get(queryKey(Q_TEXT, relativePath))
   pullImportSignatures(relativePath, ctx)
 
@@ -721,10 +789,13 @@ function toTraceEvent(trace: QueryTrace): CompilerTraceEvent {
  * between them is the work the signature cutoff saved, and it is the number
  * worth putting in front of a user.
  *
- * Deliberately derived from the trace rather than from separate counters. One
- * source of truth means the panel cannot disagree with itself, and a capped
- * trace still reports accurate totals because the cap is applied after these
- * are counted.
+ * Totals come from the counters incremented in `onTrace`, NOT from walking
+ * `passEvents`. This used to walk the array and claimed in this very comment
+ * that "a capped trace still reports accurate totals because the cap is applied
+ * after these are counted" — which was backwards. The cap is applied on the way
+ * in, so past roughly 160 files the array stops growing and the totals derived
+ * from it stopped growing with it. The events list is a sample for the panel to
+ * show; the counters are the measurement.
  */
 function reportPass(
   reason: CompilerPass['reason'],
@@ -732,23 +803,8 @@ function reportPass(
   startedAt: number,
   before: ReturnType<Engine['stats']>
 ): void {
-  let recomputed = 0
-  let reused = 0
-
-  for (const event of passEvents) {
-    if (!event.key.startsWith(`${Q_DIAG}:`)) continue
-    // `cutoff` counts as recomputed, which is not the obvious grouping. It
-    // means the type checker DID run and the answer happened to be identical —
-    // the work was done. Only fresh/durable/validated were served without
-    // touching the checker, and those are the ones the cutoff actually saved.
-    // Filing cutoff under "reused" would overstate the saving by exactly the
-    // file the user just edited, in every single pass.
-    if (event.outcome === 'fresh' || event.outcome === 'durable' || event.outcome === 'validated') {
-      reused++
-    } else {
-      recomputed++
-    }
-  }
+  const recomputed = passRecomputed
+  const reused = passReused
 
   const after = engine.stats()
 
@@ -798,6 +854,8 @@ function checkFiles(root: string, files: readonly string[], reason: CompilerPass
   const nowDirty = new Set<string>()
 
   passEvents = []
+  passRecomputed = 0
+  passReused = 0
   const startedAt = Date.now()
   const before = engine.stats()
 

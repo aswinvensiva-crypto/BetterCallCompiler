@@ -151,6 +151,19 @@ describe('dependentsOf', () => {
     const graph = graphOf({ 'b.ts': ['a.ts'], 'y.ts': ['x.ts'] })
     expect(dependentsOf(graph, 'a.ts')).toEqual(['b.ts'])
   })
+
+  it('knows nothing about a removed node, so callers must ask before removing', () => {
+    const graph = graphOf({ 'b.ts': ['a.ts'] })
+    expect(dependentsOf(graph, 'a.ts')).toEqual(['b.ts'])
+
+    removeNode(graph, 'a.ts')
+
+    // The reverse edges die with the node. This is pinned rather than merely
+    // true because `applyChanges` in the compiler worker depends on it: it must
+    // capture dependents BEFORE removing, and reordering those two lines would
+    // otherwise silently stop deleted files from invalidating their importers.
+    expect(dependentsOf(graph, 'a.ts')).toEqual([])
+  })
 })
 
 describe('invalidationSet', () => {
