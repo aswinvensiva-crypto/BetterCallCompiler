@@ -49,6 +49,11 @@ export interface DependentsRequest {
   readonly type: 'dependents'
   readonly requestId: number
   readonly relativePath: string
+  /**
+   * Paths to trace the import chain FROM — normally the trigger of the pass that
+   * rechecked `relativePath`. Empty asks for no chain.
+   */
+  readonly from: readonly string[]
 }
 
 export interface PingRequest {

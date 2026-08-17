@@ -343,7 +343,7 @@ export function createHandlerMap(): HandlerMap {
     'compiler:status': () => ({ status: compilerStatus() }),
     'compiler:diagnostics': (request) => ({ files: diagnosticsFor(request.relativePath) }),
     'compiler:dependents': async (request) => ({
-      graph: await compilerDependentsOf(request.relativePath)
+      graph: await compilerDependentsOf(request.relativePath, request.from)
     }),
     'compiler:openDocument': (request) => {
       openCompilerDocument(request.relativePath, request.content, request.version)

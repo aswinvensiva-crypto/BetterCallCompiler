@@ -1,11 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import {
   BUDGET_MS,
+  chartScaleOf,
   describePass,
   explainOutcome,
   hotspotsOf,
+  isInteractive,
+  isMemoReuse,
   latencyOf,
   percentile,
+  whyChecked,
   workOf
 } from '../../src/shared/pass-analysis'
 import type { CompilerPass, CompilerTraceEvent } from '../../src/shared/types'
@@ -24,7 +28,8 @@ function event(overrides: Partial<CompilerTraceEvent> = {}): CompilerTraceEvent 
 
 function pass(overrides: Partial<CompilerPass> = {}): CompilerPass {
   return {
-    id: 1,
+        trigger: [],
+id: 1,
     reason: 'watch',
     requested: 1,
     recomputed: 1,
@@ -225,5 +230,185 @@ describe('describePass', () => {
 
   it('says so when there was nothing to do', () => {
     expect(describePass(pass({ requested: 0 }))).toContain('nothing to check')
+  })
+})
+
+describe('isMemoReuse', () => {
+  it('counts the three outcomes that skipped the work', () => {
+    expect(isMemoReuse('fresh')).toBe(true)
+    expect(isMemoReuse('durable')).toBe(true)
+    expect(isMemoReuse('validated')).toBe(true)
+  })
+
+  it('does not count a cutoff, because the work did run', () => {
+    // The one case that looks like reuse and is not. A cutoff means the checker
+    // ran and the answer came out identical — filing it under reuse would
+    // overstate the saving by exactly the file the user just edited.
+    expect(isMemoReuse('cutoff')).toBe(false)
+    expect(isMemoReuse('miss')).toBe(false)
+    expect(isMemoReuse('recomputed')).toBe(false)
+  })
+})
+
+describe('cold passes', () => {
+  it('keeps the first check of a workspace out of typing latency', () => {
+    const summary = latencyOf([
+      pass({ totalMs: 20 }),
+      pass({ totalMs: 40 }),
+      pass({ reason: 'cold', totalMs: 4000 })
+    ])
+
+    // A four-second program build is not a keystroke. Left in the sample it
+    // drags p95 so far that the interactive numbers become invisible.
+    expect(summary.count).toBe(2)
+    expect(summary.worst).toBe(40)
+  })
+
+  it('names the first check in the history line', () => {
+    expect(describePass(pass({ reason: 'cold', requested: 3 }))).toContain(
+      'First check of this workspace'
+    )
+  })
+
+  it('still distinguishes the walk from the first check', () => {
+    expect(describePass(pass({ reason: 'index', requested: 3 }))).toContain('Workspace indexed')
+    expect(isInteractive(pass({ reason: 'index' }))).toBe(false)
+    expect(isInteractive(pass({ reason: 'cold' }))).toBe(false)
+    expect(isInteractive(pass({ reason: 'watch' }))).toBe(true)
+    expect(isInteractive(pass({ reason: 'buffer' }))).toBe(true)
+  })
+})
+
+describe('chartScaleOf', () => {
+  it('floors at 1.5x the budget when every pass is fast', () => {
+    const scale = chartScaleOf([pass({ totalMs: 5 }), pass({ totalMs: 12 })])
+
+    // Without the floor, a fast session gets a hair-trigger scale on which every
+    // ordinary pass draws as alarmingly tall.
+    expect(scale.ceilingMs).toBe(BUDGET_MS * 1.5)
+    expect(scale.budgetFraction).toBeCloseTo(1 / 1.5)
+  })
+
+  it('follows p95 once passes are genuinely slow', () => {
+    const slow = Array.from({ length: 20 }, (_, i) => pass({ totalMs: 200 + i * 20 }))
+    const scale = chartScaleOf(slow)
+
+    expect(scale.ceilingMs).toBeGreaterThan(BUDGET_MS * 1.5)
+    expect(scale.budgetFraction).toBeLessThan(1)
+  })
+
+  it('ignores cold and index passes when picking the ceiling', () => {
+    // The bug this whole step exists for: a four-second program build setting the
+    // scale squashes every interactive pass to nothing.
+    const scale = chartScaleOf([
+      pass({ totalMs: 8 }),
+      pass({ reason: 'cold', totalMs: 4000 }),
+      pass({ reason: 'index', totalMs: 3000 })
+    ])
+
+    expect(scale.ceilingMs).toBe(BUDGET_MS * 1.5)
+  })
+
+  it('always returns a drawable budget fraction', () => {
+    for (const passes of [[], [pass({ totalMs: 1 })], [pass({ totalMs: 9999 })]]) {
+      const { budgetFraction } = chartScaleOf(passes)
+      expect(budgetFraction).toBeGreaterThan(0)
+      expect(budgetFraction).toBeLessThanOrEqual(1)
+    }
+  })
+})
+
+describe('describePass with a trigger', () => {
+  it('names the file when exactly one changed', () => {
+    const line = describePass(pass({ trigger: ['src/lib.ts'], requested: 4, recomputed: 1 }))
+
+    // The whole point: the History tab could not previously say WHICH file the
+    // user touched, only that something on disk changed.
+    expect(line).toContain('File changed on disk (src/lib.ts)')
+    expect(line).toContain('4 files in the invalidation set')
+  })
+
+  it('falls back to the plain sentence for a coalesced batch', () => {
+    const line = describePass(pass({ trigger: ['a.ts', 'b.ts'], requested: 9 }))
+
+    expect(line).toContain('File changed on disk —')
+    expect(line).not.toContain('(a.ts)')
+  })
+
+  it('falls back to the plain sentence when nothing is named', () => {
+    expect(describePass(pass({ trigger: [], requested: 0 }))).toBe(
+      'File changed on disk — nothing to check'
+    )
+  })
+
+  it('names the file for an unsaved buffer too', () => {
+    expect(describePass(pass({ reason: 'buffer', trigger: ['src/app.ts'], requested: 1 }))).toContain(
+      'Unsaved buffer (src/app.ts)'
+    )
+  })
+})
+
+describe('whyChecked', () => {
+  const diagEvent = (path: string, overrides: Partial<CompilerTraceEvent> = {}) => ({
+    key: `diag:${path}`,
+    outcome: 'validated' as const,
+    durability: 'workspace' as const,
+    ms: 3,
+    depth: 0,
+    depsWalked: 2,
+    ...overrides
+  })
+
+  it('reports the most recent pass that named the file', () => {
+    const record = whyChecked(
+      [
+        pass({ id: 1, trigger: ['src/old.ts'], events: [diagEvent('src/app.ts')] }),
+        pass({ id: 2, trigger: ['src/lib.ts'], events: [diagEvent('src/app.ts')] })
+      ],
+      'src/app.ts'
+    )
+
+    // Newest-first: pass 2 is the state the user is looking at.
+    expect(record?.passId).toBe(2)
+    expect(record?.trigger).toEqual(['src/lib.ts'])
+  })
+
+  it('returns null for a file no retained pass mentions', () => {
+    expect(whyChecked([pass({ events: [diagEvent('src/app.ts')] })], 'src/other.ts')).toBeNull()
+  })
+
+  it('ignores a sig: event for the same path', () => {
+    const sigOnly = pass({
+      events: [{ ...diagEvent('src/app.ts'), key: 'sig:src/app.ts' }]
+    })
+
+    // The diag event is the answer; sig is supporting detail.
+    expect(whyChecked([sigOnly], 'src/app.ts')).toBeNull()
+  })
+
+  it('does not answer for a path that is merely a prefix of another', () => {
+    const record = whyChecked([pass({ events: [diagEvent('src/a.tsx')] })], 'src/a.ts')
+
+    // A prefix test would have matched here and reported the wrong file.
+    expect(record).toBeNull()
+  })
+
+  it('carries the outcome and the pass totals through', () => {
+    const record = whyChecked(
+      [
+        pass({
+          requested: 12,
+          recomputed: 1,
+          events: [diagEvent('src/app.ts', { outcome: 'cutoff', ms: 41, depsWalked: 7 })]
+        })
+      ],
+      'src/app.ts'
+    )
+
+    expect(record?.outcome).toBe('cutoff')
+    expect(record?.ms).toBe(41)
+    expect(record?.depsWalked).toBe(7)
+    expect(record?.requested).toBe(12)
+    expect(record?.recomputed).toBe(1)
   })
 })

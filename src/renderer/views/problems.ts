@@ -17,6 +17,19 @@ import type {
  * diagnostic and a stack-trace link land in exactly the same place.
  */
 
+/**
+ * Asks the Compiler Intelligence panel to explain one file's recheck.
+ *
+ * Declared here, with the dispatcher, the same way EXPLAIN_ARTIFACT_EVENT and
+ * ASSIST_ACTION_EVENT are — the consumer imports it, which keeps the dependency
+ * one-directional and cycle-free.
+ */
+export const WHY_FILE_EVENT = 'bettercallcompiler:why-file'
+
+export interface WhyFileDetail {
+  readonly relativePath: string
+}
+
 let bodyHost: HTMLElement | null = null
 let actionsHost: HTMLElement | null = null
 
@@ -100,6 +113,26 @@ function renderDiagnosticRow(
   row.append(
     el('span', 'problems-row__position', `${diagnostic.startLine}:${diagnostic.startColumn}`)
   )
+
+  // "Why was this rechecked?" — the Compiler Intelligence answer for this file.
+  //
+  // stopPropagation is load-bearing: the row itself navigates on click, so without
+  // it pressing Why would also jump the editor and move the viewport out from
+  // under the user while the dock opens.
+  const why = el('button', 'icon-button problems-row__why')
+  why.type = 'button'
+  why.textContent = '?'
+  why.title = 'Why was this file rechecked?'
+  why.setAttribute('aria-label', `Why was ${file.relativePath} rechecked?`)
+  why.addEventListener('click', (event) => {
+    event.stopPropagation()
+    document.dispatchEvent(
+      new CustomEvent<WhyFileDetail>(WHY_FILE_EVENT, {
+        detail: { relativePath: file.relativePath }
+      })
+    )
+  })
+  row.append(why)
 
   const go = (): void => void navigate(file, diagnostic)
   row.addEventListener('click', go)

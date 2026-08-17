@@ -616,6 +616,11 @@ export const dependencyQuerySchema = z.strictObject({
   node: dependencyNodeSchema.nullable(),
   /** Transitive dependents, nearest first — the invalidation set. */
   dependents: z.array(z.string()),
+  /**
+   * The shortest import chain from the requesting pass's trigger to this file,
+   * trigger-first. Empty when nothing was asked about or nothing reaches it.
+   */
+  chain: z.array(z.string()),
   cycle: dependencyCycleSchema.nullable()
 })
 export type DependencyQuery = z.infer<typeof dependencyQuerySchema>
@@ -796,7 +801,7 @@ export type QueryDurabilityName = z.infer<typeof queryDurabilitySchema>
  * just do, and why".
  */
 export const compilerTraceEventSchema = z.strictObject({
-  /** `namespace:argument`, e.g. `diagnostics:src/app.ts`. */
+  /** `namespace:argument`, e.g. `diag:src/app.ts` — the namespace is `diag`. */
   key: z.string(),
   outcome: queryOutcomeSchema,
   durability: queryDurabilitySchema,
@@ -831,7 +836,25 @@ export const compilerPassSchema = z.strictObject({
   /** Monotonic within a daemon lifetime; resets on restart. */
   id: z.number().int().nonnegative(),
   /** What triggered it — a saved file, an unsaved buffer, or the initial index. */
-  reason: z.enum(['index', 'watch', 'buffer']),
+  /**
+   * 'index' is the walk. 'cold' is the FIRST check, which builds the program and
+   * the type checker and costs seconds. Kept as separate members rather than
+   * folded together because they are different events, and conflating them would
+   * make the distinction unrecoverable.
+   */
+  reason: z.enum(['index', 'cold', 'watch', 'buffer']),
+  /**
+   * The paths reported changed or removed — the edit that caused this pass.
+   *
+   * The missing half of a pass. `requested`/`recomputed` say how much work
+   * happened; without this nothing can say what caused it, which is the question
+   * the Why tab exists to answer.
+   *
+   * Required rather than optional on purpose: this is a strictObject validated on
+   * two channels, so a producer that forgets it fails loudly instead of shipping
+   * an undefined the view has to guard.
+   */
+  trigger: z.array(z.string()),
   /** Files named by the invalidation walk. */
   requested: z.number().int().nonnegative(),
   /** Files whose diagnostics the type checker actually had to produce. */

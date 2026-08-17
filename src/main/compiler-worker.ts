@@ -13,6 +13,7 @@ import {
   cycleFor,
   dependentsOf,
   edgeCount,
+  importPathTo,
   invalidationSet,
   removeNode,
   upsertNode,
@@ -26,6 +27,7 @@ import {
   type Engine,
   type QueryTrace
 } from '../shared/query-engine'
+import { isMemoReuse } from '../shared/pass-analysis'
 import { moduleSignature } from './module-signature'
 import type {
   BuildGraphSummary,
@@ -377,7 +379,9 @@ function applyChanges(
     ...removed,
     ...orphanedDependents
   ]).filter((file) => graph.nodes.has(file))
-  checkFiles(root, affected, reason)
+  // Capped, because a git checkout coalesced by the watcher can name hundreds of
+  // paths and this rides the same structured clone as the trace sample.
+  checkFiles(root, affected, reason, [...changed, ...removed].slice(0, MAX_TRIGGER_PATHS))
 
   busySince = null
   reportState('idle', affected.length)
@@ -550,7 +554,24 @@ let passCounter = 0
  * and `stats` on the pass still counts everything, so the totals stay honest
  * even when the list is truncated.
  */
-const MAX_TRACE_EVENTS = 500
+/**
+ * Two budgets, not one, because the two kinds of event are not worth the same.
+ *
+ * A `diag:` event is one file's answer and is the ONLY thing the Why tab can look
+ * up. `text:` and `sig:` events are supporting detail. Under a single shared cap
+ * the ordering in checkFiles — open files first — meant that on a pass over
+ * roughly 160 files the diag event for the file you did NOT edit was the one
+ * dropped, which is exactly the file anyone asks "why was this rechecked?" about.
+ *
+ * The cap still exists for the reason it always did: a cold pass over a large
+ * workspace would otherwise structured-clone a vast array across the port. It is
+ * the allocation between kinds that was wrong, not the existence of a limit.
+ */
+/** Enough to name the edit; a coalesced batch is summarised by its first few. */
+const MAX_TRIGGER_PATHS = 20
+
+const MAX_DIAG_TRACE_EVENTS = 2000
+const MAX_OTHER_TRACE_EVENTS = 500
 
 /**
  * Per-pass totals, counted here rather than derived from `passEvents`.
@@ -568,28 +589,35 @@ const MAX_TRACE_EVENTS = 500
  */
 let passRecomputed = 0
 let passReused = 0
+let diagKept = 0
+let otherKept = 0
 
 const engine: Engine = createEngine({
   onTrace: (trace) => {
-    if (trace.key.startsWith(`${Q_DIAG}:`)) {
-      // `cutoff` counts as recomputed, which is not the obvious grouping. It
-      // means the type checker DID run and the answer happened to be identical
-      // — the work was done. Only fresh/durable/validated were served without
-      // touching the checker, and those are the ones the cutoff actually saved.
-      // Filing cutoff under "reused" would overstate the saving by exactly the
-      // file the user just edited, in every single pass.
-      if (
-        trace.outcome === 'fresh' ||
-        trace.outcome === 'durable' ||
-        trace.outcome === 'validated'
-      ) {
-        passReused++
-      } else {
-        passRecomputed++
-      }
+    const isDiag = trace.key.startsWith(`${Q_DIAG}:`)
+
+    // Counted before any cap test, so the totals are exact regardless of what
+    // the sample keeps. `isMemoReuse` is shared with hotspotsOf so the panel
+    // cannot disagree with itself about what counts as reuse.
+    if (isDiag) {
+      if (isMemoReuse(trace.outcome)) passReused++
+      else passRecomputed++
     }
 
-    if (passEvents.length < MAX_TRACE_EVENTS) passEvents.push(trace)
+    // Interleaved in one array on purpose: the Why tab reads a file's events in
+    // the order they happened (text -> sig -> diag), so splitting the storage
+    // would lose that.
+    if (isDiag) {
+      if (diagKept < MAX_DIAG_TRACE_EVENTS) {
+        passEvents.push(trace)
+        diagKept++
+      }
+      return
+    }
+    if (otherKept < MAX_OTHER_TRACE_EVENTS) {
+      passEvents.push(trace)
+      otherKept++
+    }
   }
 })
 
@@ -801,7 +829,8 @@ function reportPass(
   reason: CompilerPass['reason'],
   requested: number,
   startedAt: number,
-  before: ReturnType<Engine['stats']>
+  before: ReturnType<Engine['stats']>,
+  trigger: readonly string[]
 ): void {
   const recomputed = passRecomputed
   const reused = passReused
@@ -813,6 +842,7 @@ function reportPass(
     pass: {
       id: ++passCounter,
       reason,
+      trigger: [...trigger],
       requested,
       recomputed,
       reused,
@@ -842,7 +872,23 @@ function reportPass(
  * at, and getting a squiggle onto the visible file before the rest of the
  * workspace is what makes this feel live rather than batch.
  */
-function checkFiles(root: string, files: readonly string[], reason: CompilerPass['reason']): void {
+function checkFiles(
+  root: string,
+  files: readonly string[],
+  reason: CompilerPass['reason'],
+  trigger: readonly string[]
+): void {
+  // Captured BEFORE ensureService, because that call is what makes it false.
+  //
+  // The first check of a workspace costs seconds, and almost none of that is the
+  // check: it is ts.createLanguageService building the program and the type
+  // checker on the first getSemanticDiagnostics, which happens inside this
+  // function. Left untagged it lands in the p50/p95 of a figure labelled
+  // keystroke-to-diagnostic and drags it somewhere meaningless.
+  //
+  // Self-maintaining: indexWorkspace already nulls `service` when the program
+  // changes shape, so a re-index re-arms the tag with no extra bookkeeping.
+  const cold = service === null
   ensureService(root)
 
   const ordered = [
@@ -856,6 +902,8 @@ function checkFiles(root: string, files: readonly string[], reason: CompilerPass
   passEvents = []
   passRecomputed = 0
   passReused = 0
+  diagKept = 0
+  otherKept = 0
   const startedAt = Date.now()
   const before = engine.stats()
 
@@ -908,7 +956,7 @@ function checkFiles(root: string, files: readonly string[], reason: CompilerPass
 
   if (produced.length > 0) post({ type: 'diagnostics', files: produced, settled: true })
 
-  reportPass(reason, ordered.length, startedAt, before)
+  reportPass(cold ? 'cold' : reason, ordered.length, startedAt, before, trigger)
 }
 
 function describeNode(root: string, relativePath: string): DependencyNode | null {
@@ -971,7 +1019,7 @@ function handle(request: WorkerRequest): void {
         post({
           type: 'dependentsResult',
           requestId: request.requestId,
-          query: { node: null, dependents: [], cycle: null }
+          query: { node: null, dependents: [], chain: [], cycle: null }
         })
         return
       }
@@ -985,6 +1033,9 @@ function handle(request: WorkerRequest): void {
         query: {
           node: describeNode(root, request.relativePath),
           dependents: dependentsOf(graph, request.relativePath),
+          // Pure graph arithmetic — no engine.get anywhere on this path, so
+          // answering "why" cannot cause a check.
+          chain: importPathTo(graph, request.from, request.relativePath),
           cycle: cycle === null ? null : { id: cycle.id, members: [...cycle.members] }
         }
       })

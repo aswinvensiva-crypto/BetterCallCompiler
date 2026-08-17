@@ -134,6 +134,9 @@ try {
   check('files requested', cold.pass.requested, 2)
   check('files type-checked', cold.pass.recomputed, 2)
   check('files served from memo', cold.pass.reused, 0)
+  // This pass is the one that builds the program and the type checker, so it
+  // must not be reported as ordinary typing latency.
+  check('reported as the cold pass', cold.pass.reason, 'cold')
   check(
     'errors reported',
     cold.diagnostics.reduce((n, file) => n + file.diagnostics.length, 0),
@@ -152,6 +155,9 @@ try {
   check('files requested', body.pass.requested, 2)
   check('files type-checked', body.pass.recomputed, 1)
   check('files served from memo', body.pass.reused, 1)
+
+  // The pass now records what caused it, not only how much it did.
+  check('trigger names the edited file', body.pass.trigger.join(','), 'lib.ts')
 
   const sigTrace = body.pass.events.find((event) => event.key === 'sig:lib.ts')
   check('sig:lib.ts outcome', sigTrace?.outcome, 'cutoff')
@@ -235,13 +241,30 @@ try {
   wideWorker.postMessage({ type: 'filesChanged', changed: ['core.ts'], removed: [] })
   const wide = await nextPass(wideWorker, 120_000)
 
-  console.log(`\n--- ${WIDE_FILES}-file pass, against a ${500}-event trace cap ---`)
+  console.log(`\n--- ${WIDE_FILES}-file pass, against the split trace budget ---`)
   check('files requested', wide.pass.requested, WIDE_FILES)
-  // The discriminating pair. The sample is truncated and the totals are not.
-  check('trace events capped', wide.pass.events.length, 500)
+
+  // Totals come from counters rather than from the sample, so they are exact
+  // whatever the budget chooses to keep.
   check(
     'recomputed + reused accounts for every requested file',
     wide.pass.recomputed + wide.pass.reused,
+    WIDE_FILES
+  )
+
+  // The guarantee the split budget exists for: every file the pass was asked
+  // about keeps its diag event, so the Why tab can look any of them up.
+  //
+  // Under a single 500-event cap this fails. checkFiles orders open files first
+  // and each file emits three events, so at 200 files the budget runs out around
+  // the 166th and the diag events dropped are precisely those of the files the
+  // user did NOT edit — the only ones anyone asks "why was this rechecked?"
+  // about.
+  const diagEvents = wide.pass.events.filter((event) => event.key.startsWith('diag:'))
+  check('diag events retained, one per file', diagEvents.length, WIDE_FILES)
+  check(
+    'every retained diag event names a distinct file',
+    new Set(diagEvents.map((event) => event.key)).size,
     WIDE_FILES
   )
 } finally {

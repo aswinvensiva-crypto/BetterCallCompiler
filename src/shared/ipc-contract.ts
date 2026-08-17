@@ -431,7 +431,14 @@ export const INVOKE_CHANNELS = {
     response: z.strictObject({ files: z.array(fileDiagnosticsSchema) })
   },
   'compiler:dependents': {
-    request: z.strictObject({ relativePath: z.string().min(1) }),
+    request: z.strictObject({
+      relativePath: z.string().min(1),
+      /**
+       * Capped for the same reason the pass's own trigger is: a coalesced watch
+       * batch can name hundreds of paths, and each one seeds a graph walk.
+       */
+      from: z.array(z.string().min(1)).max(20).default([])
+    }),
     response: z.strictObject({ graph: dependencyQuerySchema })
   },
   /**

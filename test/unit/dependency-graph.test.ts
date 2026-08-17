@@ -5,6 +5,7 @@ import {
   cycleFor,
   dependentsOf,
   edgeCount,
+  importPathTo,
   invalidationSet,
   removeNode,
   stronglyConnectedComponents,
@@ -331,5 +332,65 @@ describe('helpers', () => {
 
     expect(cycleFor(cycles, 'b.ts')?.members).toEqual(['a.ts', 'b.ts'])
     expect(cycleFor(cycles, 'z.ts')).toBeNull()
+  })
+})
+
+describe('importPathTo', () => {
+  it('reads trigger-first, so the chain is an explanation', () => {
+    // lib is imported by util, which is imported by app.
+    const graph = graphOf({ 'util.ts': ['lib.ts'], 'app.ts': ['util.ts'] })
+
+    expect(importPathTo(graph, ['lib.ts'], 'app.ts')).toEqual(['lib.ts', 'util.ts', 'app.ts'])
+  })
+
+  it('returns the shorter of two routes', () => {
+    const graph = graphOf({
+      'direct.ts': ['lib.ts'],
+      'mid.ts': ['lib.ts'],
+      'far.ts': ['mid.ts'],
+      'target.ts': ['direct.ts', 'far.ts']
+    })
+
+    // Both routes reach target.ts; the two-hop one is the answer.
+    expect(importPathTo(graph, ['lib.ts'], 'target.ts')).toEqual([
+      'lib.ts',
+      'direct.ts',
+      'target.ts'
+    ])
+  })
+
+  it('picks the nearest of several triggers', () => {
+    const graph = graphOf({ 'mid.ts': ['far.ts'], 'app.ts': ['mid.ts', 'near.ts'] })
+
+    // A watch batch named both. The honest answer is the shortest explanation.
+    expect(importPathTo(graph, ['far.ts', 'near.ts'], 'app.ts')).toEqual(['near.ts', 'app.ts'])
+  })
+
+  it('returns just the file when it was edited directly', () => {
+    const graph = graphOf({ 'app.ts': ['lib.ts'] })
+    expect(importPathTo(graph, ['app.ts'], 'app.ts')).toEqual(['app.ts'])
+  })
+
+  it('returns nothing when the file is unreachable from the trigger', () => {
+    const graph = graphOf({ 'app.ts': ['lib.ts'], 'other.ts': ['unrelated.ts'] })
+    expect(importPathTo(graph, ['lib.ts'], 'other.ts')).toEqual([])
+  })
+
+  it('returns nothing for a trigger that is not in the graph', () => {
+    expect(importPathTo(graphOf({ 'app.ts': ['lib.ts'] }), ['gone.ts'], 'app.ts')).toEqual([])
+  })
+
+  it('terminates when the route runs through a cycle', () => {
+    const graph = graphOf({
+      'a.ts': ['lib.ts', 'b.ts'],
+      'b.ts': ['a.ts'],
+      'app.ts': ['b.ts']
+    })
+
+    // `seen` is consulted before enqueueing, so the a<->b cycle cannot loop.
+    const chain = importPathTo(graph, ['lib.ts'], 'app.ts')
+    expect(chain[0]).toBe('lib.ts')
+    expect(chain[chain.length - 1]).toBe('app.ts')
+    expect(new Set(chain).size).toBe(chain.length)
   })
 })

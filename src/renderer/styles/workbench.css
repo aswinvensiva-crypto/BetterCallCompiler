@@ -2894,6 +2894,110 @@ body.workbench--resizing-y * {
   background: var(--bcc-bg-inset);
   border: 1px solid var(--bcc-border);
   border-radius: 4px;
+  /* For the budget rule below. */
+  position: relative;
+}
+
+/*
+ * The 100ms budget, drawn where the bars can be read against it.
+ *
+ * Positioned from the fraction the view sets as --ci-budget-fraction, so the
+ * rule follows the chart's scale instead of assuming one. The 4px offsets match
+ * this element's own padding, so the line spans the plot area rather than the
+ * border.
+ */
+.ci-bars::after {
+  content: '';
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  height: 1px;
+  bottom: calc(4px + (100% - 8px) * var(--ci-budget-fraction, 0.66));
+  background: var(--bcc-danger);
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+/* A bar taller than the chart's ceiling, marked so it does not read as merely
+ * full-height. Without this every pass above the ceiling looks the same. */
+.ci-bar--clipped {
+  border-top: 2px solid var(--bcc-danger);
+}
+
+/* ------------------------- Why, focused on one file ----------------------- */
+
+.ci-why__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ci-why__file {
+  font-family: var(--bcc-font-mono);
+  font-size: 12px;
+  color: var(--bcc-fg);
+}
+
+.ci-why__label {
+  margin-top: 10px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--bcc-fg-dim);
+}
+
+.ci-why__chain {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 6px;
+  background: var(--bcc-bg-inset);
+  border: 1px solid var(--bcc-border);
+  border-radius: 4px;
+}
+
+.ci-why__hop {
+  font-family: var(--bcc-font-mono);
+  font-size: 11px;
+  color: var(--bcc-accent);
+  background: none;
+  border: none;
+  padding: 2px 4px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.ci-why__hop:hover {
+  background: var(--bcc-bg-hover);
+  text-decoration: underline;
+}
+
+.ci-why__arrow {
+  color: var(--bcc-fg-dim);
+  font-size: 11px;
+}
+
+.ci-why__totals {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--bcc-fg-dim);
+}
+
+/*
+ * The Why affordance on a Problems row. Hidden until the row is hovered or holds
+ * focus, so every row does not grow a permanent second control.
+ */
+.problems-row__why {
+  opacity: 0;
+  flex: 0 0 auto;
+}
+
+.problems-row:hover .problems-row__why,
+.problems-row:focus-within .problems-row__why {
+  opacity: 1;
 }
 
 .ci-bar {

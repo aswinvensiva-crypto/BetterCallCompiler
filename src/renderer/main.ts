@@ -53,8 +53,10 @@ import {
   setVisualizerRevealHandler
 } from './views/visualizer/visualizer-panel'
 import {
+  listenForWhyRequests,
   mountCompilerIntelligence,
-  onCompilerIntelligenceShown
+  onCompilerIntelligenceShown,
+  setCompilerViewActivator
 } from './views/compiler-intelligence'
 import {
   listenForExplainRequests,
@@ -645,6 +647,15 @@ async function mountSideBarViews(): Promise<void> {
   setArtifactsViewActivator(() => {
     setSelected('artifacts')
     void showSideBarView('artifacts')
+  })
+
+  // Same shape, for the Problems -> Why jump. `showRightDockView('compiler')`
+  // explicitly, never `showRightDock()`: that falls back to the first registered
+  // view when nothing is active, which is the Visualizer.
+  listenForWhyRequests()
+  setCompilerViewActivator(() => {
+    setSelected('compiler')
+    return showRightDockView('compiler')
   })
 
   await showSideBarView('explorer')

@@ -160,6 +160,73 @@ export function dependentsOf(graph: DependencyGraph, relativePath: string): stri
 }
 
 /**
+ * The shortest import chain from one of `from` to `to`, trigger-first.
+ *
+ * This is the answer to "why was this file rechecked?". `dependentsOf` says
+ * WHICH files are affected but returns a flat list, so the route is lost — and
+ * the route is the explanation. `['src/lib.ts','src/util.ts','src/app.ts']` reads
+ * as "lib is imported by util, which is imported by app".
+ *
+ * Multi-source, seeded from every path the pass reported changed, which gives the
+ * chain from the NEAREST trigger for free. That is the honest answer when a watch
+ * batch names several files: the shortest explanation, not an arbitrary one.
+ *
+ * Termination has the same guarantee `dependentsOf` documents — `seen` is
+ * consulted before enqueueing rather than after dequeueing — so a cycle anywhere
+ * on the route cannot loop.
+ *
+ * Returns `[to]` when `to` is itself one of the triggers (it was edited
+ * directly), and `[]` when it is unreachable, which is a real answer rather than
+ * an error: a file can be in the invalidation set of an earlier pass and have no
+ * current route from this one's trigger.
+ */
+export function importPathTo(
+  graph: DependencyGraph,
+  from: readonly string[],
+  to: string
+): string[] {
+  if (from.includes(to)) return [to]
+
+  const seen = new Set<string>(from)
+  // Child -> the node it was reached from, so the route can be walked back.
+  const parent = new Map<string, string>()
+  let frontier = from.filter((path) => graph.nodes.has(path))
+
+  while (frontier.length > 0) {
+    const next: string[] = []
+
+    for (const path of frontier) {
+      const node = graph.nodes.get(path)
+      if (node === undefined) continue
+
+      for (const dependent of node.importedBy) {
+        if (seen.has(dependent)) continue
+        seen.add(dependent)
+        parent.set(dependent, path)
+
+        if (dependent === to) {
+          const chain = [to]
+          let cursor = to
+          for (;;) {
+            const previous = parent.get(cursor)
+            if (previous === undefined) break
+            chain.push(previous)
+            cursor = previous
+          }
+          return chain.reverse()
+        }
+
+        next.push(dependent)
+      }
+    }
+
+    frontier = next
+  }
+
+  return []
+}
+
+/**
  * The set of files to re-check after `changed` were touched: the changed files
  * themselves plus everything that transitively depends on them.
  *
