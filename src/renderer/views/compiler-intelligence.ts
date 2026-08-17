@@ -470,7 +470,9 @@ export async function mountCompilerIntelligence(
     // `bodyHost.hidden` is only toggled when switching views WITHIN the dock, so
     // a dock closed from the activity bar left this panel rebuilding its whole
     // tab DOM on every pass — the exact hot-path cost the view exists to avoid.
-    if (isRightDockVisible() && activeRightDockView() === 'compiler') render()
+    if (!isRightDockVisible() || activeRightDockView() !== 'compiler') return
+
+    render()
   })
 
   render()

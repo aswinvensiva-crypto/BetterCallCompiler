@@ -349,6 +349,19 @@ body.workbench--resizing-y * {
   color: var(--bcc-fg-subtle);
   text-align: center;
   padding: 24px;
+  /*
+   * Decorative, and must never absorb a click.
+   *
+   * The wordmark below is 34px with 0.36em of letter-spacing, so in a narrow
+   * editor area it is wider than its own container. This layer is `inset: 0`
+   * absolute and the editor area does not clip, so the overflow painted over the
+   * right dock and swallowed pointer events there — every control in the dock was
+   * unclickable whenever no file was open and the window was around 1024px wide.
+   * There is nothing interactive in here, so nothing is lost by opting out.
+   */
+  pointer-events: none;
+  /* And it should not visually bleed over its neighbours either. */
+  overflow: hidden;
 }
 
 .editor-placeholder__mark {
