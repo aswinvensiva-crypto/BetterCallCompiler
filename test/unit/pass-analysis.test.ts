@@ -27,7 +27,8 @@ function event(overrides: Partial<CompilerTraceEvent> = {}): CompilerTraceEvent 
 
 function pass(overrides: Partial<CompilerPass> = {}): CompilerPass {
   return {
-    id: 1,
+        trigger: [],
+id: 1,
     reason: 'watch',
     requested: 1,
     recomputed: 1,
@@ -313,5 +314,35 @@ describe('chartScaleOf', () => {
       expect(budgetFraction).toBeGreaterThan(0)
       expect(budgetFraction).toBeLessThanOrEqual(1)
     }
+  })
+})
+
+describe('describePass with a trigger', () => {
+  it('names the file when exactly one changed', () => {
+    const line = describePass(pass({ trigger: ['src/lib.ts'], requested: 4, recomputed: 1 }))
+
+    // The whole point: the History tab could not previously say WHICH file the
+    // user touched, only that something on disk changed.
+    expect(line).toContain('File changed on disk (src/lib.ts)')
+    expect(line).toContain('4 files in the invalidation set')
+  })
+
+  it('falls back to the plain sentence for a coalesced batch', () => {
+    const line = describePass(pass({ trigger: ['a.ts', 'b.ts'], requested: 9 }))
+
+    expect(line).toContain('File changed on disk —')
+    expect(line).not.toContain('(a.ts)')
+  })
+
+  it('falls back to the plain sentence when nothing is named', () => {
+    expect(describePass(pass({ trigger: [], requested: 0 }))).toBe(
+      'File changed on disk — nothing to check'
+    )
+  })
+
+  it('names the file for an unsaved buffer too', () => {
+    expect(describePass(pass({ reason: 'buffer', trigger: ['src/app.ts'], requested: 1 }))).toContain(
+      'Unsaved buffer (src/app.ts)'
+    )
   })
 })

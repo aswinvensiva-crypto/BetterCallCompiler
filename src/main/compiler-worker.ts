@@ -378,7 +378,9 @@ function applyChanges(
     ...removed,
     ...orphanedDependents
   ]).filter((file) => graph.nodes.has(file))
-  checkFiles(root, affected, reason)
+  // Capped, because a git checkout coalesced by the watcher can name hundreds of
+  // paths and this rides the same structured clone as the trace sample.
+  checkFiles(root, affected, reason, [...changed, ...removed].slice(0, MAX_TRIGGER_PATHS))
 
   busySince = null
   reportState('idle', affected.length)
@@ -564,6 +566,9 @@ let passCounter = 0
  * workspace would otherwise structured-clone a vast array across the port. It is
  * the allocation between kinds that was wrong, not the existence of a limit.
  */
+/** Enough to name the edit; a coalesced batch is summarised by its first few. */
+const MAX_TRIGGER_PATHS = 20
+
 const MAX_DIAG_TRACE_EVENTS = 2000
 const MAX_OTHER_TRACE_EVENTS = 500
 
@@ -823,7 +828,8 @@ function reportPass(
   reason: CompilerPass['reason'],
   requested: number,
   startedAt: number,
-  before: ReturnType<Engine['stats']>
+  before: ReturnType<Engine['stats']>,
+  trigger: readonly string[]
 ): void {
   const recomputed = passRecomputed
   const reused = passReused
@@ -835,6 +841,7 @@ function reportPass(
     pass: {
       id: ++passCounter,
       reason,
+      trigger: [...trigger],
       requested,
       recomputed,
       reused,
@@ -864,7 +871,12 @@ function reportPass(
  * at, and getting a squiggle onto the visible file before the rest of the
  * workspace is what makes this feel live rather than batch.
  */
-function checkFiles(root: string, files: readonly string[], reason: CompilerPass['reason']): void {
+function checkFiles(
+  root: string,
+  files: readonly string[],
+  reason: CompilerPass['reason'],
+  trigger: readonly string[]
+): void {
   // Captured BEFORE ensureService, because that call is what makes it false.
   //
   // The first check of a workspace costs seconds, and almost none of that is the
@@ -943,7 +955,7 @@ function checkFiles(root: string, files: readonly string[], reason: CompilerPass
 
   if (produced.length > 0) post({ type: 'diagnostics', files: produced, settled: true })
 
-  reportPass(cold ? 'cold' : reason, ordered.length, startedAt, before)
+  reportPass(cold ? 'cold' : reason, ordered.length, startedAt, before, trigger)
 }
 
 function describeNode(root: string, relativePath: string): DependencyNode | null {

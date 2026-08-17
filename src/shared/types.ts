@@ -838,6 +838,18 @@ export const compilerPassSchema = z.strictObject({
    * make the distinction unrecoverable.
    */
   reason: z.enum(['index', 'cold', 'watch', 'buffer']),
+  /**
+   * The paths reported changed or removed — the edit that caused this pass.
+   *
+   * The missing half of a pass. `requested`/`recomputed` say how much work
+   * happened; without this nothing can say what caused it, which is the question
+   * the Why tab exists to answer.
+   *
+   * Required rather than optional on purpose: this is a strictObject validated on
+   * two channels, so a producer that forgets it fails loudly instead of shipping
+   * an undefined the view has to guard.
+   */
+  trigger: z.array(z.string()),
   /** Files named by the invalidation walk. */
   requested: z.number().int().nonnegative(),
   /** Files whose diagnostics the type checker actually had to produce. */

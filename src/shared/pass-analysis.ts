@@ -222,10 +222,14 @@ export function describePass(pass: CompilerPass): string {
           ? 'Unsaved buffer'
           : 'File changed on disk'
 
-  if (pass.requested === 0) return `${trigger} — nothing to check`
+  // One file named, so name it. This is the sentence the History tab shows, and
+  // it could not previously say WHICH file changed.
+  const named = pass.trigger.length === 1 ? `${trigger} (${pass.trigger[0]})` : trigger
+
+  if (pass.requested === 0) return `${named} — nothing to check`
 
   return (
-    `${trigger} — ${pass.requested} file${pass.requested === 1 ? '' : 's'} in the ` +
+    `${named} — ${pass.requested} file${pass.requested === 1 ? '' : 's'} in the ` +
     `invalidation set, ${pass.recomputed} type-checked, ${pass.reused} reused`
   )
 }

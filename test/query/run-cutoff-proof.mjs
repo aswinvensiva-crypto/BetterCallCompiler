@@ -156,6 +156,9 @@ try {
   check('files type-checked', body.pass.recomputed, 1)
   check('files served from memo', body.pass.reused, 1)
 
+  // The pass now records what caused it, not only how much it did.
+  check('trigger names the edited file', body.pass.trigger.join(','), 'lib.ts')
+
   const sigTrace = body.pass.events.find((event) => event.key === 'sig:lib.ts')
   check('sig:lib.ts outcome', sigTrace?.outcome, 'cutoff')
   const appTrace = body.pass.events.find((event) => event.key === 'diag:app.ts')
