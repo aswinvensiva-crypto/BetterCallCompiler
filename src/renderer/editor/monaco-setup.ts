@@ -1,5 +1,4 @@
 import type * as monacoNs from 'monaco-editor'
-import * as monaco from 'monaco-editor'
 // monaco-editor 0.56 exposes an exports map of `"./*": "./esm/vs/*.js"`, so the
 // familiar `monaco-editor/esm/vs/...` specifier resolves to `esm/vs/esm/vs/...`
 // and fails. The prefix belongs to the map, not the specifier.
@@ -8,17 +7,18 @@ import JsonWorker from 'monaco-editor/language/json/json.worker?worker'
 import CssWorker from 'monaco-editor/language/css/css.worker?worker'
 import HtmlWorker from 'monaco-editor/language/html/html.worker?worker'
 import TsWorker from 'monaco-editor/language/typescript/ts.worker?worker'
-// monaco 0.56 moved these off `monaco.languages.typescript`, which is now just
-// `{ deprecated: true }`. They live in their own module under `languages`
-// (plural) — a different path from the `language` (singular) worker imports
-// above, which is easy to mistype into a module that does not exist.
-import {
-  javascriptDefaults,
-  typescriptDefaults
-} from 'monaco-editor/languages/features/typescript/register'
 
 /**
  * Monaco worker wiring.
+ *
+ * These five imports and the assignment below stay STATIC, and that is
+ * load-bearing rather than an oversight now that Monaco itself is dynamic. Vite
+ * emits each `?worker` as its own asset, and the imported binding is a small
+ * constructor referencing that URL — so they do not drag Monaco's core back into
+ * the entry chunk. Making them dynamic risks Vite falling back to a blob: worker,
+ * which `script-src 'self'` refuses. MonacoEnvironment must also be installed
+ * before Monaco's module body runs, which module scope guarantees and a lazy path
+ * does not.
  *
  * Monaco's default loader fetches workers from a CDN or builds them from a blob
  * URL. Both are dead ends here: `connect-src 'none'` forbids the former and
@@ -60,8 +60,17 @@ const THEME = 'bettercallcompiler-dark'
  * happens to come from.
  */
 interface TsRegister {
-  readonly typescriptDefaults: typeof typescriptDefaults
-  readonly javascriptDefaults: typeof javascriptDefaults
+  readonly typescriptDefaults: LanguageDefaults
+  readonly javascriptDefaults: LanguageDefaults
+}
+
+/** Only the one method this module calls. */
+interface LanguageDefaults {
+  setDiagnosticsOptions(options: {
+    noSemanticValidation: boolean
+    noSyntaxValidation: boolean
+    noSuggestionDiagnostics: boolean
+  }): void
 }
 
 /**
@@ -94,8 +103,15 @@ export function loadMonaco(): Promise<typeof monacoNs> {
   if (loading !== null) return loading
 
   loading = (async () => {
-    const ns = monaco
-    const register: TsRegister = { typescriptDefaults, javascriptDefaults }
+    // Both in parallel: the register module pulls Monaco's TypeScript language
+    // support, which is the largest single part of the payload, and serialising
+    // the two would add its latency to the editor's first paint for nothing.
+    const [ns, register] = await Promise.all([
+      import('monaco-editor'),
+      // `languages` plural here, and `language` singular in the worker imports
+      // above. Different modules; the wrong one does not exist.
+      import('monaco-editor/languages/features/typescript/register') as Promise<TsRegister>
+    ])
 
     defineTheme(ns)
     configureLanguageDefaults(register)
@@ -251,4 +267,3 @@ export async function createEditor(
   })
 }
 
-export { monaco }
