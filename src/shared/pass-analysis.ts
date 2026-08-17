@@ -1,4 +1,4 @@
-import type { CompilerPass, CompilerTraceEvent } from './types'
+import type { CompilerPass, CompilerTraceEvent, QueryOutcomeName } from './types'
 
 /**
  * Pure statistics over the daemon's check passes.
@@ -8,6 +8,18 @@ import type { CompilerPass, CompilerTraceEvent } from './types'
  * way nobody notices, and it should be testable without a DOM. The view below
  * it only turns these numbers into elements.
  */
+
+/**
+ * Was this answer served without running the work behind it?
+ *
+ * `cutoff` is NOT reuse, which is the one case worth stating out loud: it means
+ * the work DID run and the answer happened to come out identical. Only
+ * fresh/durable/validated were served from memo. Filing cutoff under reuse would
+ * overstate the saving by exactly the file the user just edited, every pass.
+ */
+export function isMemoReuse(outcome: QueryOutcomeName): boolean {
+  return outcome === 'fresh' || outcome === 'durable' || outcome === 'validated'
+}
 
 /* --------------------------------- latency -------------------------------- */
 
@@ -130,11 +142,8 @@ export function hotspotsOf(passes: readonly CompilerPass[], limit = 10): Hotspot
       const path = event.key.slice(colon + 1)
       const entry = byPath.get(path) ?? { totalMs: 0, checks: 0, reuses: 0 }
       entry.totalMs += event.ms
-      if (event.outcome === 'fresh' || event.outcome === 'durable' || event.outcome === 'validated') {
-        entry.reuses++
-      } else {
-        entry.checks++
-      }
+      if (isMemoReuse(event.outcome)) entry.reuses++
+      else entry.checks++
       byPath.set(path, entry)
     }
   }

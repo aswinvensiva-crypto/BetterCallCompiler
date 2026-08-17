@@ -4,6 +4,7 @@ import {
   describePass,
   explainOutcome,
   hotspotsOf,
+  isMemoReuse,
   latencyOf,
   percentile,
   workOf
@@ -225,5 +226,22 @@ describe('describePass', () => {
 
   it('says so when there was nothing to do', () => {
     expect(describePass(pass({ requested: 0 }))).toContain('nothing to check')
+  })
+})
+
+describe('isMemoReuse', () => {
+  it('counts the three outcomes that skipped the work', () => {
+    expect(isMemoReuse('fresh')).toBe(true)
+    expect(isMemoReuse('durable')).toBe(true)
+    expect(isMemoReuse('validated')).toBe(true)
+  })
+
+  it('does not count a cutoff, because the work did run', () => {
+    // The one case that looks like reuse and is not. A cutoff means the checker
+    // ran and the answer came out identical — filing it under reuse would
+    // overstate the saving by exactly the file the user just edited.
+    expect(isMemoReuse('cutoff')).toBe(false)
+    expect(isMemoReuse('miss')).toBe(false)
+    expect(isMemoReuse('recomputed')).toBe(false)
   })
 })
