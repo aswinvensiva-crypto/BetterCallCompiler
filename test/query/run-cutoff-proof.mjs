@@ -134,6 +134,9 @@ try {
   check('files requested', cold.pass.requested, 2)
   check('files type-checked', cold.pass.recomputed, 2)
   check('files served from memo', cold.pass.reused, 0)
+  // This pass is the one that builds the program and the type checker, so it
+  // must not be reported as ordinary typing latency.
+  check('reported as the cold pass', cold.pass.reason, 'cold')
   check(
     'errors reported',
     cold.diagnostics.reduce((n, file) => n + file.diagnostics.length, 0),

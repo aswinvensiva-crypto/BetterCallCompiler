@@ -65,8 +65,12 @@ export const BUDGET_MS = 100
  * Reporting a cold start inside a typing-latency figure would be flattering in
  * the wrong direction and useless in both.
  */
+export function isInteractive(pass: CompilerPass): boolean {
+  return pass.reason !== 'index' && pass.reason !== 'cold'
+}
+
 export function latencyOf(passes: readonly CompilerPass[]): LatencySummary {
-  const interactive = passes.filter((pass) => pass.reason !== 'index')
+  const interactive = passes.filter(isInteractive)
   const durations = interactive.map((pass) => pass.totalMs)
 
   return {
@@ -185,9 +189,11 @@ export function describePass(pass: CompilerPass): string {
   const trigger =
     pass.reason === 'index'
       ? 'Workspace indexed'
-      : pass.reason === 'buffer'
-        ? 'Unsaved buffer'
-        : 'File changed on disk'
+      : pass.reason === 'cold'
+        ? 'First check of this workspace'
+        : pass.reason === 'buffer'
+          ? 'Unsaved buffer'
+          : 'File changed on disk'
 
   if (pass.requested === 0) return `${trigger} — nothing to check`
 

@@ -3,6 +3,7 @@ import {
   describePass,
   explainOutcome,
   hotspotsOf,
+  isInteractive,
   latencyOf,
   workOf
 } from '../../shared/pass-analysis'
@@ -127,7 +128,7 @@ function renderLive(): HTMLElement {
 
   const bars = el('div', 'ci-bars')
   for (const pass of passes.slice(-40)) {
-    if (pass.reason === 'index') continue
+    if (!isInteractive(pass)) continue
     const bar = el('div', 'ci-bar')
     // Scaled against 4x the budget so an outlier does not flatten everything
     // else into an unreadable strip of one-pixel bars.

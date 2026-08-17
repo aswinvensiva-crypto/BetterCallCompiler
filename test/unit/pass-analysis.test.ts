@@ -4,6 +4,7 @@ import {
   describePass,
   explainOutcome,
   hotspotsOf,
+  isInteractive,
   isMemoReuse,
   latencyOf,
   percentile,
@@ -243,5 +244,34 @@ describe('isMemoReuse', () => {
     expect(isMemoReuse('cutoff')).toBe(false)
     expect(isMemoReuse('miss')).toBe(false)
     expect(isMemoReuse('recomputed')).toBe(false)
+  })
+})
+
+describe('cold passes', () => {
+  it('keeps the first check of a workspace out of typing latency', () => {
+    const summary = latencyOf([
+      pass({ totalMs: 20 }),
+      pass({ totalMs: 40 }),
+      pass({ reason: 'cold', totalMs: 4000 })
+    ])
+
+    // A four-second program build is not a keystroke. Left in the sample it
+    // drags p95 so far that the interactive numbers become invisible.
+    expect(summary.count).toBe(2)
+    expect(summary.worst).toBe(40)
+  })
+
+  it('names the first check in the history line', () => {
+    expect(describePass(pass({ reason: 'cold', requested: 3 }))).toContain(
+      'First check of this workspace'
+    )
+  })
+
+  it('still distinguishes the walk from the first check', () => {
+    expect(describePass(pass({ reason: 'index', requested: 3 }))).toContain('Workspace indexed')
+    expect(isInteractive(pass({ reason: 'index' }))).toBe(false)
+    expect(isInteractive(pass({ reason: 'cold' }))).toBe(false)
+    expect(isInteractive(pass({ reason: 'watch' }))).toBe(true)
+    expect(isInteractive(pass({ reason: 'buffer' }))).toBe(true)
   })
 })

@@ -865,6 +865,17 @@ function reportPass(
  * workspace is what makes this feel live rather than batch.
  */
 function checkFiles(root: string, files: readonly string[], reason: CompilerPass['reason']): void {
+  // Captured BEFORE ensureService, because that call is what makes it false.
+  //
+  // The first check of a workspace costs seconds, and almost none of that is the
+  // check: it is ts.createLanguageService building the program and the type
+  // checker on the first getSemanticDiagnostics, which happens inside this
+  // function. Left untagged it lands in the p50/p95 of a figure labelled
+  // keystroke-to-diagnostic and drags it somewhere meaningless.
+  //
+  // Self-maintaining: indexWorkspace already nulls `service` when the program
+  // changes shape, so a re-index re-arms the tag with no extra bookkeeping.
+  const cold = service === null
   ensureService(root)
 
   const ordered = [
@@ -932,7 +943,7 @@ function checkFiles(root: string, files: readonly string[], reason: CompilerPass
 
   if (produced.length > 0) post({ type: 'diagnostics', files: produced, settled: true })
 
-  reportPass(reason, ordered.length, startedAt, before)
+  reportPass(cold ? 'cold' : reason, ordered.length, startedAt, before)
 }
 
 function describeNode(root: string, relativePath: string): DependencyNode | null {

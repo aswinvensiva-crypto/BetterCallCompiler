@@ -831,7 +831,13 @@ export const compilerPassSchema = z.strictObject({
   /** Monotonic within a daemon lifetime; resets on restart. */
   id: z.number().int().nonnegative(),
   /** What triggered it — a saved file, an unsaved buffer, or the initial index. */
-  reason: z.enum(['index', 'watch', 'buffer']),
+  /**
+   * 'index' is the walk. 'cold' is the FIRST check, which builds the program and
+   * the type checker and costs seconds. Kept as separate members rather than
+   * folded together because they are different events, and conflating them would
+   * make the distinction unrecoverable.
+   */
+  reason: z.enum(['index', 'cold', 'watch', 'buffer']),
   /** Files named by the invalidation walk. */
   requested: z.number().int().nonnegative(),
   /** Files whose diagnostics the type checker actually had to produce. */
