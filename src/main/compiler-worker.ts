@@ -552,8 +552,43 @@ let passCounter = 0
  */
 const MAX_TRACE_EVENTS = 500
 
+/**
+ * Per-pass totals, counted here rather than derived from `passEvents`.
+ *
+ * They have to be. The cap below is applied BEFORE the push, so a pass over
+ * more than about 160 files — three events each — silently stops recording, and
+ * anything counted by walking the array afterwards would report the size of the
+ * cap rather than the size of the work. The panel's headline sentence is built
+ * from these numbers, so it would have quietly understated every large pass.
+ *
+ * Counted for `diag:` keys only, which is exactly the set of files the pass was
+ * asked about: `diag:` is never pulled as a dependency — the queries reach for
+ * `text:` and `sig:` and nothing else — so every diagnostics trace is a
+ * top-level get, one per file.
+ */
+let passRecomputed = 0
+let passReused = 0
+
 const engine: Engine = createEngine({
   onTrace: (trace) => {
+    if (trace.key.startsWith(`${Q_DIAG}:`)) {
+      // `cutoff` counts as recomputed, which is not the obvious grouping. It
+      // means the type checker DID run and the answer happened to be identical
+      // — the work was done. Only fresh/durable/validated were served without
+      // touching the checker, and those are the ones the cutoff actually saved.
+      // Filing cutoff under "reused" would overstate the saving by exactly the
+      // file the user just edited, in every single pass.
+      if (
+        trace.outcome === 'fresh' ||
+        trace.outcome === 'durable' ||
+        trace.outcome === 'validated'
+      ) {
+        passReused++
+      } else {
+        passRecomputed++
+      }
+    }
+
     if (passEvents.length < MAX_TRACE_EVENTS) passEvents.push(trace)
   }
 })
@@ -754,10 +789,13 @@ function toTraceEvent(trace: QueryTrace): CompilerTraceEvent {
  * between them is the work the signature cutoff saved, and it is the number
  * worth putting in front of a user.
  *
- * Deliberately derived from the trace rather than from separate counters. One
- * source of truth means the panel cannot disagree with itself, and a capped
- * trace still reports accurate totals because the cap is applied after these
- * are counted.
+ * Totals come from the counters incremented in `onTrace`, NOT from walking
+ * `passEvents`. This used to walk the array and claimed in this very comment
+ * that "a capped trace still reports accurate totals because the cap is applied
+ * after these are counted" — which was backwards. The cap is applied on the way
+ * in, so past roughly 160 files the array stops growing and the totals derived
+ * from it stopped growing with it. The events list is a sample for the panel to
+ * show; the counters are the measurement.
  */
 function reportPass(
   reason: CompilerPass['reason'],
@@ -765,23 +803,8 @@ function reportPass(
   startedAt: number,
   before: ReturnType<Engine['stats']>
 ): void {
-  let recomputed = 0
-  let reused = 0
-
-  for (const event of passEvents) {
-    if (!event.key.startsWith(`${Q_DIAG}:`)) continue
-    // `cutoff` counts as recomputed, which is not the obvious grouping. It
-    // means the type checker DID run and the answer happened to be identical —
-    // the work was done. Only fresh/durable/validated were served without
-    // touching the checker, and those are the ones the cutoff actually saved.
-    // Filing cutoff under "reused" would overstate the saving by exactly the
-    // file the user just edited, in every single pass.
-    if (event.outcome === 'fresh' || event.outcome === 'durable' || event.outcome === 'validated') {
-      reused++
-    } else {
-      recomputed++
-    }
-  }
+  const recomputed = passRecomputed
+  const reused = passReused
 
   const after = engine.stats()
 
@@ -831,6 +854,8 @@ function checkFiles(root: string, files: readonly string[], reason: CompilerPass
   const nowDirty = new Set<string>()
 
   passEvents = []
+  passRecomputed = 0
+  passReused = 0
   const startedAt = Date.now()
   const before = engine.stats()
 

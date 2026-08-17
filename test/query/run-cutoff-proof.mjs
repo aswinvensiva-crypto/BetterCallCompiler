@@ -204,6 +204,51 @@ try {
   rmSync(root, { recursive: true, force: true })
 }
 
+/* --- a pass bigger than the trace cap must still report its real size ------- */
+
+// The events list is capped so that a cold index over a large workspace does not
+// build a 60 000-entry array and structured-clone it across the port. That cap is
+// applied on the way IN, so anything counted by walking the array afterwards
+// stops counting at the cap — and the pass totals used to be derived that way,
+// which meant every pass past roughly 160 files silently understated itself.
+//
+// 200 files fanning out from one is enough to overrun it: three events per file,
+// against a cap of 500.
+const wideRoot = mkdtempSync(join(tmpdir(), 'bcc-wide-'))
+const WIDE_FILES = 200
+
+writeFileSync(join(wideRoot, 'core.ts'), 'export const core = 1\n', 'utf8')
+for (let i = 1; i < WIDE_FILES; i++) {
+  writeFileSync(
+    join(wideRoot, `f${i}.ts`),
+    `import { core } from './core'\n\nexport const v${i} = core + ${i}\n`,
+    'utf8'
+  )
+}
+
+const wideWorker = new Worker(WORKER)
+
+try {
+  wideWorker.postMessage({ type: 'boot', workspaceRoot: wideRoot })
+  await waitForIdle(wideWorker)
+
+  wideWorker.postMessage({ type: 'filesChanged', changed: ['core.ts'], removed: [] })
+  const wide = await nextPass(wideWorker, 120_000)
+
+  console.log(`\n--- ${WIDE_FILES}-file pass, against a ${500}-event trace cap ---`)
+  check('files requested', wide.pass.requested, WIDE_FILES)
+  // The discriminating pair. The sample is truncated and the totals are not.
+  check('trace events capped', wide.pass.events.length, 500)
+  check(
+    'recomputed + reused accounts for every requested file',
+    wide.pass.recomputed + wide.pass.reused,
+    WIDE_FILES
+  )
+} finally {
+  await wideWorker.terminate()
+  rmSync(wideRoot, { recursive: true, force: true })
+}
+
 console.log('')
 if (failures.length > 0) {
   console.error(`${failures.length} check(s) failed: ${failures.join(', ')}`)
