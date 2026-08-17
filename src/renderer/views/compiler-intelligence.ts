@@ -2,13 +2,13 @@ import {
   BUDGET_MS,
   chartScaleOf,
   describePass,
+  describeWhy,
   explainOutcome,
   hotspotsOf,
   isInteractive,
   latencyOf,
   whyChecked,
-  workOf,
-  type WhyRecord
+  workOf
 } from '../../shared/pass-analysis'
 import type { CompilerPass, CompilerTraceEvent } from '../../shared/types'
 import { openFile } from '../editor/models'
@@ -235,7 +235,7 @@ function renderWhyForFocus(relativePath: string, chain: readonly string[]): HTML
     return wrap
   }
 
-  wrap.append(el('p', 'ci-note', triggerSentence(record)))
+  wrap.append(el('p', 'ci-note', describeWhy(record)))
 
   if (chain.length > 1) {
     wrap.append(el('div', 'ci-why__label', 'The route from that edit to this file'))
@@ -263,13 +263,6 @@ function renderWhyForFocus(relativePath: string, chain: readonly string[]): HTML
   )
 
   return wrap
-}
-
-function triggerSentence(record: WhyRecord): string {
-  if (record.reason === 'cold') return 'The first check of this workspace, which builds the program.'
-  if (record.trigger.length === 0) return 'Rechecked by a pass that named no specific file.'
-  if (record.trigger.length === 1) return `Because ${record.trigger[0]} changed.`
-  return `Because ${record.trigger.length} files changed, including ${record.trigger[0]}.`
 }
 
 /** `lib.ts → util.ts → app.ts`, each hop opening the file. */
@@ -327,13 +320,27 @@ export function showWhyForFile(relativePath: string): void {
   focus = { relativePath, chain: [] }
   render()
 
-  const trigger = whyChecked(passes, relativePath)?.trigger ?? []
-  void api.compiler.dependents({ relativePath, from: [...trigger] }).then((result) => {
+  void (async () => {
+    // The history has to be here before a trigger can be read out of it, and on
+    // the FIRST use of this feature it is not: the panel is lazily mounted, so a
+    // Why click that arrives before it has ever been opened finds `passes` empty,
+    // reads no trigger, asks for a chain from nowhere and gets nothing back. That
+    // is the first thing every user does with this button.
+    if (passes.length === 0) {
+      const history = await api.compiler.passes({})
+      if (history.ok) passes = history.value.passes.slice(-MAX_PASSES)
+    }
+
+    const trigger = whyChecked(passes, relativePath)?.trigger ?? []
+    const result = await api.compiler.dependents({ relativePath, from: [...trigger] })
     if (!result.ok) return
+    // A second Why click can land while this one is in flight; the stale chain
+    // must not overwrite the newer focus.
     if (focus === null || focus.relativePath !== relativePath) return
+
     focus = { relativePath, chain: result.value.graph.chain }
     render()
-  })
+  })()
 }
 
 function renderTraceRow(event: CompilerTraceEvent): HTMLElement {

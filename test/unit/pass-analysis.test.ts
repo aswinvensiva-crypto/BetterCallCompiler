@@ -3,6 +3,7 @@ import {
   BUDGET_MS,
   chartScaleOf,
   describePass,
+  describeWhy,
   explainOutcome,
   hotspotsOf,
   isInteractive,
@@ -10,7 +11,8 @@ import {
   latencyOf,
   percentile,
   whyChecked,
-  workOf
+  workOf,
+  type WhyRecord
 } from '../../src/shared/pass-analysis'
 import type { CompilerPass, CompilerTraceEvent } from '../../src/shared/types'
 
@@ -410,5 +412,47 @@ describe('whyChecked', () => {
     expect(record?.depsWalked).toBe(7)
     expect(record?.requested).toBe(12)
     expect(record?.recomputed).toBe(1)
+  })
+})
+
+describe('describeWhy', () => {
+  const record = (overrides: Partial<WhyRecord> = {}): WhyRecord => ({
+    passId: 1,
+    reason: 'watch',
+    trigger: ['src/lib.ts'],
+    outcome: 'recomputed',
+    durability: 'workspace',
+    ms: 12,
+    depsWalked: 3,
+    requested: 2,
+    recomputed: 2,
+    ...overrides
+  })
+
+  it('names the file that changed', () => {
+    expect(describeWhy(record())).toBe('Because src/lib.ts changed.')
+  })
+
+  it('still names the file on a cold pass', () => {
+    const sentence = describeWhy(record({ reason: 'cold' }))
+
+    // The regression this test exists for. Coldness is ADDITIVE context, not a
+    // replacement for the answer — and the cold pass is the first thing anyone
+    // clicks in a fresh session, so dropping the filename there is the worst
+    // place to drop it.
+    expect(sentence).toContain('src/lib.ts')
+    expect(sentence).toContain('first check of the workspace')
+  })
+
+  it('summarises a coalesced batch rather than naming one of many', () => {
+    expect(describeWhy(record({ trigger: ['a.ts', 'b.ts', 'c.ts'] }))).toBe(
+      'Because 3 files changed, including a.ts.'
+    )
+  })
+
+  it('says so when the pass named nothing', () => {
+    expect(describeWhy(record({ trigger: [] }))).toBe(
+      'Rechecked by a pass that named no specific file.'
+    )
   })
 })

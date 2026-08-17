@@ -291,8 +291,14 @@ test('a diagnostic explains why its file was rechecked', async () => {
   await expect(tab('Why')).toHaveAttribute('aria-selected', 'true')
   await expect(window.locator('.ci-why__file')).toHaveText('src/app.ts')
 
-  // The trigger sentence names the edit; the chain names the route to it.
-  await expect(window.locator('.ci-why .ci-note').first()).toContainText('src/lib.ts')
+  // The trigger sentence names the edit, whichever note it lands in and whether
+  // or not this pass also happened to be the cold one. Asserted on the container
+  // with the daemon timeout rather than on `.ci-note` first(): run in isolation the
+  // signature edit IS the first check, so the sentence gains a clause and the note
+  // order is not something this test should be pinning.
+  const why = window.locator('.ci-why')
+  await expect(why).toContainText('src/lib.ts', { timeout: DAEMON_TIMEOUT })
+
   const chain = window.locator('.ci-why__chain')
   await expect(chain).toContainText('src/lib.ts', { timeout: DAEMON_TIMEOUT })
   await expect(chain).toContainText('src/app.ts')
