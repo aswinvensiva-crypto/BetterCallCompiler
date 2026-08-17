@@ -1,11 +1,20 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   renderExplainContext,
   renderNeighbours,
+  buildExplainPrompt,
   renderRegionDiagnostics,
   selectRegionDiagnostics,
   type RegionDiagnostics
 } from '../../src/main/explain-service'
+import {
+  resetCompilerForTests,
+  setCompilerEmitters,
+  setWorkerFactory,
+  startCompiler,
+  type WorkerHandle
+} from '../../src/main/compiler-service'
+import type { WorkerMessage, WorkerRequest } from '../../src/shared/compiler-protocol'
 import { titleForExplanation } from '../../src/shared/artifact-format'
 import type {
   AiContext,
@@ -89,14 +98,14 @@ describe('renderExplainContext', () => {
    * cites paths that do not resolve.
    */
   it('tells the model exactly how to cite this file, with a worked example', () => {
-    const text = renderExplainContext(context(), '', null, null)
+    const text = renderExplainContext(context(), '', '', null, null)
 
     expect(text).toContain('Cite this file as: src/runner.ts')
     expect(text).toContain('[[src/runner.ts:117-140 planRun]]')
   })
 
   it('builds on renderContext so the stored prompt matches the AI panel’s', () => {
-    const text = renderExplainContext(context(), '', null, null)
+    const text = renderExplainContext(context(), '', '', null, null)
 
     // These lines come from `renderContext`, not from this module. A second
     // renderer would drift, and the "context sent" claim would become false.
@@ -106,12 +115,13 @@ describe('renderExplainContext', () => {
   })
 
   it('omits the neighbour section when there are no neighbours', () => {
-    expect(renderExplainContext(context(), '', null, null)).not.toContain('import graph')
+    expect(renderExplainContext(context(), '', '', null, null)).not.toContain('import graph')
   })
 
   it('includes the prior explanation and the comment when revising', () => {
     const text = renderExplainContext(
       context(),
+      '',
       '',
       artifact(),
       'Why does it prefer the bundled runtime?'
@@ -124,11 +134,11 @@ describe('renderExplainContext', () => {
   })
 
   it('ignores a blank comment rather than sending an empty question', () => {
-    expect(renderExplainContext(context(), '', null, '   ')).not.toContain('reader')
+    expect(renderExplainContext(context(), '', '', null, '   ')).not.toContain('reader')
   })
 
   it('falls back to the selection line when there is no enclosing symbol', () => {
-    const text = renderExplainContext(context({ enclosingSymbol: null }), '', null, null)
+    const text = renderExplainContext(context({ enclosingSymbol: null }), '', '', null, null)
     expect(text).toContain('[[src/runner.ts:117-140]]')
   })
 })
@@ -351,5 +361,134 @@ describe('renderRegionDiagnostics', () => {
 
     expect(text).not.toContain('reader')
     expect(text).not.toContain('import graph')
+  })
+})
+
+describe('renderExplainContext with diagnostics', () => {
+  /**
+   * The guarantee that makes this feature free when the daemon has nothing to
+   * say. Spelled out rather than snapshotted, so that adding an unconditional
+   * header fails here with a readable diff.
+   */
+  it('is byte-identical to the ungrounded prompt when the daemon knows nothing', () => {
+    const withoutDiagnostics = renderExplainContext(context(), '', '', null, null)
+
+    expect(withoutDiagnostics).not.toContain('the compiler reports')
+    expect(withoutDiagnostics).not.toContain('What the compiler')
+    // Nothing empty was pushed: no run of three newlines anywhere.
+    expect(withoutDiagnostics).not.toMatch(/\n\n\n/)
+  })
+
+  it('places the diagnostics after the neighbours and before the citation instruction', () => {
+    const neighbours = 'imports: src/lib.ts'
+    const diagnostics = 'What the compiler reports for lines 117-140 (from the daemon)'
+    const text = renderExplainContext(context(), neighbours, diagnostics, null, null)
+
+    expect(text.indexOf(neighbours)).toBeLessThan(text.indexOf(diagnostics))
+    expect(text.indexOf(diagnostics)).toBeLessThan(text.indexOf('Cite this file as:'))
+  })
+
+  it('carries the diagnostics through into a revision prompt', () => {
+    const text = renderExplainContext(
+      context(),
+      '',
+      'What the compiler reports for lines 117-140: TS2345',
+      artifact(),
+      'Why does it prefer the bundled runtime?'
+    )
+
+    expect(text).toContain('TS2345')
+    expect(text).toContain('The explanation you wrote earlier:')
+    expect(text).toContain('Why does it prefer the bundled runtime?')
+  })
+})
+
+/**
+ * Drives the real compiler-service through its existing fake-worker seam rather
+ * than mocking the module. The suite has no `vi.mock` anywhere and this is why:
+ * the thing worth proving is that a diagnostic emitted by the daemon reaches the
+ * prompt through the real `diagnosticsByPath` map, and a mock would assert only
+ * that the code is the code.
+ */
+class StubWorker implements WorkerHandle {
+  private readonly listeners: ((value: never) => void)[] = []
+
+  postMessage(message: WorkerRequest): void {
+    // Answered synchronously, which is safe because `dependentsOf` registers its
+    // pending callback BEFORE it sends.
+    if (message.type === 'dependents') {
+      this.emit({
+        type: 'dependentsResult',
+        requestId: message.requestId,
+        query: { node: null, dependents: [], cycle: null }
+      })
+    }
+  }
+
+  terminate(): void {}
+
+  on(event: 'message' | 'error' | 'exit', listener: (value: never) => void): void {
+    if (event === 'message') this.listeners.push(listener)
+  }
+
+  emit(message: WorkerMessage): void {
+    for (const listener of this.listeners) (listener as (value: unknown) => void)(message)
+  }
+}
+
+describe('buildExplainPrompt', () => {
+  let stub: StubWorker
+
+  const emitDiagnosticsFor = (diagnostics: DiagnosticMessage[]): void => {
+    stub.emit({
+      type: 'diagnostics',
+      files: [{ ...fileDiags(diagnostics) }],
+      settled: true
+    })
+  }
+
+  const promptFor = async (): Promise<string> =>
+    (await buildExplainPrompt({ context: context(), priorArtifact: null, question: null })).user
+
+  beforeEach(() => {
+    resetCompilerForTests()
+    stub = new StubWorker()
+    setWorkerFactory(() => stub)
+    setCompilerEmitters(
+      () => {},
+      () => {}
+    )
+    startCompiler('C:/ws')
+  })
+
+  afterEach(() => {
+    resetCompilerForTests()
+    setWorkerFactory(null)
+  })
+
+  it('carries a real diagnostic from the daemon into the prompt', async () => {
+    emitDiagnosticsFor([diag({ startLine: 120, startColumn: 5 })])
+
+    expect(await promptFor()).toContain('120:5 error TS2345')
+  })
+
+  it('leaves the prompt untouched for a file the daemon has never checked', async () => {
+    // Nothing emitted, so diagnosticsFor returns []. End to end through the real
+    // map, this is the (a) outcome: no opinion, and therefore no section.
+    expect(await promptFor()).toBe(renderExplainContext(context(), '', '', null, null))
+  })
+
+  it('summarises a diagnostic outside the selection rather than listing it', async () => {
+    emitDiagnosticsFor([diag({ startLine: 5, endLine: 5, message: 'a stray error elsewhere' })])
+    const prompt = await promptFor()
+
+    expect(prompt).toContain('Elsewhere in this file: 1 error.')
+    expect(prompt).not.toContain('a stray error elsewhere')
+  })
+
+  it('says so when the daemon checked the file and found nothing', async () => {
+    emitDiagnosticsFor([])
+
+    expect(await promptFor()).toContain('no problems anywhere in this file')
   })
 })

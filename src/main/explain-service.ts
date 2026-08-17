@@ -8,7 +8,7 @@ import type {
   FileDiagnostics
 } from '../shared/types'
 import { hashPrompt, renderContext, startPromptStream } from './ai-service'
-import { dependentsOf } from './compiler-service'
+import { dependentsOf, diagnosticsFor } from './compiler-service'
 
 /**
  * The Explain artifact: prompt, context, and the graph walk that feeds it.
@@ -280,6 +280,7 @@ export function renderNeighbours(
 export function renderExplainContext(
   context: AiContext,
   neighbours: string,
+  diagnostics: string,
   priorArtifact: Artifact | null,
   question: string | null
 ): string {
@@ -287,6 +288,20 @@ export function renderExplainContext(
 
   if (neighbours !== '') {
     parts.push('', 'Where this file sits in the import graph:', neighbours)
+  }
+
+  // An already-rendered string, exactly like `neighbours`, so this function
+  // keeps knowing nothing about DiagnosticMessage and stays a text assembler.
+  //
+  // Required rather than defaulted to '': a default would let a future caller
+  // silently drop the compiler grounding and still typecheck, and the whole
+  // point of the parameter is that the grounding is not optional when it exists.
+  //
+  // Placed here because what follows divides into facts about this file and
+  // then instructions about how to answer. Diagnostics are a fact, so they join
+  // the facts. No header is added — renderRegionDiagnostics emits its own.
+  if (diagnostics !== '') {
+    parts.push('', diagnostics)
   }
 
   // Told explicitly, because the citation syntax is only useful if the model
@@ -341,18 +356,50 @@ export interface ExplainRequest {
  * sends the finished result and main records it.
  */
 export async function startExplain(request: ExplainRequest): Promise<AiStarted> {
-  const query = await dependentsOf(request.context.relativePath)
+  const { system, user } = await buildExplainPrompt(request)
+  return startPromptStream('explain', system, user, MAX_TOKENS)
+}
+
+/**
+ * Everything that decides what the model is asked, with nothing that talks to it.
+ *
+ * Split out of `startExplain` for the same reason `buildPrompt` is split out of
+ * `startAiStream`: the assembly is the part worth testing and the transport is
+ * the part that needs an API key. What is left in `startExplain` is one call it
+ * would be perverse to get wrong.
+ *
+ * `diagnosticsFor` is a synchronous Map read, so grounding the prompt in the
+ * compiler costs the Explain path nothing measurable — the `await dependentsOf`
+ * round trip to the worker still dominates. The two path spaces join without
+ * normalising: AiContext.relativePath and the daemon's keys are produced by
+ * character-identical `toRelative` implementations.
+ */
+export async function buildExplainPrompt(
+  request: ExplainRequest
+): Promise<{ system: string; user: string }> {
+  const { relativePath, selection } = request.context
+
+  const query = await dependentsOf(relativePath)
   const neighbours = renderNeighbours(query.node?.imports ?? [], query.dependents)
+
+  const region = selectRegionDiagnostics(
+    diagnosticsFor(relativePath),
+    relativePath,
+    selection.startLine,
+    selection.endLine
+  )
+  const diagnostics = renderRegionDiagnostics(region, selection.startLine, selection.endLine)
 
   const user = renderExplainContext(
     request.context,
     neighbours,
+    diagnostics,
     request.priorArtifact,
     request.question
   )
   const system = request.priorArtifact === null ? SYSTEM_PROMPT : REVISION_SYSTEM_PROMPT
 
-  return startPromptStream('explain', system, user, MAX_TOKENS)
+  return { system, user }
 }
 
 /** Re-exported so the IPC layer has one import for the whole flow. */
