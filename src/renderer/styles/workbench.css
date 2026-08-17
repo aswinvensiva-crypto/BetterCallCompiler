@@ -2924,6 +2924,82 @@ body.workbench--resizing-y * {
   border-top: 2px solid var(--bcc-danger);
 }
 
+/* ------------------------- Why, focused on one file ----------------------- */
+
+.ci-why__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ci-why__file {
+  font-family: var(--bcc-font-mono);
+  font-size: 12px;
+  color: var(--bcc-fg);
+}
+
+.ci-why__label {
+  margin-top: 10px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--bcc-fg-dim);
+}
+
+.ci-why__chain {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 6px;
+  background: var(--bcc-bg-inset);
+  border: 1px solid var(--bcc-border);
+  border-radius: 4px;
+}
+
+.ci-why__hop {
+  font-family: var(--bcc-font-mono);
+  font-size: 11px;
+  color: var(--bcc-accent);
+  background: none;
+  border: none;
+  padding: 2px 4px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.ci-why__hop:hover {
+  background: var(--bcc-bg-hover);
+  text-decoration: underline;
+}
+
+.ci-why__arrow {
+  color: var(--bcc-fg-dim);
+  font-size: 11px;
+}
+
+.ci-why__totals {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--bcc-fg-dim);
+}
+
+/*
+ * The Why affordance on a Problems row. Hidden until the row is hovered or holds
+ * focus, so every row does not grow a permanent second control.
+ */
+.problems-row__why {
+  opacity: 0;
+  flex: 0 0 auto;
+}
+
+.problems-row:hover .problems-row__why,
+.problems-row:focus-within .problems-row__why {
+  opacity: 1;
+}
+
 .ci-bar {
   flex: 1 1 auto;
   min-width: 3px;

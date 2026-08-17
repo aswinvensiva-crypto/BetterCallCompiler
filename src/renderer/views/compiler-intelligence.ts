@@ -6,9 +6,14 @@ import {
   hotspotsOf,
   isInteractive,
   latencyOf,
-  workOf
+  whyChecked,
+  workOf,
+  type WhyRecord
 } from '../../shared/pass-analysis'
 import type { CompilerPass, CompilerTraceEvent } from '../../shared/types'
+import { openFile } from '../editor/models'
+import { WHY_FILE_EVENT, type WhyFileDetail } from './problems'
+import { activeRightDockView, isRightDockVisible } from '../workbench/right-dock'
 
 /**
  * The Compiler Intelligence view.
@@ -42,6 +47,14 @@ const TABS: readonly { readonly id: TabId; readonly label: string }[] = [
 let bodyHost: HTMLElement | null = null
 let passes: CompilerPass[] = []
 let activeTab: TabId = 'live'
+/**
+ * The file the Why tab is answering about, and the chain back to the edit.
+ *
+ * `chain` arrives asynchronously from the daemon, so it starts empty and the tab
+ * re-renders when it lands. Null means "show the whole trace", which is the tab's
+ * original behaviour and is kept intact.
+ */
+let focus: { relativePath: string; chain: readonly string[] } | null = null
 let unsubscribe: (() => void) | null = null
 
 /**
@@ -166,6 +179,8 @@ function renderLive(): HTMLElement {
 }
 
 function renderWhy(): HTMLElement {
+  if (focus !== null) return renderWhyForFocus(focus.relativePath, focus.chain)
+
   const wrap = el('div', 'ci-section')
   const latest = passes[passes.length - 1]
 
@@ -182,6 +197,143 @@ function renderWhy(): HTMLElement {
   }
   wrap.append(list)
   return wrap
+}
+
+/**
+ * One file's answer: what caused the pass, the route from the edit, and what the
+ * daemon then did about this file.
+ *
+ * Reuses `renderTraceRow` for the file's own events rather than reformatting
+ * them, so `explainOutcome`'s sentence — the part a person cannot reconstruct
+ * from the numbers — is identical in both views of the same data.
+ */
+function renderWhyForFocus(relativePath: string, chain: readonly string[]): HTMLElement {
+  const wrap = el('div', 'ci-section ci-why')
+
+  const header = el('div', 'ci-why__header')
+  header.append(el('code', 'ci-why__file', relativePath))
+  const back = el('button', 'button ci-why__back', 'Show the whole trace')
+  back.type = 'button'
+  back.addEventListener('click', () => {
+    focus = null
+    render()
+  })
+  header.append(back)
+  wrap.append(header)
+
+  const record = whyChecked(passes, relativePath)
+  if (record === null) {
+    // Said out loud rather than rendered as an empty list. "Not in the retained
+    // history" is a real answer and a different one from "nothing happened".
+    wrap.append(
+      el(
+        'p',
+        'explorer__empty-text',
+        `${relativePath} has not been checked in the last ${MAX_PASSES} passes.`
+      )
+    )
+    return wrap
+  }
+
+  wrap.append(el('p', 'ci-note', triggerSentence(record)))
+
+  if (chain.length > 1) {
+    wrap.append(el('div', 'ci-why__label', 'The route from that edit to this file'))
+    wrap.append(renderChain(chain))
+  } else if (chain.length === 1) {
+    wrap.append(el('p', 'ci-note', 'This is the file that was edited.'))
+  }
+
+  wrap.append(el('div', 'ci-why__label', 'What the daemon did about it'))
+  const list = el('div', 'ci-trace')
+  const pass = passes.find((candidate) => candidate.id === record.passId)
+  for (const event of pass?.events ?? []) {
+    if (event.key !== `sig:${relativePath}` && event.key !== `diag:${relativePath}`) continue
+    list.append(renderTraceRow(event))
+  }
+  wrap.append(list)
+
+  wrap.append(
+    el(
+      'p',
+      'ci-why__totals',
+      `That pass named ${record.requested} file${record.requested === 1 ? '' : 's'} and ` +
+        `type-checked ${record.recomputed}.`
+    )
+  )
+
+  return wrap
+}
+
+function triggerSentence(record: WhyRecord): string {
+  if (record.reason === 'cold') return 'The first check of this workspace, which builds the program.'
+  if (record.trigger.length === 0) return 'Rechecked by a pass that named no specific file.'
+  if (record.trigger.length === 1) return `Because ${record.trigger[0]} changed.`
+  return `Because ${record.trigger.length} files changed, including ${record.trigger[0]}.`
+}
+
+/** `lib.ts → util.ts → app.ts`, each hop opening the file. */
+function renderChain(chain: readonly string[]): HTMLElement {
+  const wrap = el('div', 'ci-why__chain')
+
+  chain.forEach((path, index) => {
+    if (index > 0) wrap.append(el('span', 'ci-why__arrow', '→'))
+
+    const hop = el('button', 'ci-why__hop', path)
+    hop.type = 'button'
+    hop.title = `Open ${path}`
+    hop.addEventListener('click', () => {
+      void openHop(path)
+    })
+    wrap.append(hop)
+  })
+
+  return wrap
+}
+
+/**
+ * Opens a chain hop in the editor.
+ *
+ * The chain carries workspace-relative paths and `openFile` needs the absolute
+ * one, so the node is fetched rather than reconstructed — joining a root by hand
+ * here would be a second, drifting implementation of a path the daemon already
+ * knows. The round trip is pure graph lookup and cannot cause a check.
+ */
+async function openHop(relativePath: string): Promise<void> {
+  const result = await api.compiler.dependents({ relativePath, from: [] })
+  if (!result.ok) return
+
+  const node = result.value.graph.node
+  if (node === null) return
+
+  await openFile({
+    name: relativePath.slice(relativePath.lastIndexOf('/') + 1),
+    path: node.path,
+    relativePath,
+    kind: 'file'
+  })
+}
+
+/**
+ * Focuses the Why tab on one file.
+ *
+ * State is set BEFORE the daemon is asked, so the tab shows its answer
+ * immediately and the chain fills in when it arrives. The guard on the late reply
+ * matters: a user can click Why on a second file while the first request is still
+ * in flight, and the stale chain must not overwrite the new focus.
+ */
+export function showWhyForFile(relativePath: string): void {
+  activeTab = 'why'
+  focus = { relativePath, chain: [] }
+  render()
+
+  const trigger = whyChecked(passes, relativePath)?.trigger ?? []
+  void api.compiler.dependents({ relativePath, from: [...trigger] }).then((result) => {
+    if (!result.ok) return
+    if (focus === null || focus.relativePath !== relativePath) return
+    focus = { relativePath, chain: result.value.graph.chain }
+    render()
+  })
 }
 
 function renderTraceRow(event: CompilerTraceEvent): HTMLElement {
@@ -308,7 +460,10 @@ export async function mountCompilerIntelligence(
     // Only re-render when the user is looking at it. A hidden panel that
     // re-rendered on every pass would put this view back on the hot path it was
     // designed to stay off.
-    if (bodyHost !== null && bodyHost.hidden !== true) render()
+    // `bodyHost.hidden` is only toggled when switching views WITHIN the dock, so
+    // a dock closed from the activity bar left this panel rebuilding its whole
+    // tab DOM on every pass — the exact hot-path cost the view exists to avoid.
+    if (isRightDockVisible() && activeRightDockView() === 'compiler') render()
   })
 
   render()
@@ -316,4 +471,27 @@ export async function mountCompilerIntelligence(
 
 export function onCompilerIntelligenceShown(): void {
   render()
+}
+
+/** Set by main.ts so a Problems row can bring this panel to the front. */
+let activate: (() => void | Promise<void>) | null = null
+
+export function setCompilerViewActivator(fn: () => void | Promise<void>): void {
+  activate = fn
+}
+
+/**
+ * Bound once at start-up, not on first mount.
+ *
+ * The panel is lazily mounted like every other tool window, and a Why request made
+ * before it has ever been opened must still be honoured. That works because the
+ * focus state is set first and `render()` no-ops while bodyHost is null — the
+ * mount's own render then picks the focus up.
+ */
+export function listenForWhyRequests(): void {
+  document.addEventListener(WHY_FILE_EVENT, (event) => {
+    const detail = (event as CustomEvent<WhyFileDetail>).detail
+    showWhyForFile(detail.relativePath)
+    void activate?.()
+  })
 }

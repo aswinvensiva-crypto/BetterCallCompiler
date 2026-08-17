@@ -801,7 +801,7 @@ export type QueryDurabilityName = z.infer<typeof queryDurabilitySchema>
  * just do, and why".
  */
 export const compilerTraceEventSchema = z.strictObject({
-  /** `namespace:argument`, e.g. `diagnostics:src/app.ts`. */
+  /** `namespace:argument`, e.g. `diag:src/app.ts` — the namespace is `diag`. */
   key: z.string(),
   outcome: queryOutcomeSchema,
   durability: queryDurabilitySchema,

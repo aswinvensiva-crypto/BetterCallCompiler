@@ -471,6 +471,7 @@ describe('documents and queries', () => {
     await expect(dependentsOf('a.ts')).resolves.toEqual({
       node: null,
       dependents: [],
+      chain: [],
       cycle: null
     })
   })

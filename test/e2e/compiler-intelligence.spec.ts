@@ -42,6 +42,14 @@ const LIB_BODY_EDIT =
   '// warm\nexport function greet(name: string): string {\n  return `good evening, ${name}`\n}\n'
 const APP_TS = "import { greet } from './lib'\nconsole.log(greet('world'))\n"
 
+/**
+ * Breaks the exported type, so app.ts — which the user never opened — reports a
+ * real TS2345. That is precisely the case the Why feature exists for: an error in
+ * a file you did not edit, needing an explanation of how your edit reached it.
+ */
+const LIB_SIGNATURE_EDIT =
+  '// warm\nexport function greet(name: number): string {\n  return `hi ${name}`\n}\n'
+
 let fixture = ''
 let app: ElectronApplication
 let window: Page
@@ -97,6 +105,7 @@ function tab(label: string) {
 
 interface PassSummary {
   readonly reason: string
+  readonly trigger: readonly string[]
   readonly requested: number
   readonly recomputed: number
   readonly reused: number
@@ -253,4 +262,46 @@ test('the panel never asks the daemon to do work', async () => {
   })
 
   expect(after.value?.status.checkedFileCount).toBe(before.value?.status.checkedFileCount)
+})
+
+test('a diagnostic explains why its file was rechecked', async () => {
+  await writeFile(join(fixture, 'src', 'lib.ts'), LIB_SIGNATURE_EDIT)
+
+  // Waited for by trigger, not by DOM. Any pass satisfies a DOM assertion,
+  // including the cold one, so reading the panel first would race the pass under
+  // test — the same mistake that made an earlier version of this file's specs pass
+  // against a daemon doing nothing.
+  await waitForPass((history) =>
+    history.some((pass) => pass.trigger.includes('src/lib.ts') && pass.requested >= 2)
+  )
+
+  await window.locator('.activity-bar__item[data-view-id="problems"]').click()
+  await expect(window.locator('#panel-problems-view')).toBeVisible()
+
+  const appRow = window
+    .locator('.problems-row')
+    .filter({ has: window.locator('.problems-row__code', { hasText: 'TS2345' }) })
+    .first()
+  await expect(appRow).toBeVisible({ timeout: DAEMON_TIMEOUT })
+
+  await appRow.locator('.problems-row__why').click()
+
+  // The dock opens on the Why tab, focused on the file that was NOT edited.
+  await expect(window.locator('.right-dock__view[data-view-id="compiler"]')).toBeVisible()
+  await expect(tab('Why')).toHaveAttribute('aria-selected', 'true')
+  await expect(window.locator('.ci-why__file')).toHaveText('src/app.ts')
+
+  // The trigger sentence names the edit; the chain names the route to it.
+  await expect(window.locator('.ci-why .ci-note').first()).toContainText('src/lib.ts')
+  const chain = window.locator('.ci-why__chain')
+  await expect(chain).toContainText('src/lib.ts', { timeout: DAEMON_TIMEOUT })
+  await expect(chain).toContainText('src/app.ts')
+
+  // And the outcome sentence — the part of the answer that cannot be derived from
+  // the numbers — is present rather than an empty list.
+  await expect(window.locator('.ci-why .ci-trace__why').first()).not.toBeEmpty()
+
+  // A hop opens that file, so the chain is navigation rather than decoration.
+  await window.locator('.ci-why__hop', { hasText: 'src/lib.ts' }).click()
+  await expect(window.locator('.tab--active')).toContainText('lib.ts')
 })

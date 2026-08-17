@@ -188,6 +188,65 @@ export function hotspotsOf(passes: readonly CompilerPass[], limit = 10): Hotspot
 /* ------------------------------- explanation ------------------------------ */
 
 /**
+ * What the daemon did about one file, and what caused it.
+ *
+ * The answer to "why was this rechecked?", assembled from data already on every
+ * pass. The `diag:` event is the answer and the pass around it is the context:
+ * the outcome says whether the checker ran, the trigger says which edit named the
+ * file, and requested/recomputed say how much of the invalidation set was skipped.
+ *
+ * Newest-first, because a file checked in several passes should report the most
+ * recent one — that is the state the user is looking at.
+ *
+ * The namespace is `diag`, not `diagnostics`. That mattered: the schema's own doc
+ * comment said `diagnostics:src/app.ts`, which matches nothing, and anyone coding
+ * from it would have got an empty tab with no error to explain it. Corrected in
+ * this commit.
+ */
+export interface WhyRecord {
+  readonly passId: number
+  readonly reason: CompilerPass['reason']
+  readonly trigger: readonly string[]
+  readonly outcome: CompilerTraceEvent['outcome']
+  readonly durability: CompilerTraceEvent['durability']
+  readonly ms: number
+  readonly depsWalked: number
+  readonly requested: number
+  readonly recomputed: number
+}
+
+export function whyChecked(
+  passes: readonly CompilerPass[],
+  relativePath: string
+): WhyRecord | null {
+  // Exact key equality rather than a prefix test, so `diag:src/a.ts` cannot
+  // answer for `src/a.tsx`.
+  const key = `diag:${relativePath}`
+
+  for (let i = passes.length - 1; i >= 0; i--) {
+    const pass = passes[i]
+    if (pass === undefined) continue
+
+    const event = pass.events.find((candidate) => candidate.key === key)
+    if (event === undefined) continue
+
+    return {
+      passId: pass.id,
+      reason: pass.reason,
+      trigger: pass.trigger,
+      outcome: event.outcome,
+      durability: event.durability,
+      ms: event.ms,
+      depsWalked: event.depsWalked,
+      requested: pass.requested,
+      recomputed: pass.recomputed
+    }
+  }
+
+  return null
+}
+
+/**
  * Plain-English reason a file was in the pass.
  *
  * This is the sentence the whole feature exists to produce. Every other IDE can

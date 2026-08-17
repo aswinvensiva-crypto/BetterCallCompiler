@@ -9,6 +9,7 @@ import {
   isMemoReuse,
   latencyOf,
   percentile,
+  whyChecked,
   workOf
 } from '../../src/shared/pass-analysis'
 import type { CompilerPass, CompilerTraceEvent } from '../../src/shared/types'
@@ -344,5 +345,70 @@ describe('describePass with a trigger', () => {
     expect(describePass(pass({ reason: 'buffer', trigger: ['src/app.ts'], requested: 1 }))).toContain(
       'Unsaved buffer (src/app.ts)'
     )
+  })
+})
+
+describe('whyChecked', () => {
+  const diagEvent = (path: string, overrides: Partial<CompilerTraceEvent> = {}) => ({
+    key: `diag:${path}`,
+    outcome: 'validated' as const,
+    durability: 'workspace' as const,
+    ms: 3,
+    depth: 0,
+    depsWalked: 2,
+    ...overrides
+  })
+
+  it('reports the most recent pass that named the file', () => {
+    const record = whyChecked(
+      [
+        pass({ id: 1, trigger: ['src/old.ts'], events: [diagEvent('src/app.ts')] }),
+        pass({ id: 2, trigger: ['src/lib.ts'], events: [diagEvent('src/app.ts')] })
+      ],
+      'src/app.ts'
+    )
+
+    // Newest-first: pass 2 is the state the user is looking at.
+    expect(record?.passId).toBe(2)
+    expect(record?.trigger).toEqual(['src/lib.ts'])
+  })
+
+  it('returns null for a file no retained pass mentions', () => {
+    expect(whyChecked([pass({ events: [diagEvent('src/app.ts')] })], 'src/other.ts')).toBeNull()
+  })
+
+  it('ignores a sig: event for the same path', () => {
+    const sigOnly = pass({
+      events: [{ ...diagEvent('src/app.ts'), key: 'sig:src/app.ts' }]
+    })
+
+    // The diag event is the answer; sig is supporting detail.
+    expect(whyChecked([sigOnly], 'src/app.ts')).toBeNull()
+  })
+
+  it('does not answer for a path that is merely a prefix of another', () => {
+    const record = whyChecked([pass({ events: [diagEvent('src/a.tsx')] })], 'src/a.ts')
+
+    // A prefix test would have matched here and reported the wrong file.
+    expect(record).toBeNull()
+  })
+
+  it('carries the outcome and the pass totals through', () => {
+    const record = whyChecked(
+      [
+        pass({
+          requested: 12,
+          recomputed: 1,
+          events: [diagEvent('src/app.ts', { outcome: 'cutoff', ms: 41, depsWalked: 7 })]
+        })
+      ],
+      'src/app.ts'
+    )
+
+    expect(record?.outcome).toBe('cutoff')
+    expect(record?.ms).toBe(41)
+    expect(record?.depsWalked).toBe(7)
+    expect(record?.requested).toBe(12)
+    expect(record?.recomputed).toBe(1)
   })
 })
