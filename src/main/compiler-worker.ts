@@ -13,6 +13,7 @@ import {
   cycleFor,
   dependentsOf,
   edgeCount,
+  importPathTo,
   invalidationSet,
   removeNode,
   upsertNode,
@@ -1018,7 +1019,7 @@ function handle(request: WorkerRequest): void {
         post({
           type: 'dependentsResult',
           requestId: request.requestId,
-          query: { node: null, dependents: [], cycle: null }
+          query: { node: null, dependents: [], chain: [], cycle: null }
         })
         return
       }
@@ -1032,6 +1033,9 @@ function handle(request: WorkerRequest): void {
         query: {
           node: describeNode(root, request.relativePath),
           dependents: dependentsOf(graph, request.relativePath),
+          // Pure graph arithmetic — no engine.get anywhere on this path, so
+          // answering "why" cannot cause a check.
+          chain: importPathTo(graph, request.from, request.relativePath),
           cycle: cycle === null ? null : { id: cycle.id, members: [...cycle.members] }
         }
       })

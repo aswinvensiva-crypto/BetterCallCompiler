@@ -468,8 +468,12 @@ export function closeDocument(relativePath: string): void {
 }
 
 /** Resolves with an empty query if the daemon never answers. */
-export function dependentsOf(relativePath: string, timeoutMs = 5_000): Promise<DependencyQuery> {
-  const empty: DependencyQuery = { node: null, dependents: [], cycle: null }
+export function dependentsOf(
+  relativePath: string,
+  from: readonly string[] = [],
+  timeoutMs = 5_000
+): Promise<DependencyQuery> {
+  const empty: DependencyQuery = { node: null, dependents: [], chain: [], cycle: null }
   if (worker === null) return Promise.resolve(empty)
 
   return new Promise<DependencyQuery>((resolve) => {
@@ -484,7 +488,7 @@ export function dependentsOf(relativePath: string, timeoutMs = 5_000): Promise<D
       clearTimeout(timer)
       resolve(query)
     })
-    send({ type: 'dependents', requestId, relativePath })
+    send({ type: 'dependents', requestId, relativePath, from })
   })
 }
 

@@ -447,7 +447,7 @@ describe('documents and queries', () => {
     worker.emit({
       type: 'dependentsResult',
       requestId: (request as { requestId: number }).requestId,
-      query: { node: null, dependents: ['b.ts'], cycle: null }
+      query: { node: null, dependents: ['b.ts'], chain: [], cycle: null }
     })
 
     await expect(pending).resolves.toMatchObject({ dependents: ['b.ts'] })
@@ -456,10 +456,15 @@ describe('documents and queries', () => {
   it('resolves empty rather than hanging when the daemon never answers', async () => {
     startCompiler('C:/ws')
 
-    const pending = dependentsOf('a.ts', 1_000)
+    const pending = dependentsOf('a.ts', [], 1_000)
     vi.advanceTimersByTime(1_000)
 
-    await expect(pending).resolves.toEqual({ node: null, dependents: [], cycle: null })
+    await expect(pending).resolves.toEqual({
+      node: null,
+      dependents: [],
+      chain: [],
+      cycle: null
+    })
   })
 
   it('resolves empty when there is no worker at all', async () => {

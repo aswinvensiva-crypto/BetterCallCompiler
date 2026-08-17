@@ -616,6 +616,11 @@ export const dependencyQuerySchema = z.strictObject({
   node: dependencyNodeSchema.nullable(),
   /** Transitive dependents, nearest first — the invalidation set. */
   dependents: z.array(z.string()),
+  /**
+   * The shortest import chain from the requesting pass's trigger to this file,
+   * trigger-first. Empty when nothing was asked about or nothing reaches it.
+   */
+  chain: z.array(z.string()),
   cycle: dependencyCycleSchema.nullable()
 })
 export type DependencyQuery = z.infer<typeof dependencyQuerySchema>

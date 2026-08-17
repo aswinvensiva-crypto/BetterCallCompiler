@@ -420,7 +420,7 @@ class StubWorker implements WorkerHandle {
       this.emit({
         type: 'dependentsResult',
         requestId: message.requestId,
-        query: { node: null, dependents: [], cycle: null }
+        query: { node: null, dependents: [], chain: [], cycle: null }
       })
     }
   }
