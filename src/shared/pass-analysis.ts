@@ -125,6 +125,33 @@ export interface Hotspot {
 }
 
 /**
+ * How tall the Live chart's tallest bar means, and where the budget line sits.
+ *
+ * The chart used to be pinned at four times the budget — 400ms — which made the
+ * passes it exists to show unreadable: a real interactive pass on this repo runs
+ * 5-40ms and drew at one to seven pixels in a 72px box, while everything at or
+ * above 400ms clipped to the same full-height bar and became indistinguishable.
+ *
+ * Scaling from the sample instead, with two guards. A floor of 1.5x the budget,
+ * so a session that happens to be fast does not get a hair-trigger scale where
+ * every ordinary pass looks alarming. And p95 rather than the maximum, so one
+ * outlier does not flatten the rest — the same reason latencyOf reports p95.
+ *
+ * Cold and index passes are excluded through the same predicate latencyOf uses.
+ * A four-second program build would otherwise set the ceiling and squash every
+ * interactive pass to nothing, which is exactly the bug being fixed.
+ */
+export function chartScaleOf(passes: readonly CompilerPass[]): {
+  ceilingMs: number
+  budgetFraction: number
+} {
+  const durations = passes.filter(isInteractive).map((pass) => pass.totalMs)
+  const ceilingMs = Math.max(BUDGET_MS * 1.5, percentile(durations, 95))
+
+  return { ceilingMs, budgetFraction: BUDGET_MS / ceilingMs }
+}
+
+/**
  * The files that cost the most, worst first.
  *
  * Ranked by total time rather than by number of checks. A file checked twice

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   BUDGET_MS,
+  chartScaleOf,
   describePass,
   explainOutcome,
   hotspotsOf,
@@ -273,5 +274,44 @@ describe('cold passes', () => {
     expect(isInteractive(pass({ reason: 'cold' }))).toBe(false)
     expect(isInteractive(pass({ reason: 'watch' }))).toBe(true)
     expect(isInteractive(pass({ reason: 'buffer' }))).toBe(true)
+  })
+})
+
+describe('chartScaleOf', () => {
+  it('floors at 1.5x the budget when every pass is fast', () => {
+    const scale = chartScaleOf([pass({ totalMs: 5 }), pass({ totalMs: 12 })])
+
+    // Without the floor, a fast session gets a hair-trigger scale on which every
+    // ordinary pass draws as alarmingly tall.
+    expect(scale.ceilingMs).toBe(BUDGET_MS * 1.5)
+    expect(scale.budgetFraction).toBeCloseTo(1 / 1.5)
+  })
+
+  it('follows p95 once passes are genuinely slow', () => {
+    const slow = Array.from({ length: 20 }, (_, i) => pass({ totalMs: 200 + i * 20 }))
+    const scale = chartScaleOf(slow)
+
+    expect(scale.ceilingMs).toBeGreaterThan(BUDGET_MS * 1.5)
+    expect(scale.budgetFraction).toBeLessThan(1)
+  })
+
+  it('ignores cold and index passes when picking the ceiling', () => {
+    // The bug this whole step exists for: a four-second program build setting the
+    // scale squashes every interactive pass to nothing.
+    const scale = chartScaleOf([
+      pass({ totalMs: 8 }),
+      pass({ reason: 'cold', totalMs: 4000 }),
+      pass({ reason: 'index', totalMs: 3000 })
+    ])
+
+    expect(scale.ceilingMs).toBe(BUDGET_MS * 1.5)
+  })
+
+  it('always returns a drawable budget fraction', () => {
+    for (const passes of [[], [pass({ totalMs: 1 })], [pass({ totalMs: 9999 })]]) {
+      const { budgetFraction } = chartScaleOf(passes)
+      expect(budgetFraction).toBeGreaterThan(0)
+      expect(budgetFraction).toBeLessThanOrEqual(1)
+    }
   })
 })

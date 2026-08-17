@@ -1,5 +1,6 @@
 import {
   BUDGET_MS,
+  chartScaleOf,
   describePass,
   explainOutcome,
   hotspotsOf,
@@ -127,14 +128,24 @@ function renderLive(): HTMLElement {
   budget.append(el('div', 'ci-budget__title', `Interactive latency (${BUDGET_MS}ms budget)`))
 
   const bars = el('div', 'ci-bars')
-  for (const pass of passes.slice(-40)) {
-    if (!isInteractive(pass)) continue
+  const scale = chartScaleOf(passes)
+  // Sets the budget rule's position — see `.ci-bars::after`.
+  bars.style.setProperty('--ci-budget-fraction', `${scale.budgetFraction}`)
+
+  // Filtered BEFORE the slice. Slicing first and skipping afterwards drew fewer
+  // than forty bars whenever the history held a cold or index pass, so the chart
+  // silently showed less than it claimed.
+  for (const pass of passes.filter(isInteractive).slice(-40)) {
     const bar = el('div', 'ci-bar')
-    // Scaled against 4x the budget so an outlier does not flatten everything
-    // else into an unreadable strip of one-pixel bars.
-    const height = Math.min(100, Math.round((pass.totalMs / (BUDGET_MS * 4)) * 100))
+    const height = Math.min(100, Math.round((pass.totalMs / scale.ceilingMs) * 100))
+    // A 2% floor, so a sub-millisecond pass is still visible as a mark rather
+    // than as a gap that reads like a missing pass.
     bar.style.height = `${Math.max(height, 2)}%`
     if (pass.totalMs > BUDGET_MS) bar.classList.add('ci-bar--over')
+    // Clipped bars are marked, because otherwise every pass above the ceiling
+    // looks identical to every other and the chart quietly lies about the worst
+    // one.
+    if (pass.totalMs > scale.ceilingMs) bar.classList.add('ci-bar--clipped')
     bar.title = `${describePass(pass)} — ${ms(pass.totalMs)}`
     bars.append(bar)
   }

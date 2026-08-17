@@ -2894,6 +2894,34 @@ body.workbench--resizing-y * {
   background: var(--bcc-bg-inset);
   border: 1px solid var(--bcc-border);
   border-radius: 4px;
+  /* For the budget rule below. */
+  position: relative;
+}
+
+/*
+ * The 100ms budget, drawn where the bars can be read against it.
+ *
+ * Positioned from the fraction the view sets as --ci-budget-fraction, so the
+ * rule follows the chart's scale instead of assuming one. The 4px offsets match
+ * this element's own padding, so the line spans the plot area rather than the
+ * border.
+ */
+.ci-bars::after {
+  content: '';
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  height: 1px;
+  bottom: calc(4px + (100% - 8px) * var(--ci-budget-fraction, 0.66));
+  background: var(--bcc-danger);
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+/* A bar taller than the chart's ceiling, marked so it does not read as merely
+ * full-height. Without this every pass above the ceiling looks the same. */
+.ci-bar--clipped {
+  border-top: 2px solid var(--bcc-danger);
 }
 
 .ci-bar {
