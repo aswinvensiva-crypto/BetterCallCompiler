@@ -245,6 +245,30 @@ export function whyChecked(
 
   return null
 }
+/**
+ * Why this file was rechecked, in one sentence.
+ *
+ * The cause and the coldness are ADDITIVE, not alternatives. A cold pass still has
+ * a trigger, and "why was app.ts rechecked?" is still "because lib.ts changed" —
+ * that it was also the first check of the workspace is extra context, not a
+ * replacement for the answer. An earlier version returned one or the other and
+ * silently dropped the filename on exactly the pass a fresh session starts with,
+ * which is the first thing anyone would click.
+ */
+export function describeWhy(record: WhyRecord): string {
+  const cause =
+    record.trigger.length === 0
+      ? 'Rechecked by a pass that named no specific file.'
+      : record.trigger.length === 1
+        ? `Because ${record.trigger[0]} changed.`
+        : `Because ${record.trigger.length} files changed, including ${record.trigger[0]}.`
+
+  if (record.reason === 'cold') {
+    return `${cause} This was also the first check of the workspace, which builds the program and the type checker.`
+  }
+  return cause
+}
+
 
 /**
  * Plain-English reason a file was in the pass.

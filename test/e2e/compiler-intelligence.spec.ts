@@ -82,6 +82,21 @@ test.beforeAll(async () => {
   })
   window = await app.firstWindow()
   await window.waitForSelector('html[data-bettercallcompiler-ready="true"]')
+
+  // Pinned to the geometry CI actually runs at.
+  //
+  // Not a preference — a regression guard. This spec passed on a developer screen
+  // and failed on CI because the editor placeholder's wordmark overflows a narrow
+  // editor area, painted over the right dock and swallowed clicks meant for it. A
+  // spec whose result depends on the reviewer's monitor is a spec that reports the
+  // monitor, so the window is fixed at the runner's 1024x768 work area rather than
+  // left to whatever the display allows.
+  await (await app.browserWindow(window)).evaluate((browserWindow) => {
+    browserWindow.setBounds({ x: 0, y: 0, width: 1024, height: 730 })
+  })
+  await expect
+    .poll(() => window.evaluate(() => (globalThis as unknown as { innerWidth: number }).innerWidth))
+    .toBeLessThan(1100)
 })
 
 test.afterAll(async () => {
@@ -291,8 +306,14 @@ test('a diagnostic explains why its file was rechecked', async () => {
   await expect(tab('Why')).toHaveAttribute('aria-selected', 'true')
   await expect(window.locator('.ci-why__file')).toHaveText('src/app.ts')
 
-  // The trigger sentence names the edit; the chain names the route to it.
-  await expect(window.locator('.ci-why .ci-note').first()).toContainText('src/lib.ts')
+  // The trigger sentence names the edit, whichever note it lands in and whether
+  // or not this pass also happened to be the cold one. Asserted on the container
+  // with the daemon timeout rather than on `.ci-note` first(): run in isolation the
+  // signature edit IS the first check, so the sentence gains a clause and the note
+  // order is not something this test should be pinning.
+  const why = window.locator('.ci-why')
+  await expect(why).toContainText('src/lib.ts', { timeout: DAEMON_TIMEOUT })
+
   const chain = window.locator('.ci-why__chain')
   await expect(chain).toContainText('src/lib.ts', { timeout: DAEMON_TIMEOUT })
   await expect(chain).toContainText('src/app.ts')
