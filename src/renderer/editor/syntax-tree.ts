@@ -353,8 +353,101 @@ const FLOW_TYPES = new Set([
   'break_statement',
   'continue_statement',
   'await_expression',
-  'yield_expression'
+  'yield_expression',
+  // calls — the graph draws a node and a `calls` edge for each one
+  'call_expression',
+  'new_expression',
+  // visibility — the inspector colours a node by whether it is exported
+  'export_statement',
+  // complexity — `&&`, `||` and `??` are what McCabe counts beyond the branch
+  // statements above, and each one is a binary_expression node, so adding one
+  // always adds a node here even though the operator itself is anonymous
+  'binary_expression',
+  // named bindings — an arrow function takes its graph name from the declarator
+  'variable_declarator'
 ])
+
+/**
+ * Nodes whose HEADER identifies them, beyond their position.
+ *
+ * The header is everything before the body: the name, the parameters with their
+ * types, the return type, and modifiers like `async`. All of it is rendered by
+ * the inspector, and none of it was in the signature before — so renaming a
+ * function, adding `export`, or changing a parameter's type all left the diagram
+ * showing the old values.
+ */
+const HEADER_TYPES = new Set([
+  'function_declaration',
+  'function_definition',
+  'function_expression',
+  'arrow_function',
+  'generator_function_declaration',
+  'method_definition',
+  'class_declaration',
+  'class_definition',
+  'variable_declarator'
+])
+
+/**
+ * Nodes identified by what they call rather than by their whole text.
+ *
+ * Only the callee, deliberately. Taking the whole call would put its ARGUMENTS
+ * in the signature, and editing a string literal inside a call is the one case
+ * the cutoff was already correct about. Keeping that free is worth the narrower
+ * check.
+ */
+const CALLEE_TYPES = new Set(['call_expression', 'new_expression'])
+
+/** Long enough for any real signature, short enough to stay cheap to compare. */
+const HEADER_LIMIT = 120
+const CALLEE_LIMIT = 60
+
+/**
+ * A declaration's header — everything up to its body.
+ *
+ * Cut at the first `{`, `=>` or newline, whichever comes first. `{` ends a
+ * function or class header; `=>` ends an arrow's, which has no brace when its
+ * body is an expression; the newline is the backstop for anything else. Without
+ * the `=>` case an expression-bodied arrow would carry its entire body in the
+ * signature and no edit inside it would ever be free.
+ */
+function headerOf(type: string, text: string): string {
+  // A declarator contributes its NAME and nothing else. Its initialiser has
+  // nodes of its own — an arrow function carries its own header, a call its own
+  // callee — so folding it in here would mean that editing `let n = 1` to
+  // `let n = 2` rebuilt the whole diagram for a change the diagram cannot show.
+  // Measured: without this cut, that edit stopped being free.
+  const markers = type === 'variable_declarator' ? ['=', '\n'] : ['{', '=>', '\n']
+
+  let end = text.length
+  for (const marker of markers) {
+    const at = text.indexOf(marker)
+    if (at >= 0 && at < end) end = at
+  }
+  return text.slice(0, end).trim().slice(0, HEADER_LIMIT)
+}
+
+/**
+ * One node's contribution to the signature.
+ *
+ * `type@row` for most nodes, as before. Nodes that carry identity add it after a
+ * `#`, which cannot appear in a node type, so the parts stay unambiguous.
+ */
+function fingerprintOf(node: FlowNode): string {
+  const base = `${node.type}@${node.startPosition.row}`
+
+  if (HEADER_TYPES.has(node.type)) {
+    const header = headerOf(node.type, node.text ?? '')
+    return header === '' ? base : `${base}#${header}`
+  }
+
+  if (CALLEE_TYPES.has(node.type)) {
+    const callee = (node.namedChildren[0]?.text ?? '').trim().slice(0, CALLEE_LIMIT)
+    return callee === '' ? base : `${base}#${callee}`
+  }
+
+  return base
+}
 
 /**
  * The minimum a node has to look like for the signature walk.
@@ -367,6 +460,11 @@ export interface FlowNode {
   readonly type: string
   readonly startPosition: Point
   readonly namedChildren: readonly (FlowNode | null)[]
+  /**
+   * The node's source text. Optional so the walk stays testable against plain
+   * objects; real tree-sitter nodes always provide it.
+   */
+  readonly text?: string
 }
 
 /**
@@ -399,7 +497,7 @@ export function controlFlowSignature(root: FlowNode | null): string {
     const node = stack.pop()
     if (node === undefined || node === null) continue
 
-    if (FLOW_TYPES.has(node.type)) parts.push(`${node.type}@${node.startPosition.row}`)
+    if (FLOW_TYPES.has(node.type)) parts.push(fingerprintOf(node))
 
     // Pushed in reverse so siblings are visited left to right; the signature is
     // order-sensitive, and a walk whose order depended on the stack's direction

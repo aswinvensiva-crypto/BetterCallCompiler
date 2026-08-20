@@ -34,6 +34,16 @@ function node(type: string, row: number, children: FlowNode[] = []): FlowNode {
   return { type, startPosition: { row, column: 0 }, namedChildren: children }
 }
 
+/** A node carrying source text — what the real tree-sitter nodes always have. */
+function textNode(
+  type: string,
+  row: number,
+  text: string,
+  children: FlowNode[] = []
+): FlowNode {
+  return { type, startPosition: { row, column: 0 }, namedChildren: children, text }
+}
+
 describe('toEdit', () => {
   /**
    * Monaco is 1-based in rows and columns; tree-sitter is 0-based. An off-by-one
@@ -91,11 +101,13 @@ describe('controlFlowSignature', () => {
    * The claim the whole optimisation rests on: an edit that cannot change the
    * diagram must not change the signature.
    */
-  it('ignores nodes the graph does not draw', () => {
+  it('ignores node types the graph does not draw', () => {
     const before = controlFlowSignature(
       node('program', 0, [node('function_declaration', 1, [node('identifier', 1), node('return_statement', 2)])])
     )
-    // A rename: the identifier changed, nothing else did.
+    // A bare identifier and a string literal are both invisible to the diagram.
+    // (A RENAME is a different matter and is caught through the declaration's
+    // header — see the staleness cases below.)
     const after = controlFlowSignature(
       node('program', 0, [node('function_declaration', 1, [node('string_literal', 1), node('return_statement', 2)])])
     )
@@ -224,5 +236,145 @@ describe('supportsLanguage', () => {
     for (const id of ['cpp', 'c', 'rust', 'plaintext', '']) {
       expect(supportsLanguage(id)).toBe(false)
     }
+  })
+})
+
+/**
+ * The five edits that changed the diagram while leaving the old signature
+ * identical — so the cutoff fired, the rebuild was skipped, and the Visualizer
+ * kept showing the previous answer.
+ *
+ * Every field asserted here is rendered by `visualizer-inspector.ts`: the
+ * signature line, per-parameter types, visibility, the complexity metric and the
+ * calls chips. Each case is written as "these two trees must differ", because
+ * the bug was that they did not.
+ */
+describe('controlFlowSignature — staleness cases', () => {
+  const fn = (row: number, header: string, children: FlowNode[] = []): FlowNode =>
+    textNode('function_declaration', row, header, children)
+
+  it('changes when a function is renamed', () => {
+    const before = controlFlowSignature(node('program', 0, [fn(1, 'function helper() {')]))
+    const after = controlFlowSignature(node('program', 0, [fn(1, 'function renamed() {')]))
+
+    // The node label in the diagram reads `helper()`. It used to keep reading
+    // `helper()` after the rename.
+    expect(after).not.toBe(before)
+  })
+
+  it('changes when a call is added', () => {
+    const before = controlFlowSignature(node('program', 0, [fn(1, 'function f() {')]))
+    const after = controlFlowSignature(
+      node('program', 0, [
+        fn(1, 'function f() {', [textNode('call_expression', 2, "String(n)", [textNode('identifier', 2, 'String')])])
+      ])
+    )
+
+    // A call draws a whole external node plus a `calls` edge.
+    expect(after).not.toBe(before)
+  })
+
+  it('changes when the callee changes but the position does not', () => {
+    const call = (callee: string): FlowNode =>
+      textNode('call_expression', 2, `${callee}(n)`, [textNode('identifier', 2, callee)])
+
+    expect(controlFlowSignature(node('program', 0, [call('String')]))).not.toBe(
+      controlFlowSignature(node('program', 0, [call('Number')]))
+    )
+  })
+
+  it('changes when a declaration gains export', () => {
+    const before = controlFlowSignature(node('program', 0, [fn(1, 'function f() {')]))
+    const after = controlFlowSignature(
+      node('program', 0, [textNode('export_statement', 1, 'export function f() {', [fn(1, 'function f() {')])])
+    )
+
+    // Visibility drives the node's colour class.
+    expect(after).not.toBe(before)
+  })
+
+  it('changes when a logical operator is added', () => {
+    const before = controlFlowSignature(
+      node('program', 0, [node('if_statement', 1, [textNode('binary_expression', 1, 'a > 1')])])
+    )
+    const after = controlFlowSignature(
+      node('program', 0, [
+        node('if_statement', 1, [
+          textNode('binary_expression', 1, 'a > 1 && b', [textNode('binary_expression', 1, 'a > 1')])
+        ])
+      ])
+    )
+
+    // McCabe counts `&&`, `||` and `??`. The operator itself is an anonymous
+    // child, but adding one always adds a binary_expression node.
+    expect(after).not.toBe(before)
+  })
+
+  it('changes when a parameter type changes', () => {
+    const before = controlFlowSignature(node('program', 0, [fn(1, 'function classify(n: number) {')]))
+    const after = controlFlowSignature(node('program', 0, [fn(1, 'function classify(n: bigint) {')]))
+
+    // The inspector prints one row per parameter with its type.
+    expect(after).not.toBe(before)
+  })
+
+  it('changes when a function becomes async', () => {
+    const before = controlFlowSignature(node('program', 0, [fn(1, 'function f() {')]))
+    const after = controlFlowSignature(node('program', 0, [fn(1, 'async function f() {')]))
+
+    expect(after).not.toBe(before)
+  })
+})
+
+/**
+ * What the cutoff must still make free, or widening the signature has simply
+ * traded one bug for a slower editor.
+ */
+describe('controlFlowSignature — edits that must stay free', () => {
+  it('ignores a string literal inside a call', () => {
+    const call = (arg: string): FlowNode =>
+      textNode('call_expression', 2, `greet(${arg})`, [textNode('identifier', 2, 'greet')])
+
+    // Only the CALLEE is in the signature, never the arguments — which is why
+    // editing a string inside a call costs nothing.
+    expect(controlFlowSignature(node('program', 0, [call("'a'")]))).toBe(
+      controlFlowSignature(node('program', 0, [call("'zzz'")]))
+    )
+  })
+
+  it('ignores an expression-bodied arrow function’s body', () => {
+    const arrow = (body: string): FlowNode =>
+      textNode('arrow_function', 1, `(a) => ${body}`)
+
+    // The header is cut at `=>`, so the body is out of the signature. Without
+    // that cut an arrow would carry its whole body and no edit inside one would
+    // ever be free.
+    expect(controlFlowSignature(node('program', 0, [arrow('a + 1')]))).toBe(
+      controlFlowSignature(node('program', 0, [arrow('a * 2')]))
+    )
+  })
+
+  it('ignores a function body edit', () => {
+    const before = controlFlowSignature(
+      node('program', 0, [textNode('function_declaration', 1, 'function f(): string {\n  return "a"\n}')])
+    )
+    const after = controlFlowSignature(
+      node('program', 0, [textNode('function_declaration', 1, 'function f(): string {\n  return "bbb"\n}')])
+    )
+
+    expect(after).toBe(before)
+  })
+
+  it('ignores re-indentation, because the column is not in the signature', () => {
+    const indented: FlowNode = {
+      type: 'function_declaration',
+      startPosition: { row: 1, column: 8 },
+      namedChildren: [],
+      text: 'function f() {'
+    }
+
+    expect(controlFlowSignature(node('program', 0, [indented]))).toBe(
+      controlFlowSignature(node('program', 0, [textNode('function_declaration', 1, 'function f() {')]))
+    )
   })
 })
