@@ -214,3 +214,37 @@ test('the Visualizer renders with no CSP violations or console errors', async ()
   expect(csp).toEqual([])
   expect(consoleProblems).toEqual([])
 })
+
+/**
+ * The syntax tree's lifecycle, which the Visualizer's early cutoff depends on.
+ *
+ * The cutoff answers "has the control flow changed?" from a tree-sitter tree
+ * held per document URI. If that tree outlives the document it describes, the
+ * answer is confidently wrong — and a wrong "no" means the panel never redraws.
+ */
+test('a file changed on disk while closed is re-parsed, not answered from the old tree', async () => {
+  await openInVisualizer('sample.js')
+  await expect(window.locator('.viz-canvas__svg')).toContainText('classify', { timeout: 20_000 })
+
+  // Close the tab. This is what used to leave the tree behind: `models.close`
+  // disposed the Monaco model and told the daemon, but never released the
+  // syntax document, so the entry survived under the same URI.
+  await window.locator('.tab--active .tab__close').click()
+  // This file's tab specifically, not the tab count: earlier specs in this file
+  // leave their own tabs open, and asserting on the total would make this test
+  // report their state rather than its own.
+  await expect(window.locator('.tab', { hasText: 'sample.js' })).toHaveCount(0)
+
+  // Change it underneath us. Same file, same language, same URI on reopen — the
+  // three things the old reuse check compared.
+  await writeFile(
+    join(fixture, 'src', 'sample.js'),
+    'export function reclassify(value) {\n  if (value > 10) {\n    return "big"\n  }\n  return "small"\n}\n'
+  )
+
+  await openInVisualizer('sample.js')
+
+  const svg = window.locator('.viz-canvas__svg')
+  await expect(svg).toContainText('reclassify', { timeout: 20_000 })
+  await expect(svg).not.toContainText('classify(')
+})
