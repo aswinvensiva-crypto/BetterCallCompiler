@@ -310,7 +310,22 @@ function registerVisualizerFeed(editor: monacoNs.editor.IStandaloneCodeEditor): 
     schedule()
   })
   editor.onDidChangeModelContent(schedule)
-  editor.onDidChangeModel(schedule)
+
+  editor.onDidChangeModel(() => {
+    // Both caches describe the PREVIOUS model instance and must not be compared
+    // against the new one.
+    //
+    // `rebuildKey` is `file <uri> <versionId>`, and a version id belongs to a
+    // model, not to a file — closing a tab and reopening the same path creates a
+    // fresh model whose version starts again at 1. The key therefore collided
+    // with the one from before the close, the guard decided nothing had changed,
+    // and the Visualizer kept drawing the old file even though its contents had
+    // been replaced on disk. The uri alone could not catch it: it is the same
+    // uri, which is exactly why the collision happened.
+    rebuildKey = ''
+    flowSignature = null
+    schedule()
+  })
 }
 
 /**

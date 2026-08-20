@@ -244,7 +244,13 @@ export async function openDocument(
   text: string
 ): Promise<boolean> {
   const existing = documents.get(key)
-  if (existing !== undefined && existing.languageId === languageId) return true
+  // The TEXT has to match too, not just the language. A file closed, changed on
+  // disk and reopened arrives here with the same key and the same language, and
+  // reusing the old entry left the tree describing text that no longer existed —
+  // so every signature taken from it was confidently wrong.
+  if (existing !== undefined && existing.languageId === languageId && existing.text === text) {
+    return true
+  }
   if (existing !== undefined) closeDocument(key)
 
   const language = await languageFor(languageId)

@@ -2,6 +2,7 @@ import type * as monacoNs from 'monaco-editor'
 import { languageForFile } from './language-id'
 import { loadMonaco } from './monaco-setup'
 import { flushPendingMarkers } from './markers'
+import { closeDocument as closeSyntaxDocument } from './syntax-tree'
 import type { FileNode } from '../../shared/types'
 
 /**
@@ -258,6 +259,15 @@ export function close(path: string): void {
   void window.betterCallCompiler.compiler.closeDocument({
     relativePath: doc.node.relativePath
   })
+
+  // Before dispose, and keyed on the URI rather than on `keyFor(path)`: the
+  // syntax layer indexes documents by `model.uri.toString()`, which is what
+  // registerSyntaxFeed passes when it adopts a model.
+  //
+  // Without this every file ever opened kept a tree-sitter Parser and Tree alive
+  // for the whole session — `closeAllDocuments()` existed in that module and had
+  // no caller anywhere, which was the tell that the lifecycle was never wired.
+  closeSyntaxDocument(doc.model.uri.toString())
 
   doc.model.dispose()
 
