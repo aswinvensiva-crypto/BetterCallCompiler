@@ -8,6 +8,7 @@
     "src/main/**/*.ts",
     "src/preload/**/*.ts",
     "src/shared/**/*.ts",
+    "src/lang/**/*.ts",
     "test/unit/**/*.ts",
     "test/e2e/**/*.ts",
     "test/fixtures/**/*.ts",
