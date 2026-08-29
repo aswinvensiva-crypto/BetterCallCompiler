@@ -173,7 +173,28 @@ export function typeCheck(program: Program, resolution: Resolution): TypeInfo {
       case 'Name': {
         const symbol = resolution.uses.get(expr)
         // Absent means the resolver reported it. Silence, not a second message.
-        return record(expr, symbol === undefined ? ERROR : typeOfSymbol(symbol))
+        if (symbol === undefined) return record(expr, ERROR)
+
+        if (symbol.kind === 'function') {
+          // Reached only OUTSIDE a call, because `checkCallee` handles the
+          // callee position before this runs.
+          //
+          // Without this rule `let g = f;` type-checks and gives `g` a function
+          // type, and `g()` then type-checks too — so the language would have
+          // first-class functions by accident, and lowering would need an
+          // indirect call the VM has no way to make. Closing it here means
+          // `lower.ts` can read a callee's name directly and never guess.
+          diagnostics.push(
+            error(
+              'BCC0019',
+              `'${expr.text}' is a function — BCC has no function values, so it can only be called`,
+              expr.span
+            )
+          )
+          return record(expr, ERROR)
+        }
+
+        return record(expr, typeOfSymbol(symbol))
       }
 
       case 'Unary': {
@@ -255,7 +276,7 @@ export function typeCheck(program: Program, resolution: Resolution): TypeInfo {
       }
 
       case 'Call': {
-        const callee = check(expr.callee)
+        const callee = checkCallee(expr.callee)
         const args = expr.args.map(check)
 
         if (isError(callee)) return record(expr, ERROR)
@@ -300,6 +321,25 @@ export function typeCheck(program: Program, resolution: Resolution): TypeInfo {
         return record(expr, callee.result)
       }
     }
+  }
+
+  /**
+   * A call's callee, where naming a function is the one legal thing to do with
+   * one.
+   *
+   * Everywhere else a function name is BCC0019. Splitting the two positions
+   * here rather than threading a flag through `check` keeps the rule in one
+   * readable place, and keeps `f()()` reporting BCC0014 — the inner call
+   * returns an int, which is genuinely not callable.
+   */
+  const checkCallee = (expr: Expr): Type => {
+    if (expr.kind === 'Name') {
+      const symbol = resolution.uses.get(expr)
+      if (symbol !== undefined && symbol.kind === 'function') {
+        return record(expr, typeOfSymbol(symbol))
+      }
+    }
+    return check(expr)
   }
 
   /** Reports a mismatch unless one side is already poisoned. */
