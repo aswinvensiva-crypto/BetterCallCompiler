@@ -3,11 +3,17 @@ import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import {
   coalesceBatches,
-  countSeverities,
   isWorkerMessage,
   type WorkerMessage,
   type WorkerRequest
 } from '../shared/compiler-protocol'
+import {
+  clearOwner,
+  diagnosticCounts,
+  diagnosticsForPath,
+  publishDiagnostics,
+  resetDiagnosticStore
+} from './diagnostic-store'
 import type {
   CompilerDaemonState,
   CompilerPass,
@@ -24,9 +30,10 @@ import { stoppedCompilerStatus } from '../shared/types'
  *
  * Same shape as `terminal.ts` and `runner.ts`: module-scope handle, emitters
  * injected from `index.ts`, disposal from both window close and app quit. It
- * owns the authoritative diagnostics map so a `compiler:diagnostics` pull is
- * answered without a worker round trip — a lazily-mounted Problems panel must
- * not wait for the next push to show anything.
+ * publishes into the authoritative diagnostics store so a
+ * `compiler:diagnostics` pull is answered without a worker round trip — a
+ * lazily-mounted Problems panel must not wait for the next push to show
+ * anything.
  */
 
 /** Matches `terminal.ts`'s 12ms flush in shape; 50ms because checks are slower. */
@@ -84,8 +91,13 @@ let heapUsedMb = 0
 let graphSummary = stoppedCompilerStatus().graph
 let checkedFileCount = 0
 
-/** Authoritative per-file diagnostics; answers pulls without a round trip. */
-const diagnosticsByPath = new Map<string, FileDiagnostics>()
+/*
+ * Per-file diagnostics live in `diagnostic-store.ts` rather than here, because
+ * BCC's daemon publishes into the same map and the renderer must not need to
+ * know there are two producers. Entries remember their owner, so the clear on
+ * restart below drops only this daemon's — a TypeScript crash leaves BCC's
+ * squiggles alone, which is the "separate failure domains" claim made real.
+ */
 
 /** Open buffers, replayed after a restart so the daemon never loses them. */
 const openDocuments = new Map<string, { content: string; version: number }>()
@@ -137,7 +149,8 @@ export function setWorkerFactory(factory: WorkerFactory | null): void {
 }
 
 export function compilerStatus(): CompilerStatus {
-  const { errorCount, warningCount } = countSeverities([...diagnosticsByPath.values()])
+  // Totals across BOTH compilers: the status bar counts problems, not producers.
+  const { errorCount, warningCount } = diagnosticCounts()
   return {
     state,
     graph: graphSummary,
@@ -227,7 +240,7 @@ function scheduleRestart(reason: string): void {
 
   // Diagnostics from a dead worker are not trustworthy, and leaving them would
   // strand markers for state nobody is maintaining any more.
-  diagnosticsByPath.clear()
+  clearOwner('typescript')
   flushNow(true)
 
   const now = Date.now()
@@ -302,12 +315,10 @@ function receive(message: WorkerMessage): void {
       return
 
     case 'diagnostics':
-      for (const file of message.files) {
-        // The map is authoritative, so it is updated immediately even though
-        // the emit is debounced — a pull between batches must be accurate.
-        diagnosticsByPath.set(file.relativePath, file)
-        pendingDiagnostics.push(file)
-      }
+      // The store is authoritative, so it is updated immediately even though
+      // the emit is debounced — a pull between batches must be accurate.
+      publishDiagnostics('typescript', message.files)
+      for (const file of message.files) pendingDiagnostics.push(file)
       pendingSettled = pendingSettled || message.settled
       scheduleFlush()
       return
@@ -416,7 +427,7 @@ export function stopCompiler(): void {
   worker = null
   if (dying !== null) void dying.terminate()
 
-  diagnosticsByPath.clear()
+  clearOwner('typescript')
   openDocuments.clear()
   // A restarted daemon re-derives everything from cold, so its timings are not
   // comparable with the previous one's. Keeping the old passes would put a warm
@@ -451,10 +462,16 @@ export function compilerPasses(): CompilerPass[] {
   return [...passes]
 }
 
+/**
+ * Answers a pull without a worker round trip.
+ *
+ * Reads the shared store, so a `.bcc` file's diagnostics come back through the
+ * same call the renderer already makes. Named for the compiler daemon for
+ * historical reasons; it is really "diagnostics for this path, whoever
+ * produced them".
+ */
 export function diagnosticsFor(relativePath: string | null): FileDiagnostics[] {
-  if (relativePath === null) return [...diagnosticsByPath.values()]
-  const entry = diagnosticsByPath.get(relativePath)
-  return entry === undefined ? [] : [entry]
+  return diagnosticsForPath(relativePath)
 }
 
 export function openDocument(relativePath: string, content: string, version: number): void {
@@ -495,6 +512,9 @@ export function dependentsOf(
 /** Test seam: resets every module-level value between cases. */
 export function resetCompilerForTests(): void {
   stopCompiler()
+  // The whole store, not just this owner: a test that published as 'bcc' must
+  // not leak counts into the next one's `compilerStatus()`.
+  resetDiagnosticStore()
   workerFactory = null
   workspaceRoot = null
   emitDiagnostics = null

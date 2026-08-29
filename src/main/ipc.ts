@@ -23,6 +23,13 @@ import {
   restartCompiler,
   startCompiler
 } from './compiler-service'
+import { isBccPath } from '../shared/lang-diagnostics'
+import {
+  closeLangDocument,
+  openLangDocument,
+  restartLang,
+  startLang
+} from './lang-service'
 import {
   createDirectory,
   createFile,
@@ -148,6 +155,7 @@ export function createHandlerMap(): HandlerMap {
       // Not awaited: the daemon indexes in the background, and blocking the
       // open-folder response on it would stall the explorer behind a full walk.
       startCompiler(workspace.root)
+      startLang(workspace.root)
       return workspace
     },
 
@@ -345,16 +353,26 @@ export function createHandlerMap(): HandlerMap {
     'compiler:dependents': async (request) => ({
       graph: await compilerDependentsOf(request.relativePath, request.from)
     }),
+    // Routed by extension rather than given its own channel. A `.bcc` buffer
+    // and a `.ts` buffer are the same event to the editor, and adding a second
+    // pair of channels would mean the renderer had to know which compiler owns
+    // a file — which is exactly the knowledge this design keeps out of it.
     'compiler:openDocument': (request) => {
-      openCompilerDocument(request.relativePath, request.content, request.version)
+      if (isBccPath(request.relativePath)) {
+        openLangDocument(request.relativePath, request.content, request.version)
+      } else {
+        openCompilerDocument(request.relativePath, request.content, request.version)
+      }
       return { accepted: true as const }
     },
     'compiler:closeDocument': (request) => {
-      closeCompilerDocument(request.relativePath)
+      if (isBccPath(request.relativePath)) closeLangDocument(request.relativePath)
+      else closeCompilerDocument(request.relativePath)
       return { closed: true as const }
     },
     'compiler:restart': () => {
       restartCompiler()
+      restartLang()
       return { restarted: true as const }
     },
     'compiler:passes': () => ({ passes: compilerPasses() }),

@@ -7,6 +7,7 @@ import JsonWorker from 'monaco-editor/language/json/json.worker?worker'
 import CssWorker from 'monaco-editor/language/css/css.worker?worker'
 import HtmlWorker from 'monaco-editor/language/html/html.worker?worker'
 import TsWorker from 'monaco-editor/language/typescript/ts.worker?worker'
+import { registerBccLanguage } from './bcc-language'
 
 /**
  * Monaco worker wiring.
@@ -115,6 +116,7 @@ export function loadMonaco(): Promise<typeof monacoNs> {
 
     defineTheme(ns)
     configureLanguageDefaults(register)
+    registerBccLanguage(ns)
 
     runtime = ns
     return ns

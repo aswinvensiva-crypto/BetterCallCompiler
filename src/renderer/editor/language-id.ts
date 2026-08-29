@@ -12,6 +12,9 @@
  * toolchain probe cares about.
  */
 const LANGUAGE_BY_EXTENSION: Readonly<Record<string, string>> = {
+  // The language this IDE compiles itself. Registered with Monaco in
+  // `bcc-language.ts`; the id must match the one used there.
+  bcc: 'bcc',
   ts: 'typescript',
   tsx: 'typescript',
   mts: 'typescript',

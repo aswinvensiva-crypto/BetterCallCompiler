@@ -18,6 +18,7 @@
     "test:e2e": "playwright test",
     "test:asar": "node test/asar/run-matrix.mjs",
     "test:query": "node test/query/run-cutoff-proof.mjs",
+    "test:lang": "node test/lang/run-lang-proof.mjs",
     "test:gc": "node test/gc/run-gc-control.mjs",
     "rebuild": "electron-rebuild",
     "build:win": "npm run build && electron-builder --win --config electron-builder.yml",

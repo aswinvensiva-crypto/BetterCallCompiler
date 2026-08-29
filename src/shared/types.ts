@@ -530,7 +530,7 @@ export type DiagnosticSeverity = z.infer<typeof diagnosticSeveritySchema>
  * under one Monaco marker owner, so a single `setModelMarkers` call replaces
  * the complete set for a file.
  */
-export const diagnosticSourceSchema = z.enum(['typescript', 'graph'])
+export const diagnosticSourceSchema = z.enum(['typescript', 'graph', 'bcc'])
 export type DiagnosticSource = z.infer<typeof diagnosticSourceSchema>
 
 export const diagnosticMessageSchema = z.strictObject({

@@ -24,7 +24,12 @@ export default defineConfig({
           // this lands at out/main/compiler-worker.js next to index.js, which
           // is why the spawn path can be a plain join(__dirname, …) with no
           // packaged-vs-dev branch.
-          'compiler-worker': resolve(__dirname, 'src/main/compiler-worker.ts')
+          'compiler-worker': resolve(__dirname, 'src/main/compiler-worker.ts'),
+          // Likewise for BCC's daemon. A second entry rather than a second
+          // config: both are worker_thread targets with the same constraints,
+          // and an entry that is missing from the build fails at spawn with a
+          // message naming the file — see the existsSync guard in each service.
+          'lang-worker': resolve(__dirname, 'src/main/lang-worker.ts')
         }
       }
     }
