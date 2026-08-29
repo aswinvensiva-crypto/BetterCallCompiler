@@ -17,6 +17,10 @@ import type { Span } from './token'
  *
  * Codes are what the Observatory, the Problems panel and the AI key on. The
  * message is for a human and may be reworded; the code may not.
+ *
+ * Grouped by the stage that raises them rather than numbered contiguously per
+ * stage, because a stage can grow a new diagnostic later and the next free
+ * number is the only one it can safely take.
  */
 
 export type DiagnosticCode =
@@ -30,6 +34,19 @@ export type DiagnosticCode =
   | 'BCC0005'
   | 'BCC0006'
   | 'BCC0007'
+  // Resolution — raised by `symbols.ts`
+  | 'BCC0008'
+  | 'BCC0009'
+  | 'BCC0010'
+  | 'BCC0018'
+  // Types — raised by `type-check.ts`
+  | 'BCC0011'
+  | 'BCC0012'
+  | 'BCC0013'
+  | 'BCC0014'
+  | 'BCC0015'
+  | 'BCC0016'
+  | 'BCC0017'
 
 export type DiagnosticSeverity = 'error' | 'warning'
 
@@ -56,7 +73,18 @@ export const DIAGNOSTIC_TITLES: Readonly<Record<DiagnosticCode, string>> = {
   BCC0004: 'expected an expression',
   BCC0005: 'integer literal out of range',
   BCC0006: 'invalid assignment target',
-  BCC0007: 'nesting too deep to parse'
+  BCC0007: 'nesting too deep to parse',
+  BCC0008: 'name not found',
+  BCC0009: 'name already declared in this scope',
+  BCC0010: 'nested function',
+  BCC0011: 'unknown type name',
+  BCC0012: 'type mismatch',
+  BCC0013: 'operator cannot be applied to these types',
+  BCC0014: 'not a function',
+  BCC0015: 'wrong number of arguments',
+  BCC0016: 'not all paths return a value',
+  BCC0017: 'return outside a function',
+  BCC0018: 'cannot assign to a function'
 }
 
 export function error(code: DiagnosticCode, message: string, span: Span): Diagnostic {

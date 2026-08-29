@@ -28,12 +28,21 @@ import { fileURLToPath } from 'node:url'
  *   4. A watch event for a file whose bytes did not change costs nothing —
  *      the engine's early exit, which is what makes the pipeline incremental.
  *   5. Deleting a file that had errors clears its row.
+ *   6. A type error reaches the editor exactly like a syntax error does, merged
+ *      into position order, with no cascade from one mistake.
  */
 
 const WORKER = join(fileURLToPath(new URL('../../', import.meta.url)), 'out/main/lang-worker.js')
 
 const CLEAN = 'fn add(a: int, b: int) -> int {\n  return a + b;\n}\n'
 const BROKEN = 'fn add(a: int, b: int) -> int {\n  return a + b\n}\n'
+
+/** Parses cleanly; the type checker is the one that objects. */
+const TYPE_ERROR = 'fn add(a: int, b: int) -> int {\n  return a + true;\n}\n'
+/** One name nobody declared, used three times. */
+const CASCADE = 'print nope + nope * nope;\n'
+/** A syntax error on line 1 and a type error on line 2, found by different stages. */
+const MIXED = 'let a = 1\nprint true + 1;\n'
 
 function makeWorkspace() {
   const root = mkdtempSync(join(tmpdir(), 'bcc-lang-'))
@@ -191,6 +200,48 @@ try {
 
   console.log('\n--- the broken file is deleted ---')
   check('an empty set for a file that no longer exists', fileIn(deleted, 'examples/bad.bcc').diagnostics.length, 0)
+
+  /* --- 6. the type checker reaches the editor too -------------------------- */
+
+  // The point of Part 4 landing behind the SAME query pipeline: a type error is
+  // not a different kind of thing to the editor, it is another diagnostic with
+  // another code.
+  writeFileSync(join(root, 'examples', 'good.bcc'), TYPE_ERROR, 'utf8')
+  worker.postMessage({ type: 'filesChanged', changed: ['examples/good.bcc'], removed: [] })
+  const typed = await next(worker, 'diagnostics')
+
+  console.log('\n--- a type error, not a syntax error ---')
+  const typedDiagnostics = fileIn(typed, 'examples/good.bcc').diagnostics
+  check('one diagnostic', typedDiagnostics.length, 1)
+  check('the operator complains', typedDiagnostics[0].code, 'BCC0013')
+  check('reported on line 2', typedDiagnostics[0].startLine, 2)
+
+  // One message per name the user has to fix, and NOT the extra operator errors
+  // that would pile on without the poison type.
+  writeFileSync(join(root, 'examples', 'good.bcc'), CASCADE, 'utf8')
+  worker.postMessage({ type: 'filesChanged', changed: ['examples/good.bcc'], removed: [] })
+  const cascade = await next(worker, 'diagnostics')
+
+  console.log('\n--- one mistake does not become five ---')
+  check(
+    'three name errors and nothing else',
+    fileIn(cascade, 'examples/good.bcc').diagnostics.map((d) => d.code),
+    ['BCC0008', 'BCC0008', 'BCC0008']
+  )
+
+  // Three stages report in their own walk orders. The Problems panel renders in
+  // the order it receives, so they have to be merged by position or a type
+  // error on line 2 lands above a syntax error on line 1.
+  writeFileSync(join(root, 'examples', 'good.bcc'), MIXED, 'utf8')
+  worker.postMessage({ type: 'filesChanged', changed: ['examples/good.bcc'], removed: [] })
+  const mixed = await next(worker, 'diagnostics')
+
+  console.log('\n--- stages merged in position order ---')
+  check(
+    'syntax first, then the type error',
+    fileIn(mixed, 'examples/good.bcc').diagnostics.map((d) => `${d.startLine}:${d.code}`),
+    ['1:BCC0003', '2:BCC0013']
+  )
 } finally {
   await worker.terminate()
   rmSync(root, { recursive: true, force: true })

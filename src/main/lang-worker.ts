@@ -5,6 +5,8 @@ import type { Token } from '../lang/token'
 import type { Diagnostic } from '../lang/diagnostic'
 import { tokenize } from '../lang/lexer'
 import { parse, type ParseResult } from '../lang/parser'
+import { resolve, type Resolution } from '../lang/symbols'
+import { typeCheck, type TypeInfo } from '../lang/type-check'
 import { BCC_EXTENSION, toDiagnosticMessages } from '../shared/lang-diagnostics'
 import {
   isLangRequest,
@@ -27,15 +29,14 @@ import type { DiagnosticMessage, FileDiagnostics } from '../shared/types'
  *
  * ## The pipeline
  *
- * `text → tokens → ast → diagnostics`, as four queries on this worker's own
- * `createEngine()`. `text` is the only input; everything else is derived and so
- * is computed on demand and never eagerly.
+ * `text → tokens → ast → symbols → types → diagnostics`, as six queries on this
+ * worker's own `createEngine()`. `text` is the only input; everything else is
+ * derived and so is computed on demand and never eagerly.
  *
- * Part 4 inserts `symbols` and `types` between `ast` and `diagnostics` without
- * disturbing the ends. Part 12 makes the cutoff between the stages real —
- * today the engine buys correct per-file invalidation and a free skip when a
- * watch event names a file whose content did not actually change, which is
- * common (editors write, formatters rewrite, git checkouts touch everything).
+ * Part 12 makes the cutoff between the stages real — today the engine buys
+ * correct per-file invalidation and a free skip when a watch event names a file
+ * whose content did not actually change, which is common (editors write,
+ * formatters rewrite, git checkouts touch everything).
  *
  * ## No dependency graph
  *
@@ -105,6 +106,8 @@ function toAbsolute(root: string, relativePath: string): string {
 const Q_TEXT = 'text'
 const Q_TOKENS = 'tokens'
 const Q_AST = 'ast'
+const Q_SYMBOLS = 'symbols'
+const Q_TYPES = 'types'
 const Q_DIAG = 'diag'
 
 const engine = createEngine()
@@ -119,16 +122,43 @@ engine.defineQuery(Q_AST, (relativePath, ctx) => {
   return parse(tokens)
 })
 
+engine.defineQuery(Q_SYMBOLS, (relativePath, ctx) => {
+  const { program } = ctx.get<ParseResult>(queryKey(Q_AST, relativePath))
+  return resolve(program)
+})
+
+engine.defineQuery(Q_TYPES, (relativePath, ctx) => {
+  const { program } = ctx.get<ParseResult>(queryKey(Q_AST, relativePath))
+  const resolution = ctx.get<Resolution>(queryKey(Q_SYMBOLS, relativePath))
+  return typeCheck(program, resolution)
+})
+
 engine.defineQuery(Q_DIAG, (relativePath, ctx) => {
   const root = workspaceRoot
   if (root === null) return []
 
-  const { diagnostics } = ctx.get<ParseResult>(queryKey(Q_AST, relativePath))
-  return toDiagnosticMessages(
-    relativePath,
-    toAbsolute(root, relativePath),
-    diagnostics as readonly Diagnostic[]
-  )
+  const parsed = ctx.get<ParseResult>(queryKey(Q_AST, relativePath))
+  const resolution = ctx.get<Resolution>(queryKey(Q_SYMBOLS, relativePath))
+  const typed = ctx.get<TypeInfo>(queryKey(Q_TYPES, relativePath))
+
+  // Every stage's diagnostics, merged and sorted by position.
+  //
+  // Sorted because the Problems panel renders them in the order it receives
+  // them, and three stages each reporting in their own walk order would list a
+  // type error on line 2 above a syntax error on line 1. Position order is the
+  // only order a reader can predict.
+  //
+  // All three stages run even when an earlier one found something. A file with
+  // a syntax error still gets symbols and types for the parts that parsed,
+  // which is what the Observatory and any future hover need — and the parser's
+  // `ErrorExpr` types as `error`, so it costs no extra noise.
+  const all: Diagnostic[] = [
+    ...parsed.diagnostics,
+    ...resolution.diagnostics,
+    ...typed.diagnostics
+  ].sort((a, b) => a.span.offset - b.span.offset)
+
+  return toDiagnosticMessages(relativePath, toAbsolute(root, relativePath), all)
 })
 
 /**
