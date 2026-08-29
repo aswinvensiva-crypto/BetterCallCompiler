@@ -17,11 +17,18 @@ import { disposeAllSessions, setTerminalEmitters } from './terminal'
 import { cancelAllRuns, setRunEmitters } from './runner'
 import { setGitChangeEmitter, startGitWatch, stopGitWatch } from './git-service'
 import {
+  compilerStatus,
   notifyWatchEvent,
   setCompilerEmitters,
   startCompiler,
   stopCompiler
 } from './compiler-service'
+import {
+  notifyLangWatchEvent,
+  setLangEmitters,
+  startLang,
+  stopLang
+} from './lang-service'
 import { cancelAllAiStreams, setAiEmitters } from './ai-service'
 import { buildCspHeader, isAllowedExternalUrl, isInternalNavigation } from './security'
 import { closeVisualizerWindow, setVisualizerHostWindow } from './visualizer-window'
@@ -124,6 +131,7 @@ function createWindow(): BrowserWindow {
   setWatchEmitter((event) => {
     emitEvent(win, 'fs:watchEvent', event)
     notifyWatchEvent(event)
+    notifyLangWatchEvent(event)
   })
   setCompilerEmitters(
     (batch) => emitEvent(win, 'compiler:diagnosticsChanged', batch),
@@ -133,7 +141,15 @@ function createWindow(): BrowserWindow {
   // Started here, not where the argv folder is adopted: that runs before this
   // window exists, so a daemon booted there would emit its first status into a
   // null emitter and the renderer would never learn it had started.
+  // Both diagnostics streams land on the SAME renderer event. That is the
+  // whole integration: the Problems panel, the markers and the status bar
+  // cannot tell which compiler produced a row, and none of them changed.
+  setLangEmitters(
+    (batch) => emitEvent(win, 'compiler:diagnosticsChanged', batch),
+    () => emitEvent(win, 'compiler:statusChanged', compilerStatus())
+  )
   startCompiler(getWorkspace().root)
+  startLang(getWorkspace().root)
   setTerminalEmitters(
     (id, data) => emitEvent(win, 'terminal:data', { id, data }),
     (payload) => emitEvent(win, 'terminal:exit', payload)
@@ -165,6 +181,7 @@ function createWindow(): BrowserWindow {
     cancelAllRuns()
     cancelAllAiStreams()
     stopCompiler()
+    stopLang()
   })
 
   const devUrl = devServerUrl()
@@ -369,6 +386,7 @@ if (!gotLock) {
     cancelAllRuns()
     cancelAllAiStreams()
     stopCompiler()
+    stopLang()
     void stopWatching()
     void stopGitWatch()
   })
