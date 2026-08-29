@@ -180,6 +180,53 @@ test('an unsaved edit is checked from the buffer, not from disk', async () => {
   })
 })
 
+/**
+ * The type checker, end to end.
+ *
+ * It went in behind the same query pipeline and the same `FileDiagnostics`
+ * shape, so nothing between the worker and the squiggle knows it exists. This
+ * is the assertion that says so: a type error is not a different kind of thing
+ * to the editor, it is another diagnostic with another code.
+ */
+/**
+ * Scoped to one file's group rather than to the whole panel.
+ *
+ * The test above leaves an UNSAVED buffer on add.bcc, and the daemon correctly
+ * prefers a buffer to what is on disk — so writing to that file here would
+ * change nothing, and asserting on the panel's whole contents would depend on
+ * which tests ran first. Each of the two below owns a file nothing else touches.
+ */
+const rowsFor = (relativePath: string) =>
+  window.locator('.problems-group').filter({ hasText: relativePath })
+
+test('a type error reaches the editor too, with its own code', async () => {
+  await writeFile(
+    join(fixture, 'examples', 'typed.bcc'),
+    'fn add(a: int, b: int) -> int {\n  return a + true;\n}\n'
+  )
+
+  await openProblems()
+  const group = rowsFor('examples/typed.bcc')
+  await expect(group.locator('.problems-row__code')).toHaveText(['BCC0013'], {
+    timeout: DAEMON_TIMEOUT
+  })
+  await expect(group.locator('.problems-row__message')).toContainText('needs int operands')
+  // The operator, not the whole expression: `+` is what is wrong.
+  await expect(group.locator('.problems-row__position')).toHaveText('2:12')
+})
+
+test('a name the program never declares is reported where it is used', async () => {
+  await writeFile(join(fixture, 'examples', 'named.bcc'), 'print nope;\n')
+
+  await openProblems()
+  const group = rowsFor('examples/named.bcc')
+  await expect(group.locator('.problems-row__code')).toHaveText(['BCC0008'], {
+    timeout: DAEMON_TIMEOUT
+  })
+  // Column 7, under `nope` itself rather than at the start of the line.
+  await expect(group.locator('.problems-row__position')).toHaveText('1:7')
+})
+
 test('nothing threw in the renderer', () => {
   expect(consoleProblems).toEqual([])
 })
