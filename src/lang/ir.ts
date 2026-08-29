@@ -356,7 +356,7 @@ export function usesOf(instruction: Instruction): ValueId[] {
       break
     case 'phi':
       // The incoming values. A phi "uses" them on the EDGE rather than in its
-      // own block, which is why `verifySsa` checks them against the
+      // own block, which is why `verify.ts` checks them against the
       // predecessor's dominance and not against this block's — but for liveness
       // and for dead-code elimination they are ordinary uses.
       for (const incoming of instruction.incoming) add(incoming.value)

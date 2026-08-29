@@ -112,6 +112,13 @@ jobs:
       - name: Incremental cutoff proof
         run: npm run test:query
 
+      # The same shape for the BCC daemon: walk, overlays, the clean sweep and
+      # the merge of three stages' diagnostics, against the built worker rather
+      # than a fake. It was added with the daemon and never wired here, so the
+      # one thing guarding that worker has not been running on any pull request.
+      - name: BCC daemon proof
+        run: npm run test:lang
+
       # Screenshots, traces and the error-context markdown Playwright writes for
       # a failure. Without these a red E2E run on a machine nobody can reach is
       # a stack trace and a guess.

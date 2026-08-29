@@ -65,17 +65,26 @@ export function lower(
   resolution: Resolution,
   typeInfo: TypeInfo
 ): Module {
+  // The names this module will actually contain. A call to anything else — a
+  // variable, or a nested function that is reported and never lowered — has no
+  // callee to name, so the Call case below poisons it rather than emitting IR
+  // that references a function nobody defines.
+  const lowered = new Set<string>([TOP_LEVEL_FUNCTION])
+  for (const statement of program.statements) {
+    if (statement.kind === 'Function') lowered.add(statement.name.text)
+  }
+
   const functions: IrFunction[] = []
 
   for (const statement of program.statements) {
     if (statement.kind !== 'Function') continue
-    functions.push(lowerFunction(statement, resolution, typeInfo))
+    functions.push(lowerFunction(statement, resolution, typeInfo, lowered))
   }
 
   // Everything that is not a function declaration becomes the program's body.
   // Emitted even when empty, so Part 9 always has an entry point to run.
   const topLevel = program.statements.filter((statement) => statement.kind !== 'Function')
-  functions.push(lowerTopLevel(topLevel, program.span, resolution, typeInfo))
+  functions.push(lowerTopLevel(topLevel, program.span, resolution, typeInfo, lowered))
 
   return { functions }
 }
@@ -108,9 +117,16 @@ interface PendingBlock {
 function lowerFunction(
   declaration: FunctionDecl,
   resolution: Resolution,
-  typeInfo: TypeInfo
+  typeInfo: TypeInfo,
+  lowered: ReadonlySet<string>
 ): IrFunction {
-  const builder = createBuilder(declaration.name.text, declaration.span, resolution, typeInfo)
+  const builder = createBuilder(
+    declaration.name.text,
+    declaration.span,
+    resolution,
+    typeInfo,
+    lowered
+  )
 
   // Every incoming value is reserved BEFORE any slot is, so a two-parameter
   // function reads `fn add(%0: int, %1: int)` rather than `%0, %2`. Purely for
@@ -143,9 +159,10 @@ function lowerTopLevel(
   statements: readonly Stmt[],
   span: Span,
   resolution: Resolution,
-  typeInfo: TypeInfo
+  typeInfo: TypeInfo,
+  lowered: ReadonlySet<string>
 ): IrFunction {
-  const builder = createBuilder(TOP_LEVEL_FUNCTION, span, resolution, typeInfo)
+  const builder = createBuilder(TOP_LEVEL_FUNCTION, span, resolution, typeInfo, lowered)
   for (const statement of statements) builder.statement(statement)
   return builder.finish([], UNIT)
 }
@@ -164,7 +181,8 @@ function createBuilder(
   name: string,
   span: Span,
   resolution: Resolution,
-  typeInfo: TypeInfo
+  typeInfo: TypeInfo,
+  lowered: ReadonlySet<string>
 ) {
   const blocks: PendingBlock[] = []
   /** Every variable's slot. Keyed by symbol, so shadowing resolves correctly. */
@@ -284,13 +302,31 @@ function createBuilder(
         return logical(expr)
 
       case 'Call': {
-        // The callee is always a plain name: the type checker rejects function
-        // values, so there is no indirect call to lower and no case to guess at.
-        const callee = expr.callee.kind === 'Name' ? expr.callee.text : ''
+        // Arguments are lowered either way: they are expressions the source
+        // contains, and dead-code elimination is the right place to remove them
+        // if the call itself turns out not to exist.
         const args = expr.args.map(expression)
+
+        // The callee is always a plain name in a program that type-checks — the
+        // checker rejects function values (BCC0019), so there is no indirect
+        // call to lower.
+        //
+        // When it did NOT type-check there may be no function to call at all:
+        // `let x = 1; x();` is reported as BCC0014, and a nested `fn` is
+        // reported as BCC0010 and never lowered as a module function. Emitting
+        // a call in either case produces IR naming a callee the module does not
+        // contain — IR that could not run. Poisoned to a constant instead,
+        // which is what every other error path here already does.
+        //
+        // Found by the verifier on its first run over broken input, which is
+        // exactly the job it exists for.
+        const callable =
+          expr.callee.kind === 'Name' && lowered.has(expr.callee.text) ? expr.callee.text : null
+        if (callable === null) return constant(0)
+
         const resultType = typeOf(expr)
         const result = resultType.kind === 'unit' ? null : nextValue()
-        emit({ op: 'call', result, callee, args, span: expr.span })
+        emit({ op: 'call', result, callee: callable, args, span: expr.span })
         return result === null ? constant(0) : value(result)
       }
     }
