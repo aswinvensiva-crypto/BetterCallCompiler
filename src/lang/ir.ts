@@ -128,6 +128,33 @@ export interface Call {
   readonly span: Span
 }
 
+/**
+ * A value that depends on which way control arrived.
+ *
+ * Inserted by Part 6 where two definitions of the same variable meet. It is not
+ * an operation the machine performs — nothing computes a phi — it is a
+ * statement about the graph: "this value is whichever of these came in". Part 9
+ * makes that real by arranging the predecessors to leave the right value behind
+ * before they jump.
+ *
+ * `incoming` runs PARALLEL to `predecessorsOf(fn).get(block)`: one entry per
+ * incoming EDGE, in the same order. Keeping it positional rather than keyed by
+ * block is what makes `branch %c, join, join` work — two edges from one
+ * predecessor need two arguments, and a map would silently hold one.
+ *
+ * Phis appear only at the start of a block, before any other instruction. They
+ * all take effect on entry, simultaneously, so ordering them against ordinary
+ * instructions would imply a sequence that does not exist.
+ */
+export interface Phi {
+  readonly op: 'phi'
+  readonly result: ValueId
+  /** The variable this came from, for the Observatory. Not part of semantics. */
+  readonly name: string
+  readonly incoming: readonly { readonly from: BlockId; readonly value: Operand }[]
+  readonly span: Span
+}
+
 export interface Print {
   readonly op: 'print'
   readonly value: Operand
@@ -142,6 +169,7 @@ export type Instruction =
   | UnaryInstruction
   | Call
   | Print
+  | Phi
 
 export interface Jump {
   readonly op: 'jump'
@@ -282,6 +310,8 @@ export function definitionOf(instruction: Instruction): ValueId | null {
       return instruction.result
     case 'call':
       return instruction.result
+    case 'phi':
+      return instruction.result
     case 'store':
     case 'print':
       return null
@@ -324,9 +354,26 @@ export function usesOf(instruction: Instruction): ValueId[] {
     case 'print':
       add(instruction.value)
       break
+    case 'phi':
+      // The incoming values. A phi "uses" them on the EDGE rather than in its
+      // own block, which is why `verifySsa` checks them against the
+      // predecessor's dominance and not against this block's — but for liveness
+      // and for dead-code elimination they are ordinary uses.
+      for (const incoming of instruction.incoming) add(incoming.value)
+      break
+    default:
+      // Unlike the switches above, this one is statement-shaped, so TypeScript
+      // does not require it to be exhaustive — a new instruction would compile
+      // and silently report no uses at all, which reads to every later pass as
+      // "safe to delete". This makes that a compile error instead.
+      neverHappens(instruction)
   }
 
   return ids
+}
+
+function neverHappens(instruction: never): never {
+  throw new Error(`unhandled instruction: ${JSON.stringify(instruction)}`)
 }
 
 export function terminatorUses(terminator: Terminator): ValueId[] {
@@ -349,7 +396,7 @@ function printOperand(operand: Operand): string {
   return operand.kind === 'value' ? `%${operand.id}` : String(operand.value)
 }
 
-function printInstruction(instruction: Instruction): string {
+function printInstruction(instruction: Instruction, labelOf: (id: BlockId) => string): string {
   switch (instruction.op) {
     case 'alloca':
       return `%${instruction.result} = alloca ${instruction.name}: ${describeType(instruction.type)}`
@@ -368,6 +415,12 @@ function printInstruction(instruction: Instruction): string {
     }
     case 'print':
       return `print ${printOperand(instruction.value)}`
+    case 'phi': {
+      const arms = instruction.incoming
+        .map((edge) => `[${labelOf(edge.from)}, ${printOperand(edge.value)}]`)
+        .join(', ')
+      return `%${instruction.result} = phi ${instruction.name} ${arms}`
+    }
   }
 }
 
@@ -405,7 +458,7 @@ export function printFunction(fn: IrFunction): string {
   for (const block of fn.blocks) {
     lines.push(`${block.label}:`)
     for (const instruction of block.instructions) {
-      lines.push(`  ${printInstruction(instruction)}`)
+      lines.push(`  ${printInstruction(instruction, labelOf)}`)
     }
     lines.push(`  ${printTerminator(block.terminator, labelOf)}`)
   }
