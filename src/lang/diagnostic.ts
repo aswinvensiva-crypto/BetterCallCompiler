@@ -47,6 +47,7 @@ export type DiagnosticCode =
   | 'BCC0015'
   | 'BCC0016'
   | 'BCC0017'
+  | 'BCC0019'
 
 export type DiagnosticSeverity = 'error' | 'warning'
 
@@ -84,7 +85,8 @@ export const DIAGNOSTIC_TITLES: Readonly<Record<DiagnosticCode, string>> = {
   BCC0015: 'wrong number of arguments',
   BCC0016: 'not all paths return a value',
   BCC0017: 'return outside a function',
-  BCC0018: 'cannot assign to a function'
+  BCC0018: 'cannot assign to a function',
+  BCC0019: 'functions are not values'
 }
 
 export function error(code: DiagnosticCode, message: string, span: Span): Diagnostic {

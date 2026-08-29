@@ -250,8 +250,11 @@ describe('BCC0013 — operator cannot be applied', () => {
     expect(message).toBe("'==' cannot compare int with bool")
   })
 
-  it('rejects comparing functions, rather than comparing identities', () => {
-    expect(codes('fn f() { }\nfn g() { }\nprint f == g;')).toContain('BCC0013')
+  it('rejects comparing functions, naming the real reason', () => {
+    // Two BCC0019s rather than one BCC0013. "functions are not values" is what
+    // is actually wrong here; "cannot compare unit with unit" would have been a
+    // true sentence about a program nobody wrote.
+    expect(codes('fn f() { }\nfn g() { }\nprint f == g;')).toEqual(['BCC0019', 'BCC0019'])
   })
 
   it('rejects && on non-bools, underlining the operand that is wrong', () => {
@@ -355,6 +358,30 @@ describe('BCC0017 — return outside a function', () => {
 
   it('rejects a return in a bare block', () => {
     expect(codes('{ return; }')).toEqual(['BCC0017'])
+  })
+})
+
+describe('BCC0019 — functions are not values', () => {
+  it('rejects binding a function to a variable', () => {
+    // Without this rule the language grows first-class functions by accident:
+    // `g` would have a function type, `g()` would type-check, and lowering
+    // would need an indirect call the VM has no way to make.
+    const { message, underlined } = atCode('fn f() { }\nlet g = f;', 'BCC0019')
+    expect(underlined).toBe('f')
+    expect(message).toMatch(/no function values/)
+  })
+
+  it('rejects passing a function as an argument', () => {
+    expect(codes('fn f() { }\nfn g(a: int) { }\ng(f);')).toEqual(['BCC0019'])
+  })
+
+  it('allows the one position where naming a function is the point', () => {
+    expect(codes('fn f() -> int { return 1; }\nprint f();')).toEqual([])
+  })
+
+  it('still reports a call on something genuinely not callable', () => {
+    // `f()()` — the inner call returns an int, so BCC0014 and not BCC0019.
+    expect(codes('fn f() -> int { return 1; }\nf()();')).toEqual(['BCC0014'])
   })
 })
 
@@ -529,7 +556,8 @@ describe('diagnostic codes', () => {
       'fn f() { }\nf(1);',
       'fn f() -> int { }',
       'return 1;',
-      'fn f() { }\nf = 1;'
+      'fn f() { }\nf = 1;',
+      'fn f() { }\nlet g = f;'
     ]
 
     for (const source of sources) {
@@ -548,7 +576,7 @@ describe('diagnostic codes', () => {
   })
 
   it('covers every code the two passes can raise', () => {
-    // The resolver and the checker between them own BCC0008 to BCC0018. If a
+    // The resolver and the checker between them own BCC0008 to BCC0019. If a
     // code is added without a test above, this fails and names it.
     const owned: DiagnosticCode[] = [
       'BCC0008',
@@ -561,7 +589,8 @@ describe('diagnostic codes', () => {
       'BCC0015',
       'BCC0016',
       'BCC0017',
-      'BCC0018'
+      'BCC0018',
+      'BCC0019'
     ]
     const exercised = new Set(
       [
@@ -575,7 +604,8 @@ describe('diagnostic codes', () => {
         'fn f() { }\nf(1);',
         'fn f() -> int { }',
         'return 1;',
-        'fn f() { }\nf = 1;'
+        'fn f() { }\nf = 1;',
+      'fn f() { }\nlet g = f;'
       ].flatMap(codes)
     )
 
