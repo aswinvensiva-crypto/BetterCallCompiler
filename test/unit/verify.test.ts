@@ -196,6 +196,15 @@ describe('structure', () => {
     expect(rulesOf(fnWith(blocks))).toContain('duplicate-block-id')
   })
 
+  it('reports a block id that is not an index', () => {
+    expect(rulesOf(fnWith([{ ...block(0, []), id: -1 }], { entry: -1 }))).toContain(
+      'invalid-block-id'
+    )
+    expect(rulesOf(fnWith([{ ...block(0, []), id: 1.5 }], { entry: 1.5 }))).toContain(
+      'invalid-block-id'
+    )
+  })
+
   it('reports a jump to a block that does not exist', () => {
     expect(rulesOf(fnWith([block(0, [], jump(9))]))).toContain('missing-successor')
   })
@@ -557,6 +566,107 @@ describe('signatures', () => {
 /* -------------------------------------------------------------------------- */
 
 describe('the verifier as a tool', () => {
+  /**
+   * Findings from an adversarial pass over this file, each reproduced before it
+   * was believed.
+   *
+   * Two of them broke the "never throws" claim in the verifier's own doc
+   * comment, and one of those was a HANG rather than a throw — which is worse,
+   * because nothing reports it. None were found by reading the rule list; all
+   * came from attacking the implementation.
+   */
+  describe('findings from attacking it', () => {
+    it('terminates on a block id that cannot be compared to itself', { timeout: 5000 }, () => {
+      // NaN. `Map` treats it as equal to itself and `===` does not, so the
+      // dominator walk could never detect it had stopped moving. It spun
+      // forever until `dominance.ts` bounded its loops.
+      const blocks: Block[] = [
+        {
+          id: NaN,
+          label: 'entry',
+          instructions: [],
+          terminator: { op: 'jump', target: 1, span: SPAN }
+        },
+        block(1, [print(value(7))]),
+        block(2, [add(7)])
+      ]
+      const fn = fnWith(blocks, { entry: NaN })
+      expect(() => verifyFunction(fn)).not.toThrow()
+      expect(rulesOf(fn)).toContain('invalid-block-id')
+    })
+
+    it('survives a function with more violations than the stack has room for', () => {
+      // `violations.push(...verifyFunction(fn))` spreads every element as an
+      // argument. A hundred thousand of them overflowed the call stack, so the
+      // verifier threw exactly when it had the most to report.
+      const instructions: Instruction[] = []
+      for (let i = 0; i < 150_000; i++) instructions.push(print(value(900_000 + i)))
+
+      expect(() =>
+        verifyModule({ functions: [fnWith([block(0, instructions)])] })
+      ).not.toThrow()
+    })
+
+    it('reports an instruction it cannot read instead of aborting the module', () => {
+      // `usesOf` throws on an unknown op, which is what makes adding an
+      // instruction a compile error. At runtime that same guard would abort
+      // verification of everything else.
+      const bogus = { op: 'teleport', result: 0, span: SPAN } as unknown as Instruction
+      const fn = fnWith([block(0, [bogus])])
+      expect(() => verifyFunction(fn)).not.toThrow()
+      expect(rulesOf(fn)).toContain('unrecognised-instruction')
+    })
+
+    it('reports a call that names a result the callee never produces', () => {
+      // `%5 = call g()` where g returns unit leaves %5 defined by nothing the
+      // machine will write. Every later read of it hits a register never set.
+      const g = fnWith([block(0, [])], { name: 'g' })
+      const call: Instruction = { op: 'call', result: 5, callee: 'g', args: [], span: SPAN }
+      const rules = verifyModule({ functions: [g, fnWith([block(0, [call])])] }).map(
+        (violation) => violation.rule
+      )
+      expect(rules).toContain('call-result-mismatch')
+    })
+
+    it('accepts discarding a value the callee does return', () => {
+      // The rule is one-directional: throwing a result away is ordinary.
+      const g = fnWith([block(0, [], { op: 'return', value: constant(1), span: SPAN })], {
+        name: 'g',
+        returnType: { kind: 'int' }
+      })
+      const call: Instruction = { op: 'call', result: null, callee: 'g', args: [], span: SPAN }
+      expect(verifyModule({ functions: [g, fnWith([block(0, [call])])] })).toEqual([])
+    })
+
+    it('reports a slot used as an ordinary value', () => {
+      // `print %slot` would print a frame address, and BCC has no type for one.
+      // The slot rule used to be one-directional — it checked that loads and
+      // stores address an alloca, never that an alloca is only addressed.
+      const instructions: Instruction[] = [
+        { op: 'alloca', result: 0, name: 'x', type: { kind: 'int' }, span: SPAN },
+        print(value(0))
+      ]
+      expect(rulesOf(fnWith([block(0, instructions)]))).toContain('slot-escapes')
+    })
+
+    it('does not report a slot being addressed, which is the point of one', () => {
+      const instructions: Instruction[] = [
+        { op: 'alloca', result: 0, name: 'x', type: { kind: 'int' }, span: SPAN },
+        { op: 'store', slot: 0, value: constant(1), span: SPAN },
+        { op: 'load', result: 1, slot: 0, span: SPAN }
+      ]
+      expect(verifyFunction(fnWith([block(0, instructions)]))).toEqual([])
+    })
+
+    it('stops at duplicate block ids rather than answering about a graph that is not there', () => {
+      // With two blocks answering to one id, the dominance questions are about
+      // a different graph than the one on the page, and the answers contradict
+      // each other rather than being merely incomplete.
+      const blocks = [block(0, [], jump(1)), block(1, []), { ...block(1, []), label: 'again' }]
+      expect(rulesOf(fnWith(blocks))).toEqual(['duplicate-block-id'])
+    })
+  })
+
   it('never throws, however malformed the input', () => {
     // This is what you reach for when you already suspect the IR is broken.
     // Crashing would make it useless exactly when it is needed.
@@ -681,6 +791,30 @@ describe('the verifier as a tool', () => {
       }).map((violation) => violation.rule),
       ...verifyModule({
         functions: [fnWith([block(0, [])], { name: 'g' }), fnWith([block(0, [])], { name: 'g' })]
+      }).map((violation) => violation.rule),
+      ...rulesOf(fnWith([{ ...block(0, []), id: NaN }], { entry: NaN })),
+      ...rulesOf(
+        fnWith([
+          block(0, [
+            { op: 'teleport', result: 0, span: SPAN } as unknown as Instruction
+          ])
+        ])
+      ),
+      ...rulesOf(
+        fnWith([
+          block(0, [
+            { op: 'alloca', result: 0, name: 'x', type: { kind: 'int' }, span: SPAN },
+            print(value(0))
+          ])
+        ])
+      ),
+      ...verifyModule({
+        functions: [
+          fnWith([block(0, [])], { name: 'g' }),
+          fnWith([
+            block(0, [{ op: 'call', result: 5, callee: 'g', args: [], span: SPAN }])
+          ])
+        ]
       }).map((violation) => violation.rule)
     ])
 

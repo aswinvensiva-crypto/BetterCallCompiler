@@ -50,10 +50,21 @@ import {
  * report "definition does not dominate" as well. Blocks that fail a structural
  * rule are excluded from the rules that depend on that structure — the same
  * poisoning discipline the type checker uses to keep one mistake to one message.
+ *
+ * ## What it deliberately does NOT check
+ *
+ * **Operand types.** Nothing here rejects `%2 = + %0, %1` where `%0` holds a
+ * bool, or a `branch` on an int. Values carry no types in this IR — only
+ * `alloca` and the parameters do — so checking would mean inferring a type for
+ * every value, which is a second type checker living next to the first. It is a
+ * real gap and it is stated rather than hidden: a Part 8 pass that folds a bool
+ * into an arithmetic operand would get past this verifier and fail in Part 9's
+ * VM. Giving values types is the fix, and it belongs with the bytecode.
  */
 
 export type VerificationRule =
   // Structure
+  | 'invalid-block-id'
   | 'missing-entry-block'
   | 'duplicate-block-id'
   | 'missing-successor'
@@ -72,11 +83,15 @@ export type VerificationRule =
   | 'phi-operand-does-not-dominate'
   // Memory
   | 'slot-is-not-an-alloca'
+  | 'slot-escapes'
   // Signatures
   | 'return-value-mismatch'
   | 'unknown-callee'
   | 'call-arity-mismatch'
+  | 'call-result-mismatch'
   | 'duplicate-function-name'
+  // The verifier's own bad day
+  | 'unrecognised-instruction'
 
 /**
  * What each rule means, one line each.
@@ -87,6 +102,7 @@ export type VerificationRule =
  * exercised rather than listing them by hand.
  */
 export const VERIFICATION_RULES: Readonly<Record<VerificationRule, string>> = {
+  'invalid-block-id': 'a block id is not a non-negative integer',
   'missing-entry-block': 'the entry block id names no block',
   'duplicate-block-id': 'two blocks share an id',
   'missing-successor': 'a terminator names a block that does not exist',
@@ -102,10 +118,13 @@ export const VERIFICATION_RULES: Readonly<Record<VerificationRule, string>> = {
   'phi-predecessor-mismatch': 'a phi argument names a block that is not that edge',
   'phi-operand-does-not-dominate': 'a phi argument does not reach the edge it comes in on',
   'slot-is-not-an-alloca': 'a load or store addresses something that is not a slot',
+  'slot-escapes': 'a slot is used as an ordinary value rather than addressed',
   'return-value-mismatch': 'a return disagrees with the function it returns from',
   'unknown-callee': 'a call names a function the module does not contain',
   'call-arity-mismatch': 'a call passes a different number of arguments than the callee takes',
-  'duplicate-function-name': 'two functions in the module share a name'
+  'call-result-mismatch': 'a call names a result but the callee returns nothing',
+  'duplicate-function-name': 'two functions in the module share a name',
+  'unrecognised-instruction': 'an instruction has an op nothing knows how to read'
 }
 
 export interface Violation {
@@ -130,13 +149,33 @@ export function verifyFunction(fn: IrFunction): Violation[] {
   /* ------------------------------ structure ------------------------------ */
 
   const byId = new Map<BlockId, (typeof fn.blocks)[number]>()
+  let structureIsSound = true
+
   for (const block of fn.blocks) {
+    // A NaN or fractional id is not merely odd, it is corrosive: `Map` treats
+    // NaN as equal to itself but `===` does not, so a dominator walk that
+    // reaches one can never detect it has stopped moving. `dominance.ts` bounds
+    // its loops so that cannot hang any more, but the answer it gives is
+    // meaningless — so say WHY rather than reporting the consequences.
+    if (!Number.isInteger(block.id) || block.id < 0) {
+      report('invalid-block-id', `block ${String(block.id)} has an id that is not an index`, block.label)
+      structureIsSound = false
+      continue
+    }
+
     if (byId.has(block.id)) {
       report('duplicate-block-id', `two blocks are numbered ${block.id}`, block.label)
+      structureIsSound = false
       continue
     }
     byId.set(block.id, block)
   }
+
+  // Everything below asks questions about a graph. With two blocks answering to
+  // one id, or an id that cannot be compared, the graph the questions are about
+  // is not the one on the page — and the answers contradict each other rather
+  // than being merely incomplete.
+  if (!structureIsSound) return violations
 
   const entry = byId.get(fn.entry)
   if (entry === undefined) {
@@ -333,8 +372,45 @@ export function verifyFunction(fn: IrFunction): Violation[] {
 
       seenOrdinary = true
 
-      for (const used of usesOf(instruction)) {
+      /*
+       * `usesOf` is exhaustively typed and throws on an op it does not know —
+       * which is what makes adding an instruction a COMPILE error rather than a
+       * silent gap. At runtime, against IR that came from a cast or a broken
+       * pass, that same guard would abort the whole module.
+       *
+       * Both properties are worth keeping, so the throw is caught here and
+       * reported. This is the one place the verifier calls code that assumes
+       * well-formed input.
+       */
+      let reads: ValueId[]
+      try {
+        reads = usesOf(instruction)
+      } catch {
+        report(
+          'unrecognised-instruction',
+          `an instruction has op '${String((instruction as { op?: unknown }).op)}'`,
+          block.label
+        )
+        return
+      }
+
+      for (const used of reads) {
         checkUse(used, block.id, block.label, index, `${instruction.op}`)
+      }
+
+      // A slot may only be ADDRESSED. `print %slot` would print a frame address,
+      // and BCC has no type for one — so a slot reaching any other operand
+      // position means an earlier stage lost track of what it was holding.
+      if (instruction.op !== 'load' && instruction.op !== 'store') {
+        for (const used of reads) {
+          if (slots.has(used)) {
+            report(
+              'slot-escapes',
+              `${instruction.op} reads %${used}, which is a slot rather than a value`,
+              block.label
+            )
+          }
+        }
       }
 
       // A load or store must address a slot. Anything else means an ordinary
@@ -353,6 +429,9 @@ export function verifyFunction(fn: IrFunction): Violation[] {
 
     for (const used of terminatorUses(block.terminator)) {
       checkUse(used, block.id, block.label, block.instructions.length, 'the terminator')
+      if (slots.has(used)) {
+        report('slot-escapes', `the terminator reads %${used}, which is a slot`, block.label)
+      }
     }
 
     // `unreachable` makes no promise about a value, so it is exempt.
@@ -417,12 +496,34 @@ export function verifyModule(module: Module): Violation[] {
     signatures.set(fn.name, fn.params.length)
   }
 
+  const returnsNothing = new Set<string>()
   for (const fn of module.functions) {
-    violations.push(...verifyFunction(fn))
+    if (fn.returnType.kind === 'unit') returnsNothing.add(fn.name)
+  }
+
+  for (const fn of module.functions) {
+    // A loop, NOT `push(...verifyFunction(fn))`. Spread passes every element as
+    // an argument, and a function broken enough to produce a hundred thousand
+    // violations overflows the call stack — so the verifier threw exactly when
+    // it had the most to say. Found by attacking it rather than by reading it.
+    for (const violation of verifyFunction(fn)) violations.push(violation)
 
     for (const block of fn.blocks) {
       for (const instruction of block.instructions) {
         if (instruction.op !== 'call') continue
+
+        // A call cannot name a result the callee does not produce. `%3 = call g()`
+        // where `g` returns unit leaves %3 defined by nothing the machine will
+        // write, and every later use of it reads a register that was never set.
+        // The reverse is fine: discarding a returned value is ordinary.
+        if (instruction.result !== null && returnsNothing.has(instruction.callee)) {
+          violations.push({
+            rule: 'call-result-mismatch',
+            message: `names %${instruction.result} from '${instruction.callee}', which returns nothing`,
+            fn: fn.name,
+            block: block.label
+          })
+        }
 
         const arity = signatures.get(instruction.callee)
         if (arity === undefined) {
