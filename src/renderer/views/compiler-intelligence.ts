@@ -10,9 +10,9 @@ import {
   whyChecked,
   workOf
 } from '../../shared/pass-analysis'
-import type { CompilerPass, CompilerTraceEvent } from '../../shared/types'
+import type { CompilerPass, CompilerTraceEvent, DiagnosticSeverity } from '../../shared/types'
 import { openFile } from '../editor/models'
-import { WHY_FILE_EVENT, type WhyFileDetail } from './problems'
+import { WHY_FILE_EVENT, navigateToWorstDiagnostic, type WhyFileDetail } from './problems'
 import { activeRightDockView, isRightDockVisible } from '../workbench/right-dock'
 
 /**
@@ -47,6 +47,49 @@ const TABS: readonly { readonly id: TabId; readonly label: string }[] = [
 let bodyHost: HTMLElement | null = null
 let passes: CompilerPass[] = []
 let activeTab: TabId = 'live'
+
+/**
+ * Error/warning counts, kept independently of the Problems panel rather than
+ * read out of it — this view only ever consumes daemon events, and reaching
+ * into another view's module state would make that a lie the first time
+ * Problems changed its internal representation.
+ */
+let diagnosticCounts: Readonly<Record<DiagnosticSeverity, number>> = {
+  error: 0,
+  warning: 0,
+  info: 0,
+  hint: 0
+}
+/** Kept only to fold incremental `onDiagnosticsChanged` batches — see `tallyDiagnostics`. */
+let diagFiles: readonly { relativePath: string; version: number; diagnostics: readonly { severity: DiagnosticSeverity }[] }[] = []
+let unsubscribeDiagnostics: (() => void) | null = null
+
+/**
+ * Folds an incremental diagnostics batch into the running set and returns
+ * fresh per-severity totals.
+ *
+ * `onDiagnosticsChanged` delivers only the files that changed, not a full
+ * snapshot, so the previous file list is kept and merged the same way
+ * Problems does it — a newer version replaces an older one, a version that
+ * has gone stale is dropped in favour of what is already held.
+ */
+function tallyDiagnostics(
+  incoming: readonly { relativePath: string; version: number; diagnostics: readonly { severity: DiagnosticSeverity }[] }[]
+): Readonly<Record<DiagnosticSeverity, number>> {
+  const byPath = new Map(diagFiles.map((file) => [file.relativePath, file]))
+  for (const file of incoming) {
+    const existing = byPath.get(file.relativePath)
+    if (existing !== undefined && existing.version > file.version) continue
+    byPath.set(file.relativePath, file)
+  }
+  diagFiles = [...byPath.values()]
+
+  const totals = { error: 0, warning: 0, info: 0, hint: 0 }
+  for (const file of diagFiles) {
+    for (const diagnostic of file.diagnostics) totals[diagnostic.severity]++
+  }
+  return totals
+}
 /**
  * The file the Why tab is answering about, and the chain back to the edit.
  *
@@ -88,8 +131,57 @@ function stat(label: string, value: string, tone?: 'good' | 'warn'): HTMLElement
   return card
 }
 
+/**
+ * The "is it safe to ship this" summary at the top of the Live tab.
+ *
+ * Everything below it is the raw material an engineer already knows how to
+ * read; this is the one-glance answer for the moment they do not want to read
+ * it. Blocking is defined as outstanding errors, not warnings — a warning has
+ * never once stopped a build.
+ */
+function renderVerdict(): HTMLElement {
+  const blocking = diagnosticCounts.error
+  const safe = blocking === 0
+
+  const card = el('div', `ci-verdict ci-verdict--${safe ? 'safe' : 'blocked'}`)
+
+  const badge = el('div', 'ci-verdict__badge', safe ? 'OK' : String(blocking))
+  card.append(badge)
+
+  const copy = el('div', 'ci-verdict__copy')
+  copy.append(
+    el(
+      'p',
+      'ci-verdict__title',
+      safe ? 'Safe to ship' : `${blocking} blocking error${blocking === 1 ? '' : 's'}`
+    )
+  )
+  copy.append(
+    el(
+      'p',
+      'ci-verdict__subtitle',
+      safe
+        ? 'No outstanding errors in the workspace.'
+        : diagnosticCounts.warning > 0
+          ? `Plus ${diagnosticCounts.warning} warning${diagnosticCounts.warning === 1 ? '' : 's'} that will not block you.`
+          : 'Nothing else outstanding.'
+    )
+  )
+  card.append(copy)
+
+  if (!safe) {
+    const button = el('button', 'button ci-verdict__action', 'Take me to the blocker')
+    button.type = 'button'
+    button.addEventListener('click', () => void navigateToWorstDiagnostic())
+    card.append(button)
+  }
+
+  return card
+}
+
 function renderLive(): HTMLElement {
   const wrap = el('div', 'ci-section')
+  wrap.append(renderVerdict())
   const latest = passes[passes.length - 1]
 
   if (latest === undefined) {
@@ -459,6 +551,15 @@ export async function mountCompilerIntelligence(
   // panel, so the failure is simply "no passes yet".
   const result = await api.compiler.passes({})
   passes = result.ok ? result.value.passes.slice(-MAX_PASSES) : []
+
+  const snapshot = await api.compiler.diagnostics({ relativePath: null })
+  if (snapshot.ok) diagnosticCounts = tallyDiagnostics(snapshot.value.files)
+
+  unsubscribeDiagnostics?.()
+  unsubscribeDiagnostics = api.compiler.onDiagnosticsChanged((batch) => {
+    diagnosticCounts = tallyDiagnostics(batch.files)
+    if (isRightDockVisible() && activeRightDockView() === 'compiler') render()
+  })
 
   unsubscribe?.()
   unsubscribe = api.compiler.onPassCompleted((pass) => {

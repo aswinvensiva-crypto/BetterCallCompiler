@@ -82,6 +82,20 @@ function counts(): { errors: number; warnings: number } {
   return { errors, warnings }
 }
 
+/**
+ * Opens the worst outstanding diagnostic (errors before warnings, then by
+ * path) — the target of Compiler Intelligence's "take me to the blocker"
+ * button. Reuses `navigate` rather than duplicating the open-and-reveal
+ * sequence, so both panels land on the exact same line.
+ */
+export async function navigateToWorstDiagnostic(): Promise<void> {
+  const [file] = visibleFiles()
+  if (file === undefined) return
+  const [diagnostic] = [...file.diagnostics].sort((a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity])
+  if (diagnostic === undefined) return
+  await navigate(file, diagnostic)
+}
+
 async function navigate(file: FileDiagnostics, diagnostic: DiagnosticMessage): Promise<void> {
   const node: FileNode = {
     name: file.relativePath.slice(file.relativePath.lastIndexOf('/') + 1),

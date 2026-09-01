@@ -2641,9 +2641,45 @@ body.workbench--resizing-y * {
 }
 
 .artifact-section {
-  margin-bottom: 14px;
-  padding-bottom: 10px;
-  border-bottom: 1px solid var(--bcc-border);
+  position: relative;
+  margin: 0 0 16px 20px;
+  padding: 0 0 14px 16px;
+  border-left: 1px solid var(--bcc-border);
+}
+
+.artifact-section:last-of-type {
+  border-left-color: transparent;
+}
+
+/* Numbered step marker, one per heading — reads as a walkthrough rather than
+   a flat document, the way ExplainDrawer's step list did in the mockup. A
+   section with no heading (the general-comments block) opts out via
+   :has() so it does not pick up a stray "0". */
+.artifact-section:has(.artifact-heading) {
+  counter-increment: artifact-step;
+}
+
+.artifact-list,
+.artifact-reader {
+  counter-reset: artifact-step;
+}
+
+.artifact-section:has(.artifact-heading)::before {
+  content: counter(artifact-step);
+  position: absolute;
+  left: -9px;
+  top: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: 1px solid var(--bcc-border);
+  border-radius: 50%;
+  background: var(--bcc-bg-inset);
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--bcc-fg-subtle);
 }
 
 .artifact-heading {
@@ -2830,6 +2866,74 @@ body.workbench--resizing-y * {
 .ci-tabs__tab[aria-selected='true'] {
   color: var(--bcc-fg);
   border-bottom-color: var(--bcc-accent);
+}
+
+/**
+ * The verdict card at the top of the Live tab — the one-glance "is this safe
+ * to ship" answer described in compiler-intelligence.ts. Colour carries the
+ * verdict (accent-tinted success vs. danger) so it reads before the copy does.
+ */
+.ci-verdict {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--bcc-border);
+  border-radius: 6px;
+  background: var(--bcc-bg-inset);
+}
+
+.ci-verdict--safe {
+  border-color: color-mix(in srgb, var(--bcc-success) 40%, var(--bcc-border));
+}
+
+.ci-verdict--blocked {
+  border-color: color-mix(in srgb, var(--bcc-danger) 45%, var(--bcc-border));
+}
+
+.ci-verdict__badge {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  font-size: 13px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.ci-verdict--safe .ci-verdict__badge {
+  color: var(--bcc-success);
+  background: color-mix(in srgb, var(--bcc-success) 18%, transparent);
+}
+
+.ci-verdict--blocked .ci-verdict__badge {
+  color: var(--bcc-danger);
+  background: color-mix(in srgb, var(--bcc-danger) 18%, transparent);
+}
+
+.ci-verdict__copy {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.ci-verdict__title {
+  margin: 0;
+  font-size: var(--bcc-font-size);
+  color: var(--bcc-fg);
+}
+
+.ci-verdict__subtitle {
+  margin: 2px 0 0;
+  font-size: var(--bcc-font-size-sm);
+  color: var(--bcc-fg-subtle);
+}
+
+.ci-verdict__action {
+  flex: 0 0 auto;
 }
 
 .ci-section {
