@@ -123,7 +123,9 @@ export function computeDominance(fn: IrFunction): Dominance {
     let left = a
     let right = b
 
-    while (left !== right) {
+    // Bounded like the walks above: two fingers climbing a chain cannot take
+    // more steps than the graph has blocks.
+    for (let step = 0; left !== right && step <= order.length; step++) {
       while ((rank.get(left) ?? 0) > (rank.get(right) ?? 0)) {
         const next = idom.get(left)
         if (next === undefined || next === left) break
@@ -139,12 +141,26 @@ export function computeDominance(fn: IrFunction): Dominance {
       if (left !== right && (rank.get(left) ?? 0) === (rank.get(right) ?? 0)) return fn.entry
     }
 
-    return left
+    return left === right ? left : fn.entry
   }
 
+  /*
+   * The fixed point is bounded, not merely expected to converge.
+   *
+   * On a well-formed graph in reverse postorder this settles in one or two
+   * rounds. On a MALFORMED one it need not settle at all: `idom.get(id) !==
+   * candidate` is permanently true when both are NaN, so the loop would run
+   * forever. A hang is worse than a wrong answer, because nothing reports it —
+   * and this function is called by a verifier whose whole job is to survive
+   * broken input.
+   *
+   * A dominator computation cannot need more rounds than there are blocks.
+   */
   let changed = true
-  while (changed) {
+  let rounds = 0
+  while (changed && rounds <= order.length) {
     changed = false
+    rounds++
 
     for (const id of order) {
       if (id === fn.entry) continue
@@ -217,13 +233,19 @@ export function computeDominance(fn: IrFunction): Dominance {
     // Walking the idom chain rather than keeping DFS in/out numbers. O(depth)
     // instead of O(1), and at BCC's scale the constant factor of maintaining
     // the numbers across Part 8's rewrites costs more than it saves.
+    //
+    // Bounded by the number of blocks for the same reason the fixed point is: a
+    // chain cannot be longer than the graph, and `parent === current` fails to
+    // detect a self-loop when the id is NaN — which spins here forever rather
+    // than returning something wrong.
     let current = b
-    for (;;) {
+    for (let step = 0; step <= order.length; step++) {
       if (current === a) return true
       const parent = idom.get(current)
       if (parent === undefined || parent === current) return false
       current = parent
     }
+    return false
   }
 
   return {

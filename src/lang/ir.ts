@@ -50,7 +50,19 @@ import { describeType, type Type } from './type-check'
 /** `%0`, `%1`, … Unique within a function, and defined exactly once. */
 export type ValueId = number
 
-/** Index into a function's `blocks`. The entry block is always 0. */
+/**
+ * A block's identity within a function.
+ *
+ * Lowering numbers them contiguously from zero and the entry is always 0, so
+ * they happen to line up with array positions — but nothing may RELY on that.
+ * `predecessorsOf`, `reachableBlocks` and `printFunction` all look blocks up by
+ * id rather than indexing, so a Part 8 pass that deletes a block does not have
+ * to renumber the world to stay correct.
+ *
+ * The doc comment here used to say "index into `blocks`", which was a promise
+ * no code kept and the verifier did not check. Saying what is true is cheaper
+ * than enforcing what was not.
+ */
 export type BlockId = number
 
 /**
@@ -356,7 +368,7 @@ export function usesOf(instruction: Instruction): ValueId[] {
       break
     case 'phi':
       // The incoming values. A phi "uses" them on the EDGE rather than in its
-      // own block, which is why `verifySsa` checks them against the
+      // own block, which is why `verify.ts` checks them against the
       // predecessor's dominance and not against this block's — but for liveness
       // and for dead-code elimination they are ordinary uses.
       for (const incoming of instruction.incoming) add(incoming.value)

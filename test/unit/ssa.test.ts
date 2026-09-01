@@ -4,7 +4,8 @@ import { resolve } from '../../src/lang/symbols'
 import { typeCheck } from '../../src/lang/type-check'
 import { lower, TOP_LEVEL_FUNCTION } from '../../src/lang/lower'
 import { computeDominance, dominatorPreorder } from '../../src/lang/dominance'
-import { toSsa, verifySsa } from '../../src/lang/ssa'
+import { toSsa } from '../../src/lang/ssa'
+import { verifyFunction } from '../../src/lang/verify'
 import {
   constant,
   printFunction,
@@ -269,7 +270,7 @@ describe('SSA — the invariant, on every program', () => {
    */
   it('leaves every use dominated by its definition', () => {
     for (const { source, fn } of everyFunction()) {
-      const problems = verifySsa(toSsa(fn))
+      const problems = verifyFunction(toSsa(fn))
       expect(problems, `${fn.name} in ${JSON.stringify(source)}`).toEqual([])
     }
   })
@@ -295,7 +296,7 @@ describe('SSA — the invariant, on every program', () => {
     // reaches the join twice from one block and needs two arguments.
     for (const { source, fn } of everyFunction()) {
       const ssa = toSsa(fn)
-      expect(verifySsa(ssa), JSON.stringify(source)).toEqual([])
+      expect(verifyFunction(ssa), JSON.stringify(source)).toEqual([])
     }
   })
 
@@ -464,11 +465,22 @@ describe('SSA — the shapes a reader will recognise', () => {
 /*  The verifier itself                                                        */
 /* -------------------------------------------------------------------------- */
 
-describe('verifySsa catches what it claims to', () => {
+describe('the verifier catches what SSA construction could get wrong', () => {
   const base = (): IrFunction => toSsa(irFor('let x = 1; if true { x = 2; } else { x = 3; } print x;'))
 
+  /**
+   * The rules a broken function breaks, as stable ids.
+   *
+   * Asserted on `rule` rather than on the message, because the rule is the
+   * contract and the prose is for a human — rewording a message should not
+   * break a test, and a test that pins prose stops anyone improving it.
+   */
+  const rulesFor = (fn: IrFunction): string[] => [
+    ...new Set(verifyFunction(fn).map((violation) => violation.rule))
+  ]
+
   it('accepts well-formed SSA', () => {
-    expect(verifySsa(base())).toEqual([])
+    expect(verifyFunction(base())).toEqual([])
   })
 
   it('rejects a use its definition does not reach', () => {
@@ -486,8 +498,7 @@ describe('verifySsa catches what it claims to', () => {
           }
         : block
     )
-    const problems = verifySsa({ ...fn, blocks })
-    expect(problems.join(' ')).toMatch(/never defined/)
+    expect(rulesFor({ ...fn, blocks })).toContain('undefined-value')
   })
 
   it('rejects a phi whose arity does not match its edges', () => {
@@ -500,7 +511,7 @@ describe('verifySsa catches what it claims to', () => {
           : instruction
       )
     }))
-    expect(verifySsa({ ...fn, blocks }).join(' ')).toMatch(/arguments for 2 incoming edges/)
+    expect(rulesFor({ ...fn, blocks })).toContain('phi-arity-mismatch')
   })
 
   it('rejects a phi that is not at the start of its block', () => {
@@ -514,7 +525,9 @@ describe('verifySsa catches what it claims to', () => {
       reordered.push(phi)
       return { ...block, instructions: reordered }
     })
-    expect(verifySsa({ ...fn, blocks }).join(' ')).toMatch(/phi appears after a non-phi/)
+    // Two real violations, not one: the phi is out of place, AND the print
+    // above it now reads a value defined further down the block.
+    expect(rulesFor({ ...fn, blocks })).toContain('phi-not-at-block-start')
   })
 
   it('rejects a value defined twice', () => {
@@ -551,7 +564,7 @@ describe('verifySsa catches what it claims to', () => {
       ...fn.blocks.slice(1)
     ]
 
-    expect(verifySsa({ ...fn, blocks }).join(' ')).toMatch(/defined more than once/)
+    expect(rulesFor({ ...fn, blocks })).toContain('duplicate-definition')
   })
 
   it('rejects a use before its definition inside one block', () => {
@@ -568,6 +581,6 @@ describe('verifySsa catches what it claims to', () => {
       },
       ...fn.blocks.slice(1)
     ]
-    expect(verifySsa({ ...fn, blocks }).join(' ')).toMatch(/used before it is defined/)
+    expect(rulesFor({ ...fn, blocks })).toContain('use-before-definition')
   })
 })
