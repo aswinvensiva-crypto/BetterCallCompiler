@@ -1,4 +1,5 @@
 import { parentPort } from 'node:worker_threads'
+import { performance } from 'node:perf_hooks'
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join, relative, sep } from 'node:path'
 import ts from 'typescript'
@@ -24,6 +25,7 @@ import {
   QueryCycleError,
   createEngine,
   queryKey,
+  type Durability,
   type Engine,
   type QueryTrace
 } from '../shared/query-engine'
@@ -53,6 +55,38 @@ import type {
  */
 
 const port = parentPort
+
+/**
+ * Basic cold-start instrumentation.
+ *
+ * `performance.mark`/`measure` rather than a manual `Date.now()` diff so this
+ * shows up wherever anything already inspects the runtime's performance
+ * timeline (`performance.getEntriesByType('measure')`, a `PerformanceObserver`,
+ * Node's `--cpu-prof`-adjacent tooling) — not just in this file's own log line.
+ * Logged via `console.debug` because that is the cheapest thing genuinely
+ * reachable today: worker output is inherited by the main process's stdout,
+ * so it lands in the same place every other daemon log already does, without
+ * inventing a new IPC message or UI panel for two numbers.
+ */
+performance.mark('daemon-init-start')
+
+let firstDiagnosticsMarked = false
+
+function markFirstDiagnostics(): void {
+  if (firstDiagnosticsMarked) return
+  firstDiagnosticsMarked = true
+  performance.mark('daemon-first-diagnostics')
+  try {
+    performance.measure('daemon-cold-start', 'daemon-init-start', 'daemon-first-diagnostics')
+    const [measured] = performance.getEntriesByName('daemon-cold-start')
+    if (measured !== undefined) {
+      console.debug(`[compiler-daemon] cold start: ${measured.duration.toFixed(1)}ms`)
+    }
+  } catch {
+    // A mark can be missing under a test harness that terminates the worker
+    // mid-boot; instrumentation must never be why a check fails.
+  }
+}
 
 function post(message: WorkerMessage): void {
   port?.postMessage(message)
@@ -189,6 +223,44 @@ const resolutionCache = (): ts.ModuleResolutionCache | undefined =>
 
 let moduleCache = resolutionCache()
 
+/** POSIX-only dirname: `relativePath` is always '/'-joined by `toRelative`. */
+function dirnamePosix(relativePath: string): string {
+  const slash = relativePath.lastIndexOf('/')
+  return slash < 0 ? '' : relativePath.slice(0, slash)
+}
+
+/**
+ * The raw specifiers named by each file's import statements, keyed by
+ * workspace-relative path — the half of `importsOf`'s work that a resolved
+ * edge alone cannot reconstruct.
+ *
+ * `pullImportSignatures` needs these (not the already-resolved graph edges) to
+ * record a dependency on `Q_RES` for specifiers that resolve OUTSIDE the
+ * workspace — those never become graph edges at all, so without this map an
+ * import of `typescript` or `node:fs` would contribute nothing to a memo's
+ * durability and `moduleResolution` would be wired up but never actually
+ * consulted by a real check.
+ */
+const rawImportsByFile = new Map<string, readonly string[]>()
+
+/** Encodes a `moduleResolution` query argument; a specifier cannot contain a space. */
+function resArg(specifier: string, containingDir: string): string {
+  return `${specifier} ${containingDir}`
+}
+
+function decodeResArg(arg: string): { specifier: string; containingDir: string } {
+  const space = arg.indexOf(' ')
+  return space < 0
+    ? { specifier: arg, containingDir: '' }
+    : { specifier: arg.slice(0, space), containingDir: arg.slice(space + 1) }
+}
+
+interface ResolutionResult {
+  /** Workspace-relative path, or null when unresolved or outside the workspace. */
+  readonly relativePath: string | null
+  readonly tier: Durability
+}
+
 /**
  * Resolved workspace-relative imports for one file.
  *
@@ -196,32 +268,25 @@ let moduleCache = resolutionCache()
  * indexing 20 000 files with the real parser is the difference between a second
  * and a minute.
  *
- * A specifier that does not resolve, or resolves outside the workspace or into
- * node_modules, is DROPPED rather than guessed at. A fabricated edge invalidates
- * the wrong files, which is worse than a missing one.
+ * Each specifier is resolved through the `moduleResolution` query rather than a
+ * raw `ts.resolveModuleName` call, so the result is durability-tiered and the
+ * signature/diagnostics queries that depend on it (via `pullImportSignatures`)
+ * inherit that tier. A specifier that does not resolve, or resolves outside the
+ * workspace, is DROPPED from the returned edges rather than guessed at — a
+ * fabricated edge invalidates the wrong files, which is worse than a missing
+ * one.
  */
-function importsOf(root: string, absolute: string, text: string): string[] {
+function importsOf(text: string, relativePath: string): string[] {
   const pre = ts.preProcessFile(text, true, true)
+  const specifiers = pre.importedFiles.map((reference) => reference.fileName)
+  rawImportsByFile.set(relativePath, specifiers)
+
+  const dir = dirnamePosix(relativePath)
   const out: string[] = []
 
-  for (const reference of pre.importedFiles) {
-    const resolved = ts.resolveModuleName(
-      reference.fileName,
-      absolute,
-      compilerOptions,
-      ts.sys,
-      moduleCache
-    ).resolvedModule
-
-    if (resolved === undefined) continue
-    if (resolved.isExternalLibraryImport === true) continue
-    if (resolved.resolvedFileName.includes('node_modules')) continue
-
-    const relativePath = toRelative(root, resolved.resolvedFileName)
-    // `relative()` yields a leading '..' for anything outside the root.
-    if (relativePath === '' || relativePath.startsWith('..')) continue
-
-    out.push(relativePath)
+  for (const specifier of specifiers) {
+    const result = engine.get<ResolutionResult>(queryKey(Q_RES, resArg(specifier, dir)))
+    if (result.relativePath !== null) out.push(result.relativePath)
   }
 
   return out
@@ -256,8 +321,28 @@ function summary(): BuildGraphSummary {
   }
 }
 
-function reportState(state: CompilerDaemonState, checkedFileCount = 0): void {
-  post({ type: 'state', state, graph: summary(), checkedFileCount })
+/**
+ * Files currently holding a VALID diagnostic memo — cumulative, not the size
+ * of whatever the last pass happened to invalidate.
+ *
+ * This used to be `affected.length`, the invalidation set of the pass that
+ * just ran. That is a different number: on a fresh index it reported 0 (no
+ * pass had run yet), then jumped on the first edit to the size of THAT edit's
+ * invalidation set — a number with no relationship to how much of the
+ * workspace had actually been checked. Walking the graph and asking the
+ * engine which `diag:` memos are still valid is the real answer, and it is
+ * cheap: `isValid` does no work beyond a couple of comparisons per file.
+ */
+function checkedFileCount(): number {
+  let count = 0
+  for (const relativePath of graph.nodes.keys()) {
+    if (engine.isValid(queryKey(Q_DIAG, relativePath))) count++
+  }
+  return count
+}
+
+function reportState(state: CompilerDaemonState): void {
+  post({ type: 'state', state, graph: summary(), checkedFileCount: checkedFileCount() })
 }
 
 function indexWorkspace(root: string): void {
@@ -274,10 +359,28 @@ function indexWorkspace(root: string): void {
   // re-seeds all of them.
   engine.clear()
   engineTexts.clear()
+  rawImportsByFile.clear()
+  // Fresh resenv inputs for the workspace that is about to be walked. Every
+  // `moduleResolution` memo from before this point is gone (engine.clear()
+  // took it with everything else); every one computed from here on pulls
+  // these, which is what makes a tsconfig change — routed here via
+  // `indexWorkspace` from `applyChanges` — actually invalidate a stale
+  // resolution instead of leaving it cached under the old compiler options.
+  seedResolutionEnv()
   // Versions are deliberately NOT cleared. They must stay monotonic across a
   // re-index or the LanguageService, whose document registry outlives this
   // call, sees a version it has already cached and keeps a stale snapshot.
   for (const [path, version] of textVersions) textVersions.set(path, version + 1)
+
+  // Same bookkeeping `checkFiles` resets before a pass — the walk below calls
+  // `importsOf`, which pulls `moduleResolution` queries through this same
+  // engine, and those traces belong to THIS pass, not whatever ran before.
+  passEvents = []
+  passRecomputed = 0
+  passReused = 0
+  diagKept = 0
+  otherKept = 0
+  const before = engine.stats()
 
   for (const absolute of walk(root)) {
     const text = readIfPossible(absolute)
@@ -286,7 +389,7 @@ function indexWorkspace(root: string): void {
     const relativePath = toRelative(root, absolute)
     upsertNode(graph, {
       relativePath,
-      imports: importsOf(root, absolute, text),
+      imports: importsOf(text, relativePath),
       mtimeMs: mtimeOf(absolute)
     })
 
@@ -302,6 +405,15 @@ function indexWorkspace(root: string): void {
   // workspace.
   service = null
 
+  // The walk itself, reported as its own pass. Previously `reason: 'index'`
+  // was declared in the schema and checked by `isInteractive`/`describePass`
+  // but never emitted by anything — a fresh workspace produced no history
+  // entry at all for the work that just ran, and the History tab's first row
+  // was whatever the user's first edit triggered. `requested` is the file
+  // count the walk covered; `recomputed`/`reused` are both 0 because indexing
+  // resolves imports but never asks for a diagnostic.
+  reportPass('index', graph.nodes.size, started, before, [])
+
   busySince = null
   reportState('idle')
 }
@@ -313,6 +425,19 @@ function applyChanges(
   reason: CompilerPass['reason'] = 'watch'
 ): void {
   if (changed.length === 0 && removed.length === 0) return
+
+  // The tsconfig itself moved: `compilerOptions` and `moduleCache` are
+  // downstream of it, and every `moduleResolution` memo may now be answering
+  // for a config that no longer applies. `.json` is not in SOURCE_EXTENSIONS,
+  // so without this branch a tsconfig.json edit was silently ignored by this
+  // function entirely — the daemon kept checking against stale options until
+  // the next full restart. A full re-index reloads the config and reseeds the
+  // resolution environment, which is the only thing that can legitimately
+  // invalidate an `external`/`lib`-durability resolution.
+  if ([...changed, ...removed].some((path) => path.endsWith('tsconfig.json'))) {
+    indexWorkspace(root)
+    return
+  }
 
   busySince = Date.now()
   reportState('checking')
@@ -336,6 +461,7 @@ function applyChanges(
   for (const relativePath of removed) {
     removeNode(graph, relativePath)
     engine.removeInput(queryKey(Q_TEXT, relativePath))
+    rawImportsByFile.delete(relativePath)
   }
 
   for (const relativePath of changed) {
@@ -349,12 +475,13 @@ function applyChanges(
       orphanedDependents.push(...dependentsOf(graph, relativePath))
       removeNode(graph, relativePath)
       engine.removeInput(queryKey(Q_TEXT, relativePath))
+      rawImportsByFile.delete(relativePath)
       continue
     }
 
     upsertNode(graph, {
       relativePath,
-      imports: importsOf(root, absolute, text),
+      imports: importsOf(text, relativePath),
       mtimeMs: mtimeOf(absolute)
     })
 
@@ -384,7 +511,7 @@ function applyChanges(
   checkFiles(root, affected, reason, [...changed, ...removed].slice(0, MAX_TRIGGER_PATHS))
 
   busySince = null
-  reportState('idle', affected.length)
+  reportState('idle')
 }
 
 /* ---------------------------- language service ---------------------------- */
@@ -542,6 +669,20 @@ function cycleDiagnostic(root: string, relativePath: string, cycle: Cycle): Diag
 const Q_TEXT = 'text'
 const Q_SIG = 'sig'
 const Q_DIAG = 'diag'
+/** One import specifier's resolution, keyed by `resArg(specifier, containingDir)`. */
+const Q_RES = 'res'
+/**
+ * The resolution environment, one input per durability tier.
+ *
+ * `moduleResolution` depends on whichever of these matches its own outcome —
+ * `workspace` for a specifier that resolves inside the project, `external` for
+ * node_modules, `lib` for the TypeScript lib files — which is what gives the
+ * resolution memo a durability ABOVE workspace. Bumped wholesale by
+ * `seedResolutionEnv`, which runs on every full re-index (tsconfig change,
+ * `boot`), so a stale resolution cannot outlive the config it was resolved
+ * under.
+ */
+const Q_RESENV = 'resenv'
 
 /** Trace lines for the pass currently in flight. */
 let passEvents: QueryTrace[] = []
@@ -627,6 +768,104 @@ function ensureService(root: string): ts.LanguageService {
 }
 
 /**
+ * Writes fresh `resenv` inputs for all three durability tiers.
+ *
+ * Called once per full re-index (`boot`, and any tsconfig change — see
+ * `applyChanges`). `engine.clear()` has already dropped every existing
+ * `resenv` input along with everything else, so this is a plain re-seed, not
+ * an increment: the point is that anything computed against the OLD
+ * environment is gone, and anything computed from here on pulls the new one.
+ */
+function seedResolutionEnv(): void {
+  const tiers: readonly Durability[] = ['workspace', 'external', 'lib']
+  for (const tier of tiers) {
+    engine.setInput(queryKey(Q_RESENV, tier), Date.now(), tier)
+  }
+}
+
+/**
+ * Where in `typescript`'s own package a resolved file must live to count as
+ * `lib` rather than `external`. `lib.*.d.ts` ships inside the `typescript`
+ * package itself, so "node_modules" alone cannot tell the two apart.
+ */
+function isLibFile(resolvedFileName: string): boolean {
+  return /[\\/]typescript[\\/]lib[\\/]lib\.[^\\/]*\.d\.ts$/.test(resolvedFileName)
+}
+
+/**
+ * One import specifier's resolution — the query `durabilityOf` was written
+ * for but, until this, had nothing to sit above workspace tier.
+ *
+ * Resolving through `ts.resolveModuleName` is unavoidable (it is the only
+ * thing that knows `baseUrl`, `paths`, and node's own resolution algorithm),
+ * but the RESULT is now memoised and tiered: a specifier that lands in
+ * `node_modules` or `lib.*.d.ts` pulls the matching `resenv` input, so this
+ * memo's own durability comes out `external`/`lib` rather than `workspace` —
+ * and every memo that depends on it (via `pullImportSignatures`) inherits
+ * that floor, which is what lets an ordinary workspace edit skip revalidating
+ * the world of third-party imports underneath it.
+ */
+engine.defineQuery(
+  Q_RES,
+  (arg, ctx): ResolutionResult => {
+    const { specifier, containingDir } = decodeResArg(arg)
+    const root = workspaceRoot
+    if (root === null) {
+      ctx.get(queryKey(Q_RESENV, 'workspace'))
+      return { relativePath: null, tier: 'workspace' }
+    }
+
+    const containingFile = toAbsolute(
+      root,
+      containingDir === '' ? '__containing__.ts' : `${containingDir}/__containing__.ts`
+    )
+
+    const resolved = ts.resolveModuleName(
+      specifier,
+      containingFile,
+      compilerOptions,
+      ts.sys,
+      moduleCache
+    ).resolvedModule
+
+    if (resolved === undefined) {
+      // Unresolved specifiers are re-tried on every workspace-tier change —
+      // adding the missing package, or the file that would have satisfied a
+      // relative import, is exactly a workspace-durability event.
+      ctx.get(queryKey(Q_RESENV, 'workspace'))
+      return { relativePath: null, tier: 'workspace' }
+    }
+
+    if (isLibFile(resolved.resolvedFileName)) {
+      ctx.get(queryKey(Q_RESENV, 'lib'))
+      return { relativePath: null, tier: 'lib' }
+    }
+
+    if (
+      resolved.isExternalLibraryImport === true ||
+      resolved.resolvedFileName.includes('node_modules')
+    ) {
+      ctx.get(queryKey(Q_RESENV, 'external'))
+      return { relativePath: null, tier: 'external' }
+    }
+
+    const relativePath = toRelative(root, resolved.resolvedFileName)
+    // `relative()` yields a leading '..' for anything outside the root — a
+    // symlinked or workspace-external file that is neither node_modules nor
+    // lib. Treated as external: it is not something an ordinary edit inside
+    // this workspace can change.
+    if (relativePath === '' || relativePath.startsWith('..')) {
+      ctx.get(queryKey(Q_RESENV, 'external'))
+      return { relativePath: null, tier: 'external' }
+    }
+
+    ctx.get(queryKey(Q_RESENV, 'workspace'))
+    return { relativePath, tier: 'workspace' }
+  },
+  (a, b) => JSON.stringify(a) === JSON.stringify(b)
+)
+
+/**
  * Pulls the signatures a file's imports contribute, recording the edges.
  *
  * The subtlety is import cycles, which are ordinary TypeScript. Inside a
@@ -643,6 +882,15 @@ function ensureService(root: string): ts.LanguageService {
 function pullImportSignatures(relativePath: string, ctx: { get<T>(key: string): T }): void {
   const node = graph.nodes.get(relativePath)
   if (node === undefined) return
+
+  // Every raw specifier, not just the ones that resolved to a workspace edge.
+  // A specifier that resolves into node_modules or lib.d.ts never becomes a
+  // graph edge at all, so without this an import of `typescript` or `node:fs`
+  // would contribute nothing to this memo's durability and the moduleResolution
+  // query would sit wired up but unconsulted by any real check.
+  for (const specifier of rawImportsByFile.get(relativePath) ?? []) {
+    ctx.get(queryKey(Q_RES, resArg(specifier, dirnamePosix(relativePath))))
+  }
 
   for (const imported of node.imports) {
     const target = graph.nodes.get(imported)
@@ -898,6 +1146,13 @@ function checkFiles(
 
   const produced: FileDiagnostics[] = []
   const nowDirty = new Set<string>()
+  // True unless some file this pass was asked about did not get an answer.
+  // Today the only way that happens is a query cycle (caught below): the pass
+  // is genuinely incomplete for that file, and the next thing that touches it
+  // is whatever unrelated edit happens to invalidate it next — nothing retries
+  // it on its own. `settled` must say so rather than claim every pass finished
+  // everything it started.
+  let settled = true
 
   passEvents = []
   passRecomputed = 0
@@ -917,6 +1172,9 @@ function checkFiles(
       // A query cycle is a bug in the dependency wiring rather than in the
       // user's code, and it must not cost them the rest of the pass.
       if (!(error instanceof QueryCycleError)) throw error
+      // This file was named but never answered — the pass did not settle for
+      // it, and nothing else in this function will retry it.
+      settled = false
       continue
     }
 
@@ -954,7 +1212,10 @@ function checkFiles(
 
   previouslyDirty = nowDirty
 
-  if (produced.length > 0) post({ type: 'diagnostics', files: produced, settled: true })
+  if (produced.length > 0) {
+    post({ type: 'diagnostics', files: produced, settled })
+    markFirstDiagnostics()
+  }
 
   reportPass(cold ? 'cold' : reason, ordered.length, startedAt, before, trigger)
 }
@@ -1060,5 +1321,6 @@ if (port !== null) {
     }
   })
 
+  performance.mark('daemon-ready')
   post({ type: 'ready' })
 }
