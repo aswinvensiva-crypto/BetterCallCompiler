@@ -66,13 +66,39 @@ interface TsRegister {
   readonly javascriptDefaults: LanguageDefaults
 }
 
-/** Only the one method this module calls. */
+/** Only the two methods this module calls. */
 interface LanguageDefaults {
   setDiagnosticsOptions(options: {
     noSemanticValidation: boolean
     noSyntaxValidation: boolean
     noSuggestionDiagnostics: boolean
   }): void
+  setModeConfiguration(configuration: ModeConfiguration): void
+}
+
+/**
+ * Which of Monaco's own TypeScript providers are registered.
+ *
+ * Every field is required here even though Monaco's type marks them optional,
+ * because `setModeConfiguration` REPLACES the object rather than merging into
+ * it — an omitted field is `undefined`, which reads as off. Requiring all
+ * thirteen turns that trap into a compile error and makes the table below the
+ * complete statement of who answers what.
+ */
+interface ModeConfiguration {
+  readonly completionItems: boolean
+  readonly hovers: boolean
+  readonly documentSymbols: boolean
+  readonly definitions: boolean
+  readonly references: boolean
+  readonly documentHighlights: boolean
+  readonly rename: boolean
+  readonly diagnostics: boolean
+  readonly documentRangeFormattingEdits: boolean
+  readonly signatureHelp: boolean
+  readonly onTypeFormattingEdits: boolean
+  readonly codeActions: boolean
+  readonly inlayHints: boolean
 }
 
 /**
@@ -217,25 +243,77 @@ export interface EditorHandle {
 let languageDefaultsConfigured = false
 
 /**
- * Splits diagnostic duty between Monaco's bundled TS worker and the daemon.
+ * Splits the work between Monaco's bundled TS worker and our daemon, and says
+ * so in one table instead of leaving it to whatever node_modules defaults to.
  *
- * Monaco's worker validates every TS/JS model, but it has no tsconfig, no file
- * system and no cross-file resolution — so on a real project every local import
- * yields a false `TS2307 Cannot find module './x'`. Nothing in this app reads
- * those markers, but they are still being drawn.
+ * **The rule: anything answerable from one model's own text is Monaco's;
+ * anything needing the whole program is ours.**
  *
- * The rule: **syntax for open files is Monaco's, everything else is ours.**
- * Monaco keeps syntactic validation, which is instant and model-local and needs
- * no daemon round trip. Semantic validation is turned off here because the
- * daemon is authoritative — it has the real program, the real config and the
- * whole workspace — and it publishes under its own marker owner, so the two
- * never collide.
+ * Monaco's worker has no tsconfig, no file system and no cross-file resolution,
+ * so on a real project every local import yields a false
+ * `TS2307 Cannot find module './x'`. That makes its SEMANTIC answers wrong by
+ * construction for anything that crosses a file, and it is why semantic
+ * validation is off below. It makes its single-file answers perfectly good, and
+ * instant, and never queued behind a check — which is why the outline and the
+ * formatter stay with it rather than crossing to the daemon.
+ *
+ * ## A correction to the audit that started this
+ *
+ * The grep that opened Workstream A — zero hits for
+ * `registerDocumentSymbolProvider`, `registerDocumentFormattingEditProvider`
+ * and their siblings — covered `src/` only, and was over-read as "this IDE has
+ * no outline and no formatting". It does, for TypeScript and JavaScript:
+ * Monaco's TS contribution registers them from inside node_modules the first
+ * time a `.ts` model appears. What genuinely had none was BCC, which is a
+ * language Monaco learned about at runtime and has no worker for — so A1 built
+ * those providers and this file is where the boundary between the two is
+ * written down.
+ *
+ * Stating the whole table explicitly costs thirteen lines and buys two things.
+ * The current split is visible in our source rather than inherited from a
+ * dependency's defaults, and moving a feature to the daemon later — A3 takes
+ * `definitions` and `references`, A5 takes `hovers`, `completionItems` and
+ * `signatureHelp` — is a one-word diff a reviewer can see, instead of a second
+ * provider silently answering the same question and Monaco merging both.
  */
 function configureLanguageDefaults(register: TsRegister): void {
   if (languageDefaultsConfigured) return
 
+  const modeConfiguration: ModeConfiguration = {
+    // Single-file and syntactic. Monaco's, and instant.
+    documentSymbols: true,
+    documentRangeFormattingEdits: true,
+    onTypeFormattingEdits: true,
+    documentHighlights: true,
+    // Syntactic validation only — see `setDiagnosticsOptions` below. Turning
+    // this off would take the squiggles for a missing brace with it.
+    diagnostics: true,
+
+    // Correct only with the program, but keystroke-frequency: an IPC round trip
+    // per character is not affordable until A5 gives them their own worker.
+    // Monaco's answers are single-file and therefore right about local code and
+    // wrong about anything imported, which is the better of the two failures
+    // while the alternative is nothing at all.
+    completionItems: true,
+    hovers: true,
+    signatureHelp: true,
+    inlayHints: true,
+
+    // Ours from A3 and A4. Left with Monaco until the daemon answers for
+    // TypeScript, because two providers answering the same question means
+    // Monaco merges both lists and the user sees every same-file result twice.
+    definitions: true,
+    references: true,
+    rename: true,
+    codeActions: true
+  }
+
   for (const defaults of [register.typescriptDefaults, register.javascriptDefaults]) {
+    defaults.setModeConfiguration(modeConfiguration)
     defaults.setDiagnosticsOptions({
+      // The daemon is authoritative: it has the real program, the real config
+      // and the whole workspace, and it publishes under its own marker owner so
+      // the two can never collide.
       noSemanticValidation: true,
       // `noSyntaxValidation`, not `noSyntacticValidation` — the option is
       // spelled differently from the LanguageService method it mirrors, and a
