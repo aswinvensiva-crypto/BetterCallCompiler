@@ -842,6 +842,38 @@ export const renameResultSchema = z.strictObject({
 })
 export type RenameResult = z.infer<typeof renameResultSchema>
 
+/**
+ * A quick fix, with the edits that carry it out.
+ *
+ * `edits` covers every file the fix touches, which for an import fix is often
+ * two — the file with the error and the one the symbol comes from. That is why
+ * this carries the same `FileEdit` shape a rename does rather than a single
+ * file's worth: the caller has the same partition to make between open buffers
+ * and files on disk, and the same all-or-nothing rule to enforce.
+ */
+export const codeActionSchema = z.strictObject({
+  /** Shown in the lightbulb menu, verbatim. */
+  title: z.string(),
+  /**
+   * `quickfix` or `refactor`, in Monaco's vocabulary. Kept as a string rather
+   * than an enum because Monaco matches these by dotted prefix and inventing a
+   * closed set here would mean widening it every time TypeScript adds a fix.
+   */
+  kind: z.string(),
+  /** True for the fix TypeScript itself would apply first. */
+  preferred: z.boolean(),
+  edits: z.array(fileEditSchema)
+})
+export type CodeAction = z.infer<typeof codeActionSchema>
+
+/** Capped for the same reason references are: a menu nobody can read is waste. */
+export const MAX_CODE_ACTIONS = 32
+
+export const codeActionsResultSchema = z.strictObject({
+  actions: z.array(codeActionSchema).max(MAX_CODE_ACTIONS)
+})
+export type CodeActionsResult = z.infer<typeof codeActionsResultSchema>
+
 /* -------------------------------- artifacts ------------------------------- */
 
 /**

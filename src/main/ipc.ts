@@ -15,6 +15,7 @@ import {
 } from '../shared/ipc-contract'
 import {
   closeDocument as closeCompilerDocument,
+  codeActionsAt as compilerCodeActionsAt,
   compilerPasses,
   compilerStatus,
   definitionAt as compilerDefinitionAt,
@@ -22,6 +23,7 @@ import {
   diagnosticsFor,
   openDocument as openCompilerDocument,
   referencesAt as compilerReferencesAt,
+  renameAt as compilerRenameAt,
   restartCompiler,
   startCompiler
 } from './compiler-service'
@@ -38,6 +40,7 @@ import {
   startLang
 } from './lang-service'
 import {
+  applyWorkspaceEdit,
   createDirectory,
   createFile,
   getWorkspace,
@@ -406,7 +409,32 @@ export function createHandlerMap(): HandlerMap {
             request.newName,
             request.overlay
           )
-        : { target: null, placeholder: null, files: [], error: null },
+        : await compilerRenameAt(
+            request.relativePath,
+            request.offset,
+            request.newName,
+            request.overlay
+          ),
+
+    // BCC has no quick fixes yet — its diagnostics carry no fix data, and
+    // inventing one here would be a second compiler's opinion about a language
+    // this one owns. TypeScript's come from `getCodeFixesAtPosition`.
+    'compiler:codeActions': async (request) =>
+      isBccPath(request.relativePath)
+        ? { actions: [] }
+        : await compilerCodeActionsAt(
+            request.relativePath,
+            request.offset,
+            request.endOffset,
+            request.diagnosticCodes,
+            request.overlay
+          ),
+
+    // Language-agnostic on purpose: an edit is an edit, and which compiler
+    // produced it stops mattering once it is a range and a string.
+    'compiler:applyWorkspaceEdit': async (request) => ({
+      written: await applyWorkspaceEdit(request.files)
+    }),
 
     'compiler:documentSymbols': async (request) =>
       isBccPath(request.relativePath)

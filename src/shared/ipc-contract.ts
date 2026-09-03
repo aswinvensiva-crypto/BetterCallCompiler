@@ -18,6 +18,7 @@ import {
   artifactKindSchema,
   artifactSchema,
   artifactSummarySchema,
+  codeActionsResultSchema,
   compilerPassSchema,
   compilerStatusSchema,
   definitionResultSchema,
@@ -26,6 +27,7 @@ import {
   documentOverlaySchema,
   documentSymbolsResultSchema,
   fileDiagnosticsSchema,
+  fileEditSchema,
   hoverResultSchema,
   referencesResultSchema,
   renameResultSchema,
@@ -542,6 +544,41 @@ export const INVOKE_CHANNELS = {
       overlay: documentOverlaySchema.nullable()
     }),
     response: hoverResultSchema
+  },
+  /**
+   * Quick fixes for the diagnostics under a selection.
+   *
+   * The codes come from the renderer because that is where the markers are, and
+   * `getCodeFixesAtPosition` needs them: a fix is a fix FOR something, so
+   * asking with an empty list returns nothing rather than everything.
+   */
+  'compiler:codeActions': {
+    request: z.strictObject({
+      relativePath: z.string().min(1),
+      offset: z.number().int().nonnegative(),
+      endOffset: z.number().int().nonnegative(),
+      /** Numeric TypeScript codes — `2551`, not `TS2551`. Capped like the trigger set. */
+      diagnosticCodes: z.array(z.number().int().nonnegative()).max(64),
+      overlay: documentOverlaySchema.nullable()
+    }),
+    response: codeActionsResultSchema
+  },
+  /**
+   * Writes edits to files that are NOT open, all of them or none.
+   *
+   * Every file is read and every edit applied in memory first; only when all of
+   * them succeed does anything reach the disk. A rename that rewrote four files
+   * and failed on the fifth would leave a program that compiles nowhere, with
+   * no undo — which is a worse outcome than a rename that refuses.
+   *
+   * Open files never come here. They are edited through their Monaco model so
+   * they stay dirty and stay in the undo stack, and because handing Monaco a
+   * bulk edit spanning closed files makes it create models with no lifecycle
+   * owner.
+   */
+  'compiler:applyWorkspaceEdit': {
+    request: z.strictObject({ files: z.array(fileEditSchema).max(1_000) }),
+    response: z.strictObject({ written: z.array(z.string()) })
   },
 
   /* ------------------------------ artifacts ----------------------------- */

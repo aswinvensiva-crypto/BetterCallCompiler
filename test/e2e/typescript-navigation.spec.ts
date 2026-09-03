@@ -5,7 +5,7 @@ import {
   type ElectronApplication,
   type Page
 } from '@playwright/test'
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { isolatedUserData } from './helpers/user-data'
@@ -184,6 +184,77 @@ test('Shift+F12 finds uses in files that were never opened', async () => {
 
   await window.keyboard.press('Escape')
   await expect(peek).toBeHidden()
+})
+
+/**
+ * Rename, partitioned by ownership — the case the whole design is shaped around.
+ *
+ * `lib.ts` and `app.ts` are open, `lib.ts` is dirty, and `other.ts` has never
+ * been opened and exists only on disk. Monaco may apply edits to the first two,
+ * because models exist and the changes belong in their undo stacks. It must NOT
+ * be handed the third: a bulk edit naming a file with no model makes Monaco
+ * CREATE one with no lifecycle owner, which is the leak `closeSyntaxDocument`
+ * exists to prevent — so that half crosses to main, which reads and applies
+ * everything in memory and writes only if all of it succeeds.
+ *
+ * Renamed at the DECLARATION, deliberately. Renaming from a usage site is a
+ * different operation and TypeScript treats it as one: with
+ * `providePrefixAndSuffixTextForRename` it rewrites the local binding and
+ * introduces `import { greet as welcome }`, preserving the exported name. That
+ * is correct, and it is VS Code's behaviour too — it is simply not the
+ * whole-program rename this test is about.
+ */
+test('F2 at the declaration renames open buffers and a file that is only on disk', async () => {
+  await window.locator('.tab', { hasText: 'lib.ts' }).click()
+  await expect(lines()).toContainText('export function greet(name: string): Greeting {')
+
+  // Dirty first, so the rename has to survive a buffer that differs from disk.
+  await lines().click()
+  await window.keyboard.press('Control+End')
+  await window.keyboard.type('\n// touched\n')
+  await expect(window.locator('.tab--active .tab__close--dirty')).toHaveCount(1)
+
+  await placeCaret(5, 18)
+  await window.keyboard.press('F2')
+
+  const renameBox = window.locator('.monaco-editor .rename-box input')
+  await expect(renameBox).toBeVisible({ timeout: DAEMON_TIMEOUT })
+  await expect(renameBox).toHaveValue('greet')
+  await renameBox.fill('welcome')
+  await window.keyboard.press('Enter')
+
+  // The dirty buffer the rename started in, edited in place and still dirty.
+  await expect(lines()).toContainText('export function welcome(name: string): Greeting {', {
+    timeout: DAEMON_TIMEOUT
+  })
+  await expect(window.locator('.tab--active .tab__close--dirty')).toHaveCount(1)
+
+  // The other open file, edited through its model rather than through disk.
+  await window.locator('.tab', { hasText: 'app.ts' }).click()
+  await expect(lines()).toContainText("const shown = welcome('world')")
+  await expect(lines()).toContainText("import { welcome } from './lib'")
+
+  // The file nobody opened, written by main. Read from DISK rather than from
+  // the editor, because the editor is exactly the thing that never touched it.
+  await expect
+    .poll(async () => await readFile(join(fixture, 'src', 'other.ts'), 'utf8'), {
+      timeout: DAEMON_TIMEOUT
+    })
+    .toContain("export const pair = [welcome('a'), welcome('b')]")
+
+  // One undo, and the buffer it is pressed in is back — Monaco groups the edits
+  // it applied to a model into a single undo element, so a rename does not
+  // unwind one occurrence per keystroke.
+  await window.locator('.tab', { hasText: 'lib.ts' }).click()
+  await lines().click()
+  await window.keyboard.press('Control+z')
+  await expect(lines()).toContainText('export function greet(name: string): Greeting {')
+
+  // And the file on disk is untouched by that undo. That is the honest
+  // consequence of the partition rather than a defect: the two halves were
+  // never one edit, and an editor cannot undo a write it did not make.
+  const onDisk = await readFile(join(fixture, 'src', 'other.ts'), 'utf8')
+  expect(onDisk).toContain('welcome')
 })
 
 test('nothing threw in the renderer', () => {

@@ -2,11 +2,13 @@ import type {
   BuildGraphSummary,
   CompilerDaemonState,
   CompilerPass,
+  CodeActionsResult,
   DefinitionResult,
   DependencyQuery,
   DocumentOverlay,
   FileDiagnostics,
-  ReferencesResult
+  ReferencesResult,
+  RenameResult
 } from './types'
 
 /**
@@ -99,7 +101,7 @@ export interface PingRequest {
  * Unlike `openDocument`, this NEVER schedules a check. `overlay` sets the
  * daemon's view of the buffer and stops there.
  */
-export type LanguageQueryKind = 'definition' | 'references'
+export type LanguageQueryKind = 'definition' | 'references' | 'rename' | 'codeActions'
 
 export interface LanguageQueryRequest {
   readonly type: 'languageQuery'
@@ -108,6 +110,18 @@ export interface LanguageQueryRequest {
   readonly relativePath: string
   /** A UTF-16 code-unit index, as `ITextModel.getOffsetAt` produces. */
   readonly offset: number
+  /** Rename only: null asks where the symbol is, a name asks for the edits. */
+  readonly newName: string | null
+  /**
+   * Code actions only: the offset the selection ENDS at, and the numeric
+   * TypeScript codes of the diagnostics under it.
+   *
+   * The codes come from the renderer because that is where the markers are, and
+   * `getCodeFixesAtPosition` needs them: a fix is a fix FOR something, and
+   * asking without them returns nothing at all rather than everything.
+   */
+  readonly endOffset: number
+  readonly diagnosticCodes: readonly number[]
   /** The live buffer, or null when the caller has none. */
   readonly overlay: DocumentOverlay | null
 }
@@ -183,6 +197,8 @@ export interface PassMessage {
 export type LanguageQueryAnswer =
   | ({ readonly kind: 'definition' } & DefinitionResult)
   | ({ readonly kind: 'references' } & ReferencesResult)
+  | ({ readonly kind: 'rename' } & RenameResult)
+  | ({ readonly kind: 'codeActions' } & CodeActionsResult)
 
 export interface LanguageQueryResponse {
   readonly type: 'languageQueryResult'
@@ -215,7 +231,9 @@ export function emptyLanguageQueryAnswer<K extends LanguageQueryKind>(
 ): Extract<LanguageQueryAnswer, { kind: K }> {
   const empty: { [P in LanguageQueryKind]: Extract<LanguageQueryAnswer, { kind: P }> } = {
     definition: { kind: 'definition', locations: [] },
-    references: { kind: 'references', locations: [], truncated: false }
+    references: { kind: 'references', locations: [], truncated: false },
+    rename: { kind: 'rename', target: null, placeholder: null, files: [], error: null },
+    codeActions: { kind: 'codeActions', actions: [] }
   }
   return empty[kind]
 }

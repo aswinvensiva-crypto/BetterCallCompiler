@@ -77,6 +77,13 @@ export const INVOKE_CHANNEL_NAMES = [
   'compiler:rename',
   'compiler:documentSymbols',
   'compiler:hover',
+  'compiler:codeActions',
+  // The write half of a rename or a quick fix, for the files that have no
+  // buffer. Open files are edited through their model so they stay dirty and
+  // undoable; a bulk edit spanning CLOSED files would have Monaco create models
+  // with no lifecycle owner — exactly the leak `closeSyntaxDocument` exists to
+  // prevent — so those cross to main instead.
+  'compiler:applyWorkspaceEdit',
   'explain:start',
   'artifact:list',
   'artifact:get',

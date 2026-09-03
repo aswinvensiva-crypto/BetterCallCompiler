@@ -42,6 +42,11 @@ import { fileURLToPath } from 'node:url'
  *   7. The work comes back. A cancelled pass owes its remaining files and a
  *      resumed pass delivers them, so the diagnostics converge rather than
  *      being silently dropped.
+ *   8. A rename reaches every file that mentions the symbol — including ones
+ *      nobody has opened — with each file's edits descending, and REFUSES
+ *      rather than half-applying when it would reach outside the workspace.
+ *   9. A quick fix comes back for a diagnostic that has one, and no fixes come
+ *      back when no diagnostic code is supplied.
  */
 
 const WORKER = join(fileURLToPath(new URL('../../', import.meta.url)), 'out/main/compiler-worker.js')
@@ -246,7 +251,7 @@ if (process.env.BCC_TRACE) worker.on('message', (m) => console.log('  [msg]', m.
 
 let queryId = 0
 
-function ask(kind, relativePath, offset, overlay = null) {
+function ask(kind, relativePath, offset, overlay = null, extras = {}) {
   const requestId = ++queryId
   const answered = new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -261,7 +266,18 @@ function ask(kind, relativePath, offset, overlay = null) {
     }
     worker.on('message', onMessage)
   })
-  worker.postMessage({ type: 'languageQuery', requestId, kind, relativePath, offset, overlay })
+  worker.postMessage({
+    type: 'languageQuery',
+    requestId,
+    kind,
+    relativePath,
+    offset,
+    overlay,
+    newName: null,
+    endOffset: offset,
+    diagnosticCodes: [],
+    ...extras
+  })
   return answered
 }
 
@@ -486,6 +502,86 @@ console.log(renamed.text)
   )
   check('and the last batch settles', collected[collected.length - 1]?.settled, true)
 
+
+  /* --- 8. rename, across every file that mentions the symbol -------------- */
+
+  console.log('\n--- rename ---')
+
+  editLib('string')
+  worker.postMessage({ type: 'filesChanged', changed: ['src/lib.ts'], removed: [] })
+  await collectUntilSettled(worker)
+
+  const declaration2 = offsetOf(LIB, 'greet')
+  const plan = await ask('rename', 'src/lib.ts', declaration2)
+  check('the box pre-fills with the symbol under the caret', plan.placeholder, 'greet')
+  check('and nothing is rewritten until a name is given', plan.files.length, 0)
+
+  const renamed = await ask('rename', 'src/lib.ts', declaration2, null, { newName: 'welcome' })
+  check('every file that mentions it gets edits', renamed.files.length, FANOUT + 3)
+  check('the declaration among them', renamed.files.some((f) => f.relativePath === 'src/lib.ts'), true)
+  check('and a file nobody opened', renamed.files.some((f) => f.relativePath === 'src/dep7.ts'), true)
+  check('no error', renamed.error, null)
+
+  // Descending within each file, so applying in order cannot move a range not
+  // yet applied. `other.ts` has three occurrences, which is enough to tell a
+  // sort from an accident.
+  const otherEdits = renamed.files.find((f) => f.relativePath === 'src/other.ts')?.edits ?? []
+  const startLines = otherEdits.map((edit) => edit.range.startLine)
+  check(
+    'edits within a file come back descending',
+    [...startLines].every((line, i) => i === 0 || line <= startLines[i - 1]),
+    true
+  )
+
+  // Renaming something declared in a library must be REFUSED, not partially
+  // applied: dropping the locations outside the workspace would leave a program
+  // that compiles nowhere with nothing having said so.
+  const libraryRename = await ask('rename', 'src/app.ts', offsetOf(APP, 'console'), null, {
+    newName: 'consoul'
+  })
+  check('a library symbol is refused', libraryRename.error !== null, true)
+  check('with no edits attached', libraryRename.files.length, 0)
+
+  /* --- 9. quick fixes ----------------------------------------------------- */
+
+  console.log('\n--- code actions ---')
+
+  const TYPO = `import { greet } from './lib'\n\nexport const shown = gret('world')\n`
+  writeFileSync(join(root, 'src', 'app.ts'), TYPO, 'utf8')
+  worker.postMessage({ type: 'filesChanged', changed: ['src/app.ts'], removed: [] })
+  const typo = await collectUntilSettled(worker)
+
+  const appDiagnostics = typo.files.find((file) => file.relativePath === 'src/app.ts')?.diagnostics
+  check('the typo is reported', (appDiagnostics ?? []).length > 0, true)
+
+  const codes = (appDiagnostics ?? []).map((d) => Number(d.code.replace('TS', '')))
+  const typoAt = offsetOf(TYPO, 'gret')
+  const fixes = await ask('codeActions', 'src/app.ts', typoAt, null, {
+    endOffset: typoAt + 4,
+    diagnosticCodes: codes
+  })
+
+  check('a fix is offered', fixes.actions.length > 0, true)
+  // TypeScript's own wording, which is more specific than anything this could
+  // invent: it names the symbol it thinks was meant.
+  check(
+    'and it is the spelling fix, naming the symbol that exists',
+    fixes.actions.map((action) => action.title),
+    ["Change spelling to 'greet'"]
+  )
+  check(
+    'its edits name a real file',
+    fixes.actions[0]?.edits.every((file) => file.relativePath.startsWith('src/')),
+    true
+  )
+
+  // A fix is a fix FOR something. Asking with no codes has to return nothing
+  // rather than every refactoring TypeScript can imagine.
+  const unprompted = await ask('codeActions', 'src/app.ts', typoAt, null, {
+    endOffset: typoAt + 4,
+    diagnosticCodes: []
+  })
+  check('no codes, no fixes', unprompted.actions.length, 0)
 } finally {
   await worker.terminate()
   rmSync(root, { recursive: true, force: true })

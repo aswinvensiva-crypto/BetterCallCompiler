@@ -33,8 +33,10 @@ import {
 import { isMemoReuse } from '../shared/pass-analysis'
 import { moduleSignature } from './module-signature'
 import {
+  MAX_CODE_ACTIONS,
   MAX_REFERENCE_RESULTS,
   type BuildGraphSummary,
+  type CodeAction,
   type CompilerDaemonState,
   type CompilerPass,
   type CompilerTraceEvent,
@@ -43,7 +45,9 @@ import {
   type DiagnosticSeverity,
   type DocumentOverlay,
   type FileDiagnostics,
-  type LanguageLocation
+  type FileEdit,
+  type LanguageLocation,
+  type TextEdit
 } from '../shared/types'
 
 /**
@@ -1266,7 +1270,220 @@ function answerLanguageQuery(
       const locations = toLocations(root, found)
       return { kind, locations, truncated: locations.length >= MAX_REFERENCE_RESULTS }
     }
+
+    case 'rename':
+      return answerRename(root, languageService, request)
+
+    case 'codeActions':
+      return answerCodeActions(root, languageService, request)
   }
+}
+
+/* --------------------------------- rename --------------------------------- */
+
+/**
+ * Both halves of a rename, from `getRenameInfo` and `findRenameLocations`.
+ *
+ * `newName === null` is Monaco asking where to draw the inline box when F2 is
+ * pressed, before a new name exists. A name asks for the edits.
+ */
+function answerRename(
+  root: string,
+  languageService: ts.LanguageService,
+  request: LanguageQueryRequest
+): Extract<LanguageQueryAnswer, { kind: 'rename' }> {
+  const kind = 'rename' as const
+  const absolute = toAbsolute(root, request.relativePath)
+
+  const info = languageService.getRenameInfo(absolute, request.offset, {
+    // Off, both of them. A rename that also rewrites the word inside a string
+    // or a comment is a find-and-replace wearing a rename's clothes, and it is
+    // the behaviour people turn off first in every editor that defaults it on.
+    providePrefixAndSuffixTextForRename: true
+  })
+
+  if (!info.canRename) {
+    return {
+      kind,
+      target: null,
+      placeholder: null,
+      files: [],
+      // TypeScript's own wording, which is more specific than anything this
+      // could invent — "You cannot rename elements that are defined in a
+      // library" rather than "there is nothing to rename here".
+      error: info.localizedErrorMessage
+    }
+  }
+
+  const lineStartsFor = makeLineStartsCache(root)
+  const target = rangeFromSpan(
+    lineStartsFor(request.relativePath),
+    info.triggerSpan.start,
+    info.triggerSpan.length
+  )
+
+  if (request.newName === null) {
+    return { kind, target, placeholder: info.displayName, files: [], error: null }
+  }
+
+  const found =
+    languageService.findRenameLocations(absolute, request.offset, false, false, {
+      providePrefixAndSuffixTextForRename: true
+    }) ?? []
+
+  const byFile = new Map<string, TextEdit[]>()
+
+  for (const location of found) {
+    const relativePath = toRelative(root, location.fileName)
+    if (!isInsideWorkspace(relativePath)) {
+      // REFUSED, not dropped. Dropping a location silently produces a
+      // half-renamed program, which is the worst outcome available: the code
+      // still compiles nowhere and nothing said so. A rename reaching outside
+      // the workspace means renaming a library symbol, which should be refused
+      // anyway.
+      return {
+        kind,
+        target,
+        placeholder: info.displayName,
+        files: [],
+        error: `renaming this would also change ${relativePath}, which is outside the workspace`
+      }
+    }
+
+    const edits = byFile.get(relativePath) ?? []
+    edits.push({
+      range: rangeFromSpan(
+        lineStartsFor(relativePath),
+        location.textSpan.start,
+        location.textSpan.length
+      ),
+      // `prefixText` and `suffixText` are how TypeScript expands an object
+      // shorthand: renaming `x` in `{ x }` has to produce `{ x: renamed }`, not
+      // `{ renamed }`, or the object's key changes with it. Ignoring them
+      // silently rewrites an API.
+      newText: `${location.prefixText ?? ''}${request.newName}${location.suffixText ?? ''}`
+    })
+    byFile.set(relativePath, edits)
+  }
+
+  const files = [...byFile.entries()].map(([relativePath, edits]) => ({
+    relativePath,
+    path: toAbsolute(root, relativePath),
+    edits: sortDescending(edits)
+  }))
+
+  return { kind, target, placeholder: info.displayName, files, error: null }
+}
+
+/**
+ * Descending by position, so applying in order cannot move a range not yet
+ * applied. Produced sorted rather than sorted at the point of use, because
+ * every consumer would otherwise have to remember.
+ */
+function sortDescending(edits: readonly TextEdit[]): TextEdit[] {
+  return [...edits].sort((a, b) =>
+    a.range.startLine === b.range.startLine
+      ? b.range.startColumn - a.range.startColumn
+      : b.range.startLine - a.range.startLine
+  )
+}
+
+/* ------------------------------ code actions ------------------------------ */
+
+/**
+ * Quick fixes for the diagnostics under the selection.
+ *
+ * The codes come from the renderer rather than being re-derived here, because
+ * that is where the markers are and `getCodeFixesAtPosition` needs them: a fix
+ * is a fix FOR something, and asking with an empty code list returns nothing
+ * rather than everything.
+ */
+function answerCodeActions(
+  root: string,
+  languageService: ts.LanguageService,
+  request: LanguageQueryRequest
+): Extract<LanguageQueryAnswer, { kind: 'codeActions' }> {
+  const kind = 'codeActions' as const
+  if (request.diagnosticCodes.length === 0) return { kind, actions: [] }
+
+  const absolute = toAbsolute(root, request.relativePath)
+  const fixes = languageService.getCodeFixesAtPosition(
+    absolute,
+    request.offset,
+    request.endOffset,
+    [...request.diagnosticCodes],
+    FORMAT_OPTIONS,
+    {}
+  )
+
+  const lineStartsFor = makeLineStartsCache(root)
+  const actions: CodeAction[] = []
+
+  for (const fix of fixes) {
+    if (actions.length >= MAX_CODE_ACTIONS) break
+
+    const files: FileEdit[] = []
+    let reachesOutside = false
+
+    for (const change of fix.changes) {
+      const relativePath = toRelative(root, change.fileName)
+      if (!isInsideWorkspace(relativePath)) {
+        reachesOutside = true
+        break
+      }
+      // A fix that creates a file is a shape this cannot carry, and applying
+      // half of it would be worse than offering nothing.
+      if (change.isNewFile === true) {
+        reachesOutside = true
+        break
+      }
+
+      files.push({
+        relativePath,
+        path: toAbsolute(root, relativePath),
+        edits: sortDescending(
+          change.textChanges.map((textChange) => ({
+            range: rangeFromSpan(
+              lineStartsFor(relativePath),
+              textChange.span.start,
+              textChange.span.length
+            ),
+            newText: textChange.newText
+          }))
+        )
+      })
+    }
+
+    if (reachesOutside || files.length === 0) continue
+
+    actions.push({
+      title: fix.description,
+      kind: 'quickfix',
+      // TypeScript marks the fix it would apply first; Monaco renders that one
+      // as the default when the lightbulb is triggered with Ctrl+. and Enter.
+      preferred: fix.fixAllDescription === undefined ? false : true,
+      edits: files
+    })
+  }
+
+  return { kind, actions }
+}
+
+/**
+ * Formatting the fixes are rendered with.
+ *
+ * `getCodeFixesAtPosition` inserts real text — an import statement, a property
+ * declaration — and formats it against these. They match the editor's own
+ * options in `createEditor`, so a fix does not arrive indented differently from
+ * the code around it.
+ */
+const FORMAT_OPTIONS: ts.FormatCodeSettings = {
+  indentSize: 2,
+  tabSize: 2,
+  convertTabsToSpaces: true,
+  newLineCharacter: '\n',
+  insertSpaceAfterCommaDelimiter: true,
+  insertSpaceAfterKeywordsInControlFlowStatements: true
 }
 
 /**

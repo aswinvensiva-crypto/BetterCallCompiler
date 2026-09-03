@@ -20,6 +20,7 @@ import {
 import type {
   CompilerDaemonState,
   CompilerPass,
+  CodeActionsResult,
   CompilerStatus,
   DefinitionResult,
   DependencyQuery,
@@ -27,7 +28,8 @@ import type {
   DocumentOverlay,
   FileDiagnostics,
   FsWatchEvent,
-  ReferencesResult
+  ReferencesResult,
+  RenameResult
 } from '../shared/types'
 import { stoppedCompilerStatus } from '../shared/types'
 
@@ -578,11 +580,18 @@ function withoutKind<K extends LanguageQueryKind>(
  * is the cost being accepted here and the thing A4's cancellation flag removes;
  * the query harness measures the number rather than assuming it is small.
  */
+interface QueryExtras {
+  readonly newName?: string | null
+  readonly endOffset?: number
+  readonly diagnosticCodes?: readonly number[]
+}
+
 function languageQuery<K extends LanguageQueryKind>(
   kind: K,
   relativePath: string,
   offset: number,
-  overlay: DocumentOverlay | null
+  overlay: DocumentOverlay | null,
+  extras: QueryExtras = {}
 ): Promise<AnswerFor<K>> {
   const empty = withoutKind(emptyLanguageQueryAnswer(kind))
   if (worker === null) return Promise.resolve(empty)
@@ -612,7 +621,20 @@ function languageQuery<K extends LanguageQueryKind>(
     // nothing is draining. The worker stands it down the moment it starts
     // answering.
     requestCancellation()
-    send({ type: 'languageQuery', requestId, kind, relativePath, offset, overlay })
+    send({
+      type: 'languageQuery',
+      requestId,
+      kind,
+      relativePath,
+      offset,
+      overlay,
+      newName: extras.newName ?? null,
+      // Defaults that mean "the caret, and nothing under it": a definition or a
+      // reference query carries neither, and a worker reading them for those
+      // kinds would be reading fields that were never about it.
+      endOffset: extras.endOffset ?? offset,
+      diagnosticCodes: extras.diagnosticCodes ?? []
+    })
   })
 }
 
@@ -655,6 +677,28 @@ export function referencesAt(
   overlay: DocumentOverlay | null
 ): Promise<ReferencesResult> {
   return languageQuery('references', relativePath, offset, overlay)
+}
+
+export function renameAt(
+  relativePath: string,
+  offset: number,
+  newName: string | null,
+  overlay: DocumentOverlay | null
+): Promise<RenameResult> {
+  return languageQuery('rename', relativePath, offset, overlay, { newName })
+}
+
+export function codeActionsAt(
+  relativePath: string,
+  offset: number,
+  endOffset: number,
+  diagnosticCodes: readonly number[],
+  overlay: DocumentOverlay | null
+): Promise<CodeActionsResult> {
+  return languageQuery('codeActions', relativePath, offset, overlay, {
+    endOffset,
+    diagnosticCodes
+  })
 }
 
 /** Resolves with an empty query if the daemon never answers. */

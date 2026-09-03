@@ -3,7 +3,9 @@ import { watch, type FSWatcher } from 'chokidar'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { promises as fsp } from 'node:fs'
 import { BetterCallCompilerServiceError } from '../shared/ipc-contract'
+import { applyTextEdits } from '../shared/workspace-edit'
 import type {
+  FileEdit,
   FileNode,
   FsWatchEvent,
   FsWatchEventType,
@@ -574,6 +576,65 @@ export async function readFile(requestedPath: string): Promise<string> {
   } catch {
     throw new BetterCallCompilerServiceError('NOT_FOUND', `cannot read file: ${requestedPath}`)
   }
+}
+
+/**
+ * Applies edits to files on disk, all of them or none.
+ *
+ * Every file is read and every edit applied IN MEMORY first; only once all of
+ * them succeed does anything reach the disk. A rename that rewrote four files
+ * and failed on the fifth would leave a program that compiles nowhere, and —
+ * because none of these files is open — with no undo stack to get back from. A
+ * refusal is recoverable; a half-renamed workspace is not.
+ *
+ * Confined per file through the same `confinePath` every other write uses. A
+ * path outside the workspace fails the whole operation rather than being
+ * skipped, for the same reason: a partial application is the outcome being
+ * avoided.
+ *
+ * Returns the paths written, so the caller can say what moved.
+ */
+export async function applyWorkspaceEdit(files: readonly FileEdit[]): Promise<string[]> {
+  const root = requireRoot()
+  const pending: { target: string; text: string }[] = []
+
+  for (const file of files) {
+    const target = await confinePath(root, file.path)
+
+    let original: string
+    try {
+      original = await fsp.readFile(target, 'utf8')
+    } catch {
+      throw new BetterCallCompilerServiceError(
+        'NOT_FOUND',
+        `cannot read file: ${file.relativePath}`
+      )
+    }
+
+    const applied = applyTextEdits(original, file.edits)
+    if (!applied.ok) {
+      throw new BetterCallCompilerServiceError(
+        'IO_ERROR',
+        `${file.relativePath}: ${applied.reason}`
+      )
+    }
+
+    pending.push({ target, text: applied.text })
+  }
+
+  // Nothing above this line touched the disk. Past it, a failure leaves a
+  // partial write — which is why every check that CAN happen first, has.
+  const written: string[] = []
+  for (const { target, text } of pending) {
+    try {
+      await fsp.writeFile(target, text, 'utf8')
+    } catch {
+      throw new BetterCallCompilerServiceError('IO_ERROR', `cannot write file: ${target}`)
+    }
+    written.push(target)
+  }
+
+  return written
 }
 
 export async function writeFile(requestedPath: string, content: string): Promise<void> {

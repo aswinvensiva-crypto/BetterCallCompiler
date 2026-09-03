@@ -1,6 +1,11 @@
 import type * as monacoNs from 'monaco-editor'
 import { documentUri, relativePathFromUri, rememberAbsolutePath } from './document-uri'
-import type { DocumentSymbolNode, LanguageLocation, SourceRange } from '../../shared/types'
+import type {
+  DocumentSymbolNode,
+  FileEdit,
+  LanguageLocation,
+  SourceRange
+} from '../../shared/types'
 
 /**
  * Go to definition, find references, rename, outline and hover — answered by
@@ -153,7 +158,39 @@ export function registerNavigationProviders(ns: typeof monacoNs): void {
 
   /* -------------------------------- rename ------------------------------- */
 
-  ns.languages.registerRenameProvider(BCC, {
+  /**
+   * Splits an edit set into what Monaco may apply and what main must write.
+   *
+   * The line is whether a model exists: an OPEN file is edited through its
+   * model so it stays dirty, stays in the undo stack, and shows the change
+   * without a disk round trip. A CLOSED file has no model, and handing Monaco a
+   * bulk edit that names one makes it CREATE a model with no lifecycle owner —
+   * exactly the leak `closeSyntaxDocument` exists to prevent — so those go to
+   * main, which reads and applies everything in memory and writes only if all
+   * of them succeed.
+   */
+  const partition = (
+    files: readonly FileEdit[]
+  ): { open: FileEdit[]; closed: FileEdit[] } => {
+    const open: FileEdit[] = []
+    const closed: FileEdit[] = []
+    for (const file of files) {
+      if (ns.editor.getModel(documentUri(ns, file.relativePath)) === null) closed.push(file)
+      else open.push(file)
+    }
+    return { open, closed }
+  }
+
+  const toBulkEdits = (files: readonly FileEdit[]): monacoNs.languages.IWorkspaceTextEdit[] =>
+    files.flatMap((file) =>
+      file.edits.map((edit) => ({
+        resource: documentUri(ns, file.relativePath),
+        versionId: undefined,
+        textEdit: { range: toMonacoRange(edit.range), text: edit.newText }
+      }))
+    )
+
+  ns.languages.registerRenameProvider(PROGRAM_LANGUAGES, {
     /**
      * Where to draw the inline box when F2 is pressed.
      *
@@ -211,20 +248,90 @@ export function registerNavigationProviders(ns: typeof monacoNs): void {
         return { edits: [], rejectReason: result.value.error }
       }
 
-      // Safe to hand Monaco a bulk edit here because BCC has no imports, so a
-      // rename is always confined to one file and that file is the one on
-      // screen. A bulk edit spanning CLOSED files would make Monaco create
-      // models with no lifecycle owner — exactly the leak `closeSyntaxDocument`
-      // exists to prevent — and A4 routes those through main instead.
-      return {
-        edits: result.value.files.flatMap((file) =>
-          file.edits.map((edit) => ({
-            resource: documentUri(ns, file.relativePath),
-            versionId: undefined,
-            textEdit: { range: toMonacoRange(edit.range), text: edit.newText }
-          }))
-        )
+      const { open, closed } = partition(result.value.files)
+
+      // Files on disk FIRST, and awaited. If that write fails the rename must
+      // not half-happen, so nothing is handed to Monaco and the user is told —
+      // the buffers are still exactly as they were. Doing it the other way
+      // round would leave the open files renamed and the closed ones not, which
+      // is the outcome the all-or-nothing write exists to prevent.
+      if (closed.length > 0) {
+        const written = await api.applyWorkspaceEdit({ files: closed })
+        if (!written.ok) return { edits: [], rejectReason: written.error.message }
       }
+
+      // Monaco applies these, and groups them into ONE undo element itself, so
+      // a single Ctrl+Z takes the whole rename back rather than one occurrence
+      // per keystroke.
+      return { edits: toBulkEdits(open) }
+    }
+  })
+
+  /* ------------------------------ code actions ---------------------------- */
+
+  /**
+   * Quick fixes, from `getCodeFixesAtPosition`.
+   *
+   * Monaco hands the provider the markers under the selection, and the numeric
+   * TypeScript code is what the daemon needs — a fix is a fix FOR something, so
+   * asking without codes returns nothing rather than everything. Our markers
+   * carry `TS2551`, so the digits are parsed back out here rather than a second
+   * numeric field being threaded through the diagnostic shape.
+   */
+  const codeOf = (marker: monacoNs.editor.IMarkerData): number | null => {
+    const raw = typeof marker.code === 'string' ? marker.code : marker.code?.value
+    if (raw === undefined) return null
+    const digits = /^TS(\d+)$/.exec(raw)
+    return digits === null ? null : Number(digits[1])
+  }
+
+  ns.languages.registerCodeActionProvider(PROGRAM_LANGUAGES, {
+    async provideCodeActions(model, range, context) {
+      const empty = { actions: [], dispose: () => {} }
+      const relativePath = pathOf(model)
+      if (relativePath === null) return empty
+
+      const diagnosticCodes = context.markers
+        .map(codeOf)
+        .filter((code): code is number => code !== null)
+      if (diagnosticCodes.length === 0) return empty
+
+      const result = await api.codeActions({
+        relativePath,
+        offset: model.getOffsetAt({ lineNumber: range.startLineNumber, column: range.startColumn }),
+        endOffset: model.getOffsetAt({ lineNumber: range.endLineNumber, column: range.endColumn }),
+        // Deduplicated: two markers on the same line can share a code, and
+        // asking twice returns the same fix twice.
+        diagnosticCodes: [...new Set(diagnosticCodes)],
+        overlay: overlayOf(model)
+      })
+      if (!result.ok) return empty
+
+      const actions: monacoNs.languages.CodeAction[] = []
+      for (const action of result.value.actions) {
+        const { open, closed } = partition(action.edits)
+
+        // A fix that would write a file with no buffer is OFFERED but disabled,
+        // with the reason visible. Applying it silently is the one thing that
+        // must not happen — Monaco applies a code action's edit itself, with no
+        // seam to route the closed half through main first, and a fix that
+        // half-lands is worse than one the user can see and decline.
+        actions.push({
+          title: action.title,
+          kind: action.kind,
+          isPreferred: action.preferred,
+          diagnostics: [...context.markers],
+          ...(closed.length > 0
+            ? {
+                disabled: `this fix also changes ${closed
+                  .map((file) => file.relativePath)
+                  .join(', ')} — open ${closed.length === 1 ? 'it' : 'them'} first`
+              }
+            : { edit: { edits: toBulkEdits(open) } })
+        })
+      }
+
+      return { actions, dispose: () => {} }
     }
   })
 

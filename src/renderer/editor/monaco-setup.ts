@@ -301,12 +301,16 @@ function configureLanguageDefaults(register: TsRegister): void {
 
     // Ours. The daemon has the real program, so its answers cross files and
     // Monaco's cannot — and leaving Monaco's on as well would have it merge
-    // both lists and turn a clean F12 jump into a peek showing the same line
-    // twice. `rename` and `codeActions` follow in A4 for the same reason.
+    // both lists: two identical definitions turning a clean F12 jump into a
+    // peek, and two copies of every quick fix in the lightbulb.
+    //
+    // Rename is the one where the difference is not merely cosmetic. Monaco's
+    // rewrites the occurrences in ONE file, so renaming an exported symbol
+    // silently leaves every importer pointing at a name that no longer exists.
     definitions: false,
     references: false,
-    rename: true,
-    codeActions: true
+    rename: false,
+    codeActions: false
   }
 
   for (const defaults of [register.typescriptDefaults, register.javascriptDefaults]) {
