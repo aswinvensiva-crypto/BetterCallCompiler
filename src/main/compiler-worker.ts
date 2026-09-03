@@ -1,7 +1,16 @@
 import { parentPort } from 'node:worker_threads'
-import { readdirSync, readFileSync, statSync } from 'node:fs'
-import { isAbsolute, join, relative, sep } from 'node:path'
+import { readFileSync, statSync } from 'node:fs'
+import { isAbsolute } from 'node:path'
 import ts from 'typescript'
+import {
+  SOURCE_EXTENSIONS,
+  createLanguageServiceHost,
+  extensionOf,
+  loadWorkspaceConfig,
+  toAbsolute,
+  toRelative,
+  walkSources
+} from './ts-workspace'
 import {
   emptyLanguageQueryAnswer,
   isWorkerRequest,
@@ -68,21 +77,6 @@ function post(message: WorkerMessage): void {
   port?.postMessage(message)
 }
 
-/** Mirrors fs-service's UNWATCHED so both sides agree what "the workspace" is. */
-const IGNORED_DIRECTORIES = new Set([
-  'node_modules',
-  '.git',
-  '.bettercallcompiler',
-  'dist',
-  'out',
-  '.next'
-])
-
-/** Same ceiling as fs-service's listFiles, for the same reason. */
-const MAX_WALKED_FILES = 20_000
-
-const SOURCE_EXTENSIONS = new Set(['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs'])
-
 let workspaceRoot: string | null = null
 let graph = createGraph()
 let cycles: Cycle[] = []
@@ -141,94 +135,22 @@ function heapUsedMb(): number {
   return Math.round((process.memoryUsage().heapUsed / (1024 * 1024)) * 10) / 10
 }
 
-function toRelative(root: string, absolute: string): string {
-  const rel = relative(root, absolute)
-  return rel === '' ? '' : rel.split(sep).join('/')
-}
-
-function toAbsolute(root: string, relativePath: string): string {
-  return join(root, ...relativePath.split('/'))
-}
-
-function extensionOf(name: string): string {
-  const dot = name.lastIndexOf('.')
-  return dot < 0 ? '' : name.slice(dot).toLowerCase()
-}
-
 /* ------------------------------ config ----------------------------------- */
 
-/**
- * Adopts the workspace tsconfig, or falls back to permissive defaults.
- *
- * `checkJs: false` in the fallback is deliberate: without a tsconfig, a plain
- * JavaScript project would otherwise sprout a wall of type errors nobody asked
- * for on first open.
- */
+/** Adopts the workspace tsconfig, or the permissive fallback. See ts-workspace. */
 function loadConfig(root: string): void {
-  const configPath = ts.findConfigFile(root, ts.sys.fileExists, 'tsconfig.json')
-
-  if (configPath === undefined) {
-    tsconfigRelativePath = null
-    compilerOptions = {
-      allowJs: true,
-      checkJs: false,
-      target: ts.ScriptTarget.ES2022,
-      moduleResolution: ts.ModuleResolutionKind.Bundler,
-      module: ts.ModuleKind.ESNext,
-      noEmit: true,
-      skipLibCheck: true
-    }
-    return
-  }
-
-  const read = ts.readConfigFile(configPath, ts.sys.readFile)
-  const parsed = ts.parseJsonConfigFileContent(read.config ?? {}, ts.sys, root)
-
-  tsconfigRelativePath = toRelative(root, configPath)
-  compilerOptions = { ...parsed.options, noEmit: true, skipLibCheck: true }
+  const config = loadWorkspaceConfig(root)
+  compilerOptions = config.options
+  tsconfigRelativePath = config.tsconfigRelativePath
 }
 
 /* ------------------------------- walking --------------------------------- */
 
+/** Walks the workspace for source files. See ts-workspace for the rules. */
 function walk(root: string): string[] {
-  const found: string[] = []
-  const queue: string[] = [root]
-  truncated = false
-
-  while (queue.length > 0 && !truncated) {
-    const directory = queue.shift()
-    if (directory === undefined) break
-
-    // Deliberately uninitialised-then-inferred rather than annotated:
-    // `ReturnType<typeof readdirSync>` resolves to the Buffer overload and
-    // every entry.name then types as a Buffer.
-    let entries
-    try {
-      entries = readdirSync(directory, { withFileTypes: true })
-    } catch {
-      continue
-    }
-
-    for (const entry of entries) {
-      if (IGNORED_DIRECTORIES.has(entry.name)) continue
-      const absolute = join(directory, entry.name)
-
-      if (entry.isDirectory()) {
-        queue.push(absolute)
-        continue
-      }
-      if (!entry.isFile()) continue
-      if (!SOURCE_EXTENSIONS.has(extensionOf(entry.name))) continue
-
-      if (found.length >= MAX_WALKED_FILES) {
-        truncated = true
-        break
-      }
-      found.push(absolute)
-    }
-  }
-
-  return found
+  const result = walkSources(root)
+  truncated = result.truncated
+  return result.files
 }
 
 /* -------------------------------- imports -------------------------------- */
@@ -446,31 +368,6 @@ function applyChanges(
 
 /* ---------------------------- language service ---------------------------- */
 
-/**
- * Where `lib.*.d.ts` actually live.
- *
- * `ts.getDefaultLibFilePath` resolves relative to the typescript package, which
- * is correct in development. In a packaged build those files are NOT beside the
- * package: electron-builder appends `!**\/*.{…,d.ts,…}` as its last file
- * pattern, so every one of the 99 lib files is stripped from app.asar and no
- * `files` entry can re-include them. They are shipped via `extraResources` to
- * `resources/typescript-lib` instead, which is a separate pipeline that the
- * filter does not touch.
- *
- * Probing for the file rather than branching on `app.isPackaged` keeps this
- * worker free of any electron import — it is a plain Node thread and must stay
- * one.
- */
-function defaultLibPath(options: ts.CompilerOptions): string {
-  const packaged = join(process.resourcesPath ?? '', 'typescript-lib', ts.getDefaultLibFileName(options))
-  try {
-    if (process.resourcesPath !== undefined && statSync(packaged).isFile()) return packaged
-  } catch {
-    // Not a packaged build, or the resource is missing; fall through.
-  }
-  return ts.getDefaultLibFilePath(options)
-}
-
 let service: ts.LanguageService | null = null
 
 /** Bumped per file on every edit so the host knows a snapshot is stale. */
@@ -503,45 +400,35 @@ function scriptFileNames(root: string): string[] {
 }
 
 function createService(root: string): ts.LanguageService {
-  const host: ts.LanguageServiceHost = {
-    getScriptFileNames: () => scriptFileNames(root),
-    getScriptVersion: (fileName) => {
-      const relativePath = toRelative(root, fileName)
+  // One host, built by `ts-workspace.ts`, so this worker and the interactive
+  // one cannot disagree about what a file says or when it changed. What stays
+  // here is the part that is genuinely this worker's: the engine holds the
+  // authoritative copy of every file's text, and reading disk instead would let
+  // the service and the memos disagree about the same file within one pass.
+  const host = createLanguageServiceHost({
+    root,
+    scriptFileNames: () => scriptFileNames(root),
+    compilerOptions: () => compilerOptions,
+    textOf: (relativePath) => {
+      // Overlay first: the daemon must check the buffer the user is looking at,
+      // not the last thing written to disk.
+      const overlay = overlays.get(relativePath)
+      if (overlay !== undefined) return overlay.content
+
+      const held = engineTexts.get(relativePath)
+      if (held !== undefined) return held
+
+      return readIfPossible(toAbsolute(root, relativePath))
+    },
+    versionOf: (relativePath) => {
       const overlay = overlays.get(relativePath)
       if (overlay !== undefined) return `o${overlay.version}`
       // A counter the daemon controls, NOT mtime. See `textVersions` for why
       // the filesystem clock is not usable as a change signal here.
       return `d${textVersions.get(relativePath) ?? documentVersions.get(relativePath) ?? 0}`
     },
-    getScriptSnapshot: (fileName) => {
-      const relativePath = toRelative(root, fileName)
-
-      // Overlay first: the daemon must check the buffer the user is looking at,
-      // not the last thing written to disk.
-      const overlay = overlays.get(relativePath)
-      if (overlay !== undefined) return ts.ScriptSnapshot.fromString(overlay.content)
-
-      // Then the engine's own copy, which is what every query was computed
-      // against. Reading disk here instead would let the service and the engine
-      // disagree about the same file within one pass.
-      const held = engineTexts.get(relativePath)
-      if (held !== undefined) return ts.ScriptSnapshot.fromString(held)
-
-      const text = readIfPossible(fileName)
-      return text === null ? undefined : ts.ScriptSnapshot.fromString(text)
-    },
-    getCurrentDirectory: () => root,
-    getCompilationSettings: () => compilerOptions,
-    getDefaultLibFileName: (options) => defaultLibPath(options),
-    fileExists: ts.sys.fileExists,
-    readFile: ts.sys.readFile,
-    readDirectory: ts.sys.readDirectory,
-    directoryExists: ts.sys.directoryExists,
-    getDirectories: ts.sys.getDirectories,
-    // Polled by the checker at its own checkpoints, so the latency of stopping
-    // is bounded by one checkpoint rather than by the whole file.
-    getCancellationToken: () => ({ isCancellationRequested })
-  }
+    isCancellationRequested
+  })
 
   return ts.createLanguageService(host, ts.createDocumentRegistry())
 }
