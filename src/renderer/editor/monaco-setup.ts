@@ -299,11 +299,12 @@ function configureLanguageDefaults(register: TsRegister): void {
     signatureHelp: true,
     inlayHints: true,
 
-    // Ours from A3 and A4. Left with Monaco until the daemon answers for
-    // TypeScript, because two providers answering the same question means
-    // Monaco merges both lists and the user sees every same-file result twice.
-    definitions: true,
-    references: true,
+    // Ours. The daemon has the real program, so its answers cross files and
+    // Monaco's cannot — and leaving Monaco's on as well would have it merge
+    // both lists and turn a clean F12 jump into a peek showing the same line
+    // twice. `rename` and `codeActions` follow in A4 for the same reason.
+    definitions: false,
+    references: false,
     rename: true,
     codeActions: true
   }

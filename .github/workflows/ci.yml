@@ -112,6 +112,15 @@ jobs:
       - name: Incremental cutoff proof
         run: npm run test:query
 
+      # The claim that justifies Workstream A crossing a process boundary at
+      # all: go to definition from one file resolves INTO another. Monaco's
+      # bundled worker has no tsconfig and no module resolution, so it cannot
+      # follow `./lib` and answers nothing here. This also prints how long an
+      # interactive query waits behind a check, which is the number A4's
+      # cancellation flag is measured against.
+      - name: Navigation proof
+        run: npm run test:query:nav
+
       # The same shape for the BCC daemon: walk, overlays, the clean sweep and
       # the merge of three stages' diagnostics, against the built worker rather
       # than a fake. It was added with the daemon and never wired here, so the

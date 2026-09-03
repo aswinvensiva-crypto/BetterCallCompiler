@@ -1,9 +1,12 @@
 import { parentPort } from 'node:worker_threads'
 import { readdirSync, readFileSync, statSync } from 'node:fs'
-import { join, relative, sep } from 'node:path'
+import { isAbsolute, join, relative, sep } from 'node:path'
 import ts from 'typescript'
 import {
+  emptyLanguageQueryAnswer,
   isWorkerRequest,
+  type LanguageQueryAnswer,
+  type LanguageQueryRequest,
   type WorkerMessage,
   type WorkerRequest
 } from '../shared/compiler-protocol'
@@ -29,15 +32,18 @@ import {
 } from '../shared/query-engine'
 import { isMemoReuse } from '../shared/pass-analysis'
 import { moduleSignature } from './module-signature'
-import type {
-  BuildGraphSummary,
-  CompilerDaemonState,
-  CompilerPass,
-  CompilerTraceEvent,
-  DependencyNode,
-  DiagnosticMessage,
-  DiagnosticSeverity,
-  FileDiagnostics
+import {
+  MAX_REFERENCE_RESULTS,
+  type BuildGraphSummary,
+  type CompilerDaemonState,
+  type CompilerPass,
+  type CompilerTraceEvent,
+  type DependencyNode,
+  type DiagnosticMessage,
+  type DiagnosticSeverity,
+  type DocumentOverlay,
+  type FileDiagnostics,
+  type LanguageLocation
 } from '../shared/types'
 
 /**
@@ -973,6 +979,187 @@ function describeNode(root: string, relativePath: string): DependencyNode | null
   }
 }
 
+/* --------------------------- navigation queries --------------------------- */
+
+/**
+ * The two questions the daemon can answer better than anything in the renderer,
+ * asked of the `ts.LanguageService` that was already built, already supervised
+ * and already being asked exactly two others.
+ *
+ * `getSemanticDiagnostics` and `getSyntacticDiagnostics` were the whole of it.
+ * Everything here is one method call on an object that has existed since the
+ * first check pass.
+ *
+ * ## Why this is more correct than Monaco's
+ *
+ * Monaco's bundled worker has no tsconfig, no file system and no module
+ * resolution, so it cannot follow `./lib` at all — its go-to-definition is
+ * confined to the file you are looking at, and `configureLanguageDefaults`
+ * turns its semantic validation off for exactly that reason. This service has
+ * the real program. The cross-file answer is the whole justification for the
+ * round trip.
+ */
+
+/**
+ * Line tables for the files one answer touches, computed at most once each.
+ *
+ * A reference search over a large workspace returns hits in hundreds of files
+ * and several hits per file. Without this, converting them would rescan the
+ * text of every file once per hit — quadratic in the thing that is already the
+ * biggest answer we ever send.
+ */
+function makeLineStartsCache(root: string): (relativePath: string) => readonly number[] {
+  const cache = new Map<string, number[]>()
+
+  return (relativePath: string): readonly number[] => {
+    const held = cache.get(relativePath)
+    if (held !== undefined) return held
+
+    // The same precedence the LanguageService host uses, so the offsets it
+    // reported and the text they are converted against cannot disagree: the
+    // buffer, then the engine's copy, then disk.
+    const text =
+      overlays.get(relativePath)?.content ??
+      engineTexts.get(relativePath) ??
+      readIfPossible(toAbsolute(root, relativePath)) ??
+      ''
+
+    const starts = lineStartsOf(text)
+    cache.set(relativePath, starts)
+    return starts
+  }
+}
+
+/**
+ * True for a path inside the workspace.
+ *
+ * `relative()` returning something that starts with `..` is the check, and an
+ * absolute result covers the Windows case where the two paths are on different
+ * drives and there is no relative path between them at all.
+ */
+function isInsideWorkspace(relativePath: string): boolean {
+  return (
+    relativePath !== '' &&
+    !relativePath.startsWith('../') &&
+    !isAbsolute(relativePath)
+  )
+}
+
+/**
+ * Converts a TypeScript span list into wire locations, dropping what the
+ * renderer could not open.
+ *
+ * A definition legitimately lands in `lib.dom.d.ts` or inside `node_modules`,
+ * and those are dropped rather than sent. The renderer keys models on a
+ * workspace-relative path and `fs:readFile` is confined to the workspace root,
+ * so a location outside it is one nothing downstream can act on — and a
+ * location that cannot be opened is worse than no location, because Monaco
+ * turns a single result into a jump and two into a peek.
+ */
+function toLocations(
+  root: string,
+  spans: readonly { readonly fileName: string; readonly textSpan: ts.TextSpan }[]
+): LanguageLocation[] {
+  const lineStartsFor = makeLineStartsCache(root)
+  const locations: LanguageLocation[] = []
+
+  for (const span of spans) {
+    if (locations.length >= MAX_REFERENCE_RESULTS) break
+
+    const relativePath = toRelative(root, span.fileName)
+    if (!isInsideWorkspace(relativePath)) continue
+
+    locations.push({
+      relativePath,
+      path: toAbsolute(root, relativePath),
+      range: rangeFromSpan(
+        lineStartsFor(relativePath),
+        span.textSpan.start,
+        span.textSpan.length
+      )
+    })
+  }
+
+  return locations
+}
+
+/**
+ * Adopts the caller's buffer WITHOUT scheduling a check.
+ *
+ * `openDocument` conflates two things — "this is what the file says now" and
+ * "please re-check it" — which is why the renderer debounces it 300ms, and
+ * therefore why the daemon can be a third of a second behind the buffer. An
+ * interactive query needs the first and must not pay for the second: a
+ * definition answered at a stale offset points at the wrong token.
+ *
+ * `bumpVersion` is what makes the LanguageService notice. Its host reads
+ * `getScriptVersion` before deciding whether to re-parse, so setting the
+ * overlay without bumping would leave the service serving the previous
+ * snapshot and the fix would be invisible.
+ */
+function syncOverlay(root: string, relativePath: string, overlay: DocumentOverlay): void {
+  const existing = overlays.get(relativePath)
+  // Same monotonic-version rule as `openDocument`: an overlay that arrives out
+  // of order is stale and must not overwrite a newer buffer.
+  if (existing !== undefined && existing.version > overlay.version) return
+
+  overlays.set(relativePath, { content: overlay.content, version: overlay.version })
+  bumpVersion(relativePath)
+  setTextInput(root, relativePath)
+}
+
+function answerLanguageQuery(
+  root: string,
+  request: LanguageQueryRequest
+): LanguageQueryAnswer {
+  const { kind, relativePath, offset } = request
+  const absolute = toAbsolute(root, relativePath)
+  const languageService = ensureService(root)
+
+  switch (kind) {
+    case 'definition': {
+      // `getDefinitionAtPosition`, not `getDefinitionAndBoundSpan`: the bound
+      // span describes the word under the cursor, which the renderer already
+      // has, and asking for it costs a second walk for information nobody uses.
+      const found = languageService.getDefinitionAtPosition(absolute, offset) ?? []
+      return { kind, locations: toLocations(root, found) }
+    }
+
+    case 'references': {
+      const found = languageService.getReferencesAtPosition(absolute, offset) ?? []
+      const locations = toLocations(root, found)
+      return { kind, locations, truncated: locations.length >= MAX_REFERENCE_RESULTS }
+    }
+  }
+}
+
+/**
+ * Answers one query, and always answers.
+ *
+ * A throw here would otherwise reach the outer handler, be posted as a
+ * `failure` — which trips the supervisor's restart budget — and leave the
+ * caller's resolver pending until its timeout. `getReferencesAtPosition` on a
+ * program mid-edit is exactly the kind of call that can throw, so a bug in one
+ * navigation query must cost an empty answer rather than a restart.
+ */
+function respondToLanguageQuery(request: LanguageQueryRequest): void {
+  const root = workspaceRoot
+  let result: LanguageQueryAnswer
+
+  try {
+    if (root === null) {
+      result = emptyLanguageQueryAnswer(request.kind)
+    } else {
+      if (request.overlay !== null) syncOverlay(root, request.relativePath, request.overlay)
+      result = answerLanguageQuery(root, request)
+    }
+  } catch {
+    result = emptyLanguageQueryAnswer(request.kind)
+  }
+
+  post({ type: 'languageQueryResult', requestId: request.requestId, result })
+}
+
 /* -------------------------------- dispatch -------------------------------- */
 
 function handle(request: WorkerRequest): void {
@@ -1011,6 +1198,12 @@ function handle(request: WorkerRequest): void {
       // discarded buffer's text, and closing a tab with unsaved changes would
       // leave diagnostics describing text that exists nowhere.
       if (workspaceRoot !== null) setTextInput(workspaceRoot, request.relativePath)
+      return
+
+    // The buffer rides on the request, and `respondToLanguageQuery` adopts it
+    // without checking — see `syncOverlay`.
+    case 'languageQuery':
+      respondToLanguageQuery(request)
       return
 
     case 'dependents': {

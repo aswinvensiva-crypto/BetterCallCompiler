@@ -17,9 +17,11 @@ import {
   closeDocument as closeCompilerDocument,
   compilerPasses,
   compilerStatus,
+  definitionAt as compilerDefinitionAt,
   dependentsOf as compilerDependentsOf,
   diagnosticsFor,
   openDocument as openCompilerDocument,
+  referencesAt as compilerReferencesAt,
   restartCompiler,
   startCompiler
 } from './compiler-service'
@@ -384,20 +386,17 @@ export function createHandlerMap(): HandlerMap {
 
     /* ----------------------------- navigation ----------------------------- */
 
-    // Routed by extension, exactly as openDocument is. A TypeScript answer is
-    // empty until A3 wires the second daemon's language service, and empty is
-    // the right placeholder rather than an error: Monaco treats "no result"
-    // and "no provider" identically, so the renderer needs no feature flag and
-    // nothing changes for TS/JS users until the day it starts answering.
+    // Routed by extension, exactly as openDocument is. Two compilers, one
+    // channel, and a renderer that never learns which of them answered.
     'compiler:definition': async (request) =>
       isBccPath(request.relativePath)
         ? await langDefinition(request.relativePath, request.offset, request.overlay)
-        : { locations: [] },
+        : await compilerDefinitionAt(request.relativePath, request.offset, request.overlay),
 
     'compiler:references': async (request) =>
       isBccPath(request.relativePath)
         ? await langReferences(request.relativePath, request.offset, request.overlay)
-        : { locations: [], truncated: false },
+        : await compilerReferencesAt(request.relativePath, request.offset, request.overlay),
 
     'compiler:rename': async (request) =>
       isBccPath(request.relativePath)

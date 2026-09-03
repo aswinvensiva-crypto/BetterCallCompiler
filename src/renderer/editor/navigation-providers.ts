@@ -1,6 +1,6 @@
 import type * as monacoNs from 'monaco-editor'
-import { documentUri, relativePathFromUri } from './document-uri'
-import type { DocumentSymbolNode, SourceRange } from '../../shared/types'
+import { documentUri, relativePathFromUri, rememberAbsolutePath } from './document-uri'
+import type { DocumentSymbolNode, LanguageLocation, SourceRange } from '../../shared/types'
 
 /**
  * Go to definition, find references, rename, outline and hover — answered by
@@ -38,6 +38,19 @@ import type { DocumentSymbolNode, SourceRange } from '../../shared/types'
 
 const BCC = 'bcc'
 
+/**
+ * The languages the daemon answers definition and references for.
+ *
+ * BCC because nothing else can. TypeScript and JavaScript because the daemon's
+ * answer is a different and better answer: Monaco's bundled worker has no
+ * tsconfig and no module resolution, so its go-to-definition cannot leave the
+ * file you are looking at. `configureLanguageDefaults` switches its own
+ * `definitions` and `references` off in the same change, because two providers
+ * both answering would have Monaco merge the lists and turn a clean jump into
+ * a peek showing the same line twice.
+ */
+const PROGRAM_LANGUAGES = [BCC, 'typescript', 'javascript']
+
 let registered = false
 
 /** The buffer, read at request time rather than whenever the debounce last fired. */
@@ -69,6 +82,26 @@ function toMonacoRange(range: SourceRange): monacoNs.IRange {
   }
 }
 
+/**
+ * A wire location as a Monaco one, recording the absolute path on the way past.
+ *
+ * That side effect is the whole reason this is a function rather than an inline
+ * map. A definition in a file the user has never opened is exactly the case
+ * that justifies asking the daemon, and the editor opener that has to open it
+ * is handed a URI and nothing else — so the absolute path has to be captured
+ * here, where it is still in hand.
+ */
+function toMonacoLocation(
+  ns: typeof monacoNs,
+  location: LanguageLocation
+): monacoNs.languages.Location {
+  rememberAbsolutePath(location.relativePath, location.path)
+  return {
+    uri: documentUri(ns, location.relativePath),
+    range: toMonacoRange(location.range)
+  }
+}
+
 export function registerNavigationProviders(ns: typeof monacoNs): void {
   if (registered) return
   registered = true
@@ -77,7 +110,7 @@ export function registerNavigationProviders(ns: typeof monacoNs): void {
 
   /* ------------------------------ definition ----------------------------- */
 
-  ns.languages.registerDefinitionProvider(BCC, {
+  ns.languages.registerDefinitionProvider(PROGRAM_LANGUAGES, {
     async provideDefinition(model, position) {
       const relativePath = pathOf(model)
       if (relativePath === null) return null
@@ -89,16 +122,13 @@ export function registerNavigationProviders(ns: typeof monacoNs): void {
       })
       if (!result.ok) return null
 
-      return result.value.locations.map((location) => ({
-        uri: documentUri(ns, location.relativePath),
-        range: toMonacoRange(location.range)
-      }))
+      return result.value.locations.map((location) => toMonacoLocation(ns, location))
     }
   })
 
   /* ------------------------------ references ----------------------------- */
 
-  ns.languages.registerReferenceProvider(BCC, {
+  ns.languages.registerReferenceProvider(PROGRAM_LANGUAGES, {
     async provideReferences(model, position, context) {
       const relativePath = pathOf(model)
       if (relativePath === null) return null
@@ -117,10 +147,7 @@ export function registerNavigationProviders(ns: typeof monacoNs): void {
         ? result.value.locations
         : result.value.locations.slice(1)
 
-      return locations.map((location) => ({
-        uri: documentUri(ns, location.relativePath),
-        range: toMonacoRange(location.range)
-      }))
+      return locations.map((location) => toMonacoLocation(ns, location))
     }
   })
 

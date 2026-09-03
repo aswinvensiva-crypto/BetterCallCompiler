@@ -39,3 +39,27 @@ export function relativePathFromUri(uri: monacoNs.Uri): string | null {
     return null
   }
 }
+
+/**
+ * The absolute path behind a workspace-relative one, remembered as it is seen.
+ *
+ * Go to definition can land in a file that has never been opened, and the only
+ * thing Monaco hands the editor opener is a URI — which carries the relative
+ * path and not the absolute one that `fs:readFile` needs. Joining the workspace
+ * root onto it in the renderer would mean reimplementing `path.join` for two
+ * platforms in a process that deliberately has no `node:path`.
+ *
+ * So the absolute path is recorded wherever it already arrives: on every
+ * navigation answer, which carries both, and on every file the explorer opens.
+ * One entry per distinct file the session has heard of, which is bounded by the
+ * workspace and holds nothing but two strings.
+ */
+const absolutePaths = new Map<string, string>()
+
+export function rememberAbsolutePath(relativePath: string, absolutePath: string): void {
+  absolutePaths.set(relativePath, absolutePath)
+}
+
+export function absolutePathFor(relativePath: string): string | null {
+  return absolutePaths.get(relativePath) ?? null
+}
