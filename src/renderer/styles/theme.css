@@ -83,6 +83,14 @@
   --bcc-warning-hover: #e8b95c;
   --bcc-danger: #db5c5c;
 
+  /* Substrate's cross-stage provenance beam: "this is the same construct". One
+     colour, one job — distinct from the accent and from every semantic colour
+     above, so a highlighted construct never reads as selected, warned or
+     failed. */
+  --bcc-prov: #48c9d9;
+  --bcc-prov-dim: rgba(72, 201, 217, 0.16);
+  --bcc-prov-edge: rgba(72, 201, 217, 0.42);
+
   /* VCS colours are New UI Dark's, and deliberately not the generic
      green/amber/red: IntelliJ renders *deleted* as grey, not red. */
   --bcc-modified: #375fad;
