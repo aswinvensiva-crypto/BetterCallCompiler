@@ -121,6 +121,12 @@ jobs:
       - name: Navigation proof
         run: npm run test:query:nav
 
+      # The third worker, whose whole justification is answering hover and
+      # completions with the program resolved — the thing Monaco's bundled
+      # worker structurally cannot do.
+      - name: Interactive daemon proof
+        run: npm run test:interactive
+
       # The same shape for the BCC daemon: walk, overlays, the clean sweep and
       # the merge of three stages' diagnostics, against the built worker rather
       # than a fake. It was added with the daemon and never wired here, so the

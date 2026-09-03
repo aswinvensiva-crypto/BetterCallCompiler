@@ -19,6 +19,7 @@
     "test:asar": "node test/asar/run-matrix.mjs",
     "test:query": "node test/query/run-cutoff-proof.mjs",
     "test:query:nav": "node test/query/run-language-query-proof.mjs",
+    "test:interactive": "node test/query/run-interactive-proof.mjs",
     "test:lang": "node test/lang/run-lang-proof.mjs",
     "test:gc": "node test/gc/run-gc-control.mjs",
     "rebuild": "electron-rebuild",

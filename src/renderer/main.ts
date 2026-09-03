@@ -925,6 +925,7 @@ function bindCompilerDiagnostics(): void {
     .then((result) => {
       if (result.ok) applyDiagnostics(result.value.files)
     })
+
 }
 
 async function boot(): Promise<void> {

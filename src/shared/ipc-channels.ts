@@ -78,6 +78,11 @@ export const INVOKE_CHANNEL_NAMES = [
   'compiler:documentSymbols',
   'compiler:hover',
   'compiler:codeActions',
+  // Keystroke-frequency, and served by the third worker — see
+  // `interactive-protocol.ts` for why it is not the one that checks.
+  'compiler:completions',
+  'compiler:completionDetail',
+  'compiler:signatureHelp',
   // The write half of a rename or a quick fix, for the files that have no
   // buffer. Open files are edited through their model so they stay dirty and
   // undoable; a bulk edit spanning CLOSED files would have Monaco create models

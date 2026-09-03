@@ -29,6 +29,15 @@ import {
 } from './compiler-service'
 import { isBccPath } from '../shared/lang-diagnostics'
 import {
+  closeInteractiveDocument,
+  interactiveCompletionDetail,
+  interactiveCompletions,
+  interactiveHover,
+  interactiveSignatureHelp,
+  openInteractiveDocument,
+  restartInteractive
+} from './interactive-service'
+import {
   closeLangDocument,
   langDefinition,
   langDocumentSymbols,
@@ -372,17 +381,26 @@ export function createHandlerMap(): HandlerMap {
         openLangDocument(request.relativePath, request.content, request.version)
       } else {
         openCompilerDocument(request.relativePath, request.content, request.version)
+        // BOTH TypeScript daemons. They keep separate copies of the buffer on
+        // purpose — they are separate threads — but a copy that misses an
+        // update is worse than no copy: completions would describe a file the
+        // user has already changed, which reads as the IDE being confused.
+        openInteractiveDocument(request.relativePath, request.content, request.version)
       }
       return { accepted: true as const }
     },
     'compiler:closeDocument': (request) => {
       if (isBccPath(request.relativePath)) closeLangDocument(request.relativePath)
-      else closeCompilerDocument(request.relativePath)
+      else {
+        closeCompilerDocument(request.relativePath)
+        closeInteractiveDocument(request.relativePath)
+      }
       return { closed: true as const }
     },
     'compiler:restart': () => {
       restartCompiler()
       restartLang()
+      restartInteractive()
       return { restarted: true as const }
     },
     'compiler:passes': () => ({ passes: compilerPasses() }),
@@ -441,10 +459,43 @@ export function createHandlerMap(): HandlerMap {
         ? await langDocumentSymbols(request.relativePath, request.overlay)
         : { symbols: [] },
 
+    // Hover for `.bcc` is the BCC daemon's; for TypeScript it is the
+    // interactive daemon's, which resolves imports and so can describe a symbol
+    // that came from another file. Empty while that daemon is still starting,
+    // and the renderer keeps Monaco's own hover until it reports ready.
     'compiler:hover': async (request) =>
       isBccPath(request.relativePath)
         ? await langHover(request.relativePath, request.offset, request.overlay)
-        : { contents: null, range: null },
+        : await interactiveHover(request.relativePath, request.offset, request.overlay),
+
+    // BCC has no completions yet. Its parser is happy to describe a half-typed
+    // file, so this is reachable work rather than a missing piece — but a
+    // completion list is a language's opinion about what you might mean next,
+    // and BCC does not have one to offer yet.
+    'compiler:completions': async (request) =>
+      isBccPath(request.relativePath)
+        ? { items: [], incomplete: false }
+        : await interactiveCompletions(request.relativePath, request.offset, request.overlay),
+
+    'compiler:completionDetail': async (request) =>
+      isBccPath(request.relativePath)
+        ? { detail: null, documentation: null }
+        : await interactiveCompletionDetail(
+            request.relativePath,
+            request.offset,
+            request.entryName,
+            request.entrySource,
+            request.overlay
+          ),
+
+    'compiler:signatureHelp': async (request) =>
+      isBccPath(request.relativePath)
+        ? { signatures: [], activeSignature: 0, activeParameter: 0 }
+        : await interactiveSignatureHelp(
+            request.relativePath,
+            request.offset,
+            request.overlay
+          ),
 
     /* ------------------------------ artifacts ----------------------------- */
 

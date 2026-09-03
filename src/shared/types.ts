@@ -656,7 +656,18 @@ export const compilerStatusSchema = z.strictObject({
   heapUsedMb: z.number().nonnegative(),
   restarts: z.number().int().nonnegative(),
   /** Non-null only in `failed`; shown verbatim. */
-  detail: z.string().nullable()
+  detail: z.string().nullable(),
+  /**
+   * Whether the second, read-only LanguageService is up.
+   *
+   * The renderer's kill switch. Hover, completions and signature help come from
+   * Monaco's own worker until this turns true, and from the daemon afterwards —
+   * never from both, because two providers answering the same question means
+   * Monaco merges the lists and every completion appears twice. A worker that
+   * fails to start therefore degrades to what shipped before rather than to
+   * nothing.
+   */
+  interactive: z.boolean()
 })
 export type CompilerStatus = z.infer<typeof compilerStatusSchema>
 
@@ -677,7 +688,8 @@ export function stoppedCompilerStatus(): CompilerStatus {
     checkedFileCount: 0,
     heapUsedMb: 0,
     restarts: 0,
-    detail: null
+    detail: null,
+    interactive: false
   }
 }
 
@@ -873,6 +885,89 @@ export const codeActionsResultSchema = z.strictObject({
   actions: z.array(codeActionSchema).max(MAX_CODE_ACTIONS)
 })
 export type CodeActionsResult = z.infer<typeof codeActionsResultSchema>
+
+/* ---------------------------- interactive answers ------------------------- */
+
+/**
+ * Completions, hover and signature help — the answers that are asked for at
+ * keystroke frequency.
+ *
+ * These are correct only with the whole program, and Monaco's bundled worker
+ * has none of it: with no tsconfig and no module resolution, what it can say
+ * about a symbol that came from another file is a guess. But they are also
+ * asked hundreds of times a minute, which is why they cannot come from the
+ * check worker — cancelling the check on every keystroke would mean diagnostics
+ * never converge while typing. They come from a second, read-only
+ * LanguageService that is never interrupted.
+ */
+
+/**
+ * TypeScript's own `ScriptElementKind`, passed through as a string.
+ *
+ * Not an enum here. TypeScript adds kinds between versions, and a closed set
+ * would turn a new one into a validation failure that drops the whole
+ * completion list rather than one icon. The renderer maps what it recognises
+ * and falls back to a plain text icon for the rest.
+ */
+export const completionItemSchema = z.strictObject({
+  label: z.string(),
+  kind: z.string(),
+  /** What is written when the item is accepted; usually the label. */
+  insertText: z.string(),
+  /** TypeScript's own ordering, which puts locals above globals. */
+  sortText: z.string(),
+  /**
+   * Opaque, and handed straight back on the detail request.
+   *
+   * `getCompletionEntryDetails` needs the entry's name and the module it came
+   * from to describe it, and an auto-import entry's `source` is the only thing
+   * distinguishing two identically named symbols from different modules.
+   */
+  source: z.string().nullable()
+})
+export type CompletionItem = z.infer<typeof completionItemSchema>
+
+/**
+ * A cap, and a flag that says when it bit.
+ *
+ * A global completion list in a DOM project is several thousand entries, and
+ * every one of them crosses a structured clone on a keystroke. `incomplete`
+ * asks Monaco to re-request as the user types — which is what narrows the list
+ * — rather than silently serving a truncated one.
+ */
+export const MAX_COMPLETION_ITEMS = 2_000
+
+export const completionsResultSchema = z.strictObject({
+  items: z.array(completionItemSchema).max(MAX_COMPLETION_ITEMS),
+  incomplete: z.boolean()
+})
+export type CompletionsResult = z.infer<typeof completionsResultSchema>
+
+export const completionDetailResultSchema = z.strictObject({
+  /** The signature, as TypeScript renders it. */
+  detail: z.string().nullable(),
+  /** The doc comment, already flattened to text. */
+  documentation: z.string().nullable()
+})
+export type CompletionDetailResult = z.infer<typeof completionDetailResultSchema>
+
+export const signatureParameterSchema = z.strictObject({
+  label: z.string(),
+  documentation: z.string().nullable()
+})
+
+export const signatureSchema = z.strictObject({
+  label: z.string(),
+  documentation: z.string().nullable(),
+  parameters: z.array(signatureParameterSchema)
+})
+
+export const signatureHelpResultSchema = z.strictObject({
+  signatures: z.array(signatureSchema).max(64),
+  activeSignature: z.number().int().nonnegative(),
+  activeParameter: z.number().int().nonnegative()
+})
+export type SignatureHelpResult = z.infer<typeof signatureHelpResultSchema>
 
 /* -------------------------------- artifacts ------------------------------- */
 

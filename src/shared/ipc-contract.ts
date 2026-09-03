@@ -20,6 +20,8 @@ import {
   artifactSummarySchema,
   codeActionsResultSchema,
   compilerPassSchema,
+  completionDetailResultSchema,
+  completionsResultSchema,
   compilerStatusSchema,
   definitionResultSchema,
   dependencyQuerySchema,
@@ -30,6 +32,7 @@ import {
   fileEditSchema,
   hoverResultSchema,
   referencesResultSchema,
+  signatureHelpResultSchema,
   renameResultSchema,
   gitStatusSchema,
   languageBreakdownSchema,
@@ -562,6 +565,50 @@ export const INVOKE_CHANNELS = {
       overlay: documentOverlaySchema.nullable()
     }),
     response: codeActionsResultSchema
+  },
+  /**
+   * The three answers asked for at keystroke frequency.
+   *
+   * Served by the interactive daemon rather than the one that checks, because
+   * reaching the checker means cancelling its check — and a check cancelled on
+   * every character never converges, so the squiggles would stop appearing
+   * exactly while you type. Until that daemon is up, `CompilerStatus.interactive`
+   * is false and Monaco's own providers answer instead.
+   */
+  'compiler:completions': {
+    request: z.strictObject({
+      relativePath: z.string().min(1),
+      offset: z.number().int().nonnegative(),
+      overlay: documentOverlaySchema.nullable()
+    }),
+    response: completionsResultSchema
+  },
+  /**
+   * The second half of a completion, asked only for the item the user has
+   * highlighted.
+   *
+   * Fetching the signature and doc comment for every entry up front would mean
+   * several thousand of them crossing a structured clone on a keystroke; this
+   * is one, on demand, which is the same split every language server makes.
+   */
+  'compiler:completionDetail': {
+    request: z.strictObject({
+      relativePath: z.string().min(1),
+      offset: z.number().int().nonnegative(),
+      entryName: z.string().min(1),
+      /** Distinguishes two identically named auto-import candidates. */
+      entrySource: z.string().nullable(),
+      overlay: documentOverlaySchema.nullable()
+    }),
+    response: completionDetailResultSchema
+  },
+  'compiler:signatureHelp': {
+    request: z.strictObject({
+      relativePath: z.string().min(1),
+      offset: z.number().int().nonnegative(),
+      overlay: documentOverlaySchema.nullable()
+    }),
+    response: signatureHelpResultSchema
   },
   /**
    * Writes edits to files that are NOT open, all of them or none.

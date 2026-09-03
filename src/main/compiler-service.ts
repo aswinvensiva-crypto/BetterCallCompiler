@@ -32,6 +32,10 @@ import type {
   RenameResult
 } from '../shared/types'
 import { stoppedCompilerStatus } from '../shared/types'
+// One bit, read on every status: whether the interactive daemon is up. The
+// dependency runs this way round because status is what the renderer already
+// receives — the reverse would mean a fourth channel carrying one boolean.
+import { isInteractiveEnabled } from './interactive-service'
 
 /**
  * Supervises the compiler daemon and batches what it produces.
@@ -207,7 +211,17 @@ export function compilerStatus(): CompilerStatus {
     checkedFileCount,
     heapUsedMb,
     restarts,
-    detail
+    detail,
+    // Reported here rather than on a channel of its own: the interactive daemon
+    // publishes nothing and the renderer needs exactly one bit from it — which
+    // providers answer hover and completions. A fourth channel to carry one
+    // boolean would be a channel to keep in sync for no difference the renderer
+    // could observe.
+    //
+    // "Enabled", not "ready": Monaco reads its mode configuration once and the
+    // renderer therefore has to choose before the daemon can possibly have
+    // finished indexing. See `isInteractiveEnabled`.
+    interactive: isInteractiveEnabled()
   }
 }
 

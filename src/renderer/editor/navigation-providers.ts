@@ -1,6 +1,7 @@
 import type * as monacoNs from 'monaco-editor'
 import { documentUri, relativePathFromUri, rememberAbsolutePath } from './document-uri'
 import type {
+  CompletionItem,
   DocumentSymbolNode,
   FileEdit,
   LanguageLocation,
@@ -57,6 +58,7 @@ const BCC = 'bcc'
 const PROGRAM_LANGUAGES = [BCC, 'typescript', 'javascript']
 
 let registered = false
+let interactiveRegistered = false
 
 /** The buffer, read at request time rather than whenever the debounce last fired. */
 function overlayOf(model: monacoNs.editor.ITextModel): {
@@ -381,6 +383,235 @@ export function registerNavigationProviders(ns: typeof monacoNs): void {
       return {
         contents: [{ value: result.value.contents }],
         range: result.value.range === null ? undefined : toMonacoRange(result.value.range)
+      }
+    }
+  })
+}
+
+/* -------------------------------------------------------------------------- */
+/*  The interactive half                                                      */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * TypeScript's `ScriptElementKind` to the icon Monaco draws.
+ *
+ * Passed across the wire as a string rather than an enum, so a kind TypeScript
+ * adds in a future version costs a generic icon instead of failing validation
+ * and dropping the whole list. Everything unmapped lands on `Text`.
+ */
+function completionKind(
+  ns: typeof monacoNs,
+  kind: string
+): monacoNs.languages.CompletionItemKind {
+  const K = ns.languages.CompletionItemKind
+  switch (kind) {
+    case 'method':
+    case 'construct':
+    case 'call':
+    case 'index':
+      return K.Method
+    case 'function':
+    case 'local function':
+      return K.Function
+    case 'constructor':
+      return K.Constructor
+    case 'property':
+    case 'getter':
+    case 'setter':
+      return K.Property
+    case 'field':
+    case 'member':
+      return K.Field
+    case 'var':
+    case 'let':
+    case 'local var':
+    case 'alias':
+      return K.Variable
+    case 'const':
+      return K.Constant
+    case 'class':
+    case 'local class':
+      return K.Class
+    case 'interface':
+      return K.Interface
+    case 'enum':
+      return K.Enum
+    case 'enum member':
+      return K.EnumMember
+    case 'module':
+    case 'external module name':
+      return K.Module
+    case 'type':
+    case 'type parameter':
+    case 'primitive type':
+      return K.TypeParameter
+    case 'keyword':
+      return K.Keyword
+    case 'parameter':
+      return K.Variable
+    case 'string':
+      return K.Text
+    default:
+      return K.Text
+  }
+}
+
+/**
+ * Hover, completions and signature help, from the interactive daemon.
+ *
+ * Registered SEPARATELY from the rest and only once the daemon reports itself
+ * ready, because these three are the ones Monaco's own worker also answers.
+ * Registering both would have Monaco merge the lists — every completion twice,
+ * and two hovers stacked in one tooltip — so the switch is: Monaco's until the
+ * daemon is up, ours after, never both. `configureLanguageDefaults` turns
+ * Monaco's off in the same call that brings us in.
+ *
+ * That is also the kill switch. A daemon that fails to start never calls this,
+ * and the editor keeps exactly the behaviour that shipped before it existed.
+ */
+export function registerInteractiveProviders(ns: typeof monacoNs): void {
+  if (interactiveRegistered) return
+  interactiveRegistered = true
+
+  const api = window.betterCallCompiler.compiler
+  const languages = ['typescript', 'javascript']
+
+  /**
+   * Carried on each item so `resolveCompletionItem` can ask about exactly this
+   * entry. `source` is the only thing separating two identically named
+   * auto-import candidates from different modules.
+   */
+  interface ItemData {
+    readonly relativePath: string
+    readonly offset: number
+    readonly entryName: string
+    readonly entrySource: string | null
+  }
+
+  type ResolvableItem = monacoNs.languages.CompletionItem & { readonly bccData?: ItemData }
+
+  ns.languages.registerCompletionItemProvider(languages, {
+    // What re-triggers the list mid-word. Without `.` a member completion never
+    // appears at all, which is the single most-used completion there is.
+    triggerCharacters: ['.', '"', "'", '`', '/', '@', '<', '#', ' '],
+
+    async provideCompletionItems(model, position) {
+      const relativePath = pathOf(model)
+      if (relativePath === null) return null
+
+      const offset = model.getOffsetAt(position)
+      const result = await api.completions({
+        relativePath,
+        offset,
+        overlay: overlayOf(model)
+      })
+      if (!result.ok) return null
+
+      // The word already typed, which is what an accepted item replaces. Taken
+      // from the model rather than from the daemon: the daemon answered at an
+      // offset, and by the time this renders the model is the only thing that
+      // knows where that offset sits on screen.
+      const word = model.getWordUntilPosition(position)
+      const range: monacoNs.IRange = {
+        startLineNumber: position.lineNumber,
+        startColumn: word.startColumn,
+        endLineNumber: position.lineNumber,
+        endColumn: word.endColumn
+      }
+
+      const suggestions: ResolvableItem[] = result.value.items.map((item: CompletionItem) => ({
+        label: item.label,
+        kind: completionKind(ns, item.kind),
+        insertText: item.insertText,
+        sortText: item.sortText,
+        range,
+        bccData: {
+          relativePath,
+          offset,
+          entryName: item.label,
+          entrySource: item.source
+        }
+      }))
+
+      return { suggestions, incomplete: result.value.incomplete }
+    },
+
+    /**
+     * The second half, asked only for the item the user has highlighted.
+     *
+     * Fetching a signature and a doc comment for every entry up front would put
+     * several thousand of them on the wire per keystroke. One, on demand, is
+     * the same split every language server makes.
+     */
+    async resolveCompletionItem(item) {
+      const data = (item as ResolvableItem).bccData
+      if (data === undefined) return item
+
+      const result = await api.completionDetail({
+        relativePath: data.relativePath,
+        offset: data.offset,
+        entryName: data.entryName,
+        entrySource: data.entrySource,
+        overlay: null
+      })
+      if (!result.ok) return item
+
+      return {
+        ...item,
+        detail: result.value.detail ?? item.detail,
+        documentation: result.value.documentation ?? item.documentation
+      }
+    }
+  })
+
+  ns.languages.registerHoverProvider(languages, {
+    async provideHover(model, position) {
+      const relativePath = pathOf(model)
+      if (relativePath === null) return null
+
+      const result = await api.hover({
+        relativePath,
+        offset: model.getOffsetAt(position),
+        overlay: overlayOf(model)
+      })
+      if (!result.ok || result.value.contents === null) return null
+
+      return {
+        contents: [{ value: result.value.contents }],
+        range: result.value.range === null ? undefined : toMonacoRange(result.value.range)
+      }
+    }
+  })
+
+  ns.languages.registerSignatureHelpProvider(languages, {
+    signatureHelpTriggerCharacters: ['(', ','],
+    signatureHelpRetriggerCharacters: [')'],
+
+    async provideSignatureHelp(model, position) {
+      const relativePath = pathOf(model)
+      if (relativePath === null) return null
+
+      const result = await api.signatureHelp({
+        relativePath,
+        offset: model.getOffsetAt(position),
+        overlay: overlayOf(model)
+      })
+      if (!result.ok || result.value.signatures.length === 0) return null
+
+      return {
+        value: {
+          signatures: result.value.signatures.map((signature) => ({
+            label: signature.label,
+            documentation: signature.documentation ?? undefined,
+            parameters: signature.parameters.map((parameter) => ({
+              label: parameter.label,
+              documentation: parameter.documentation ?? undefined
+            }))
+          })),
+          activeSignature: result.value.activeSignature,
+          activeParameter: result.value.activeParameter
+        },
+        dispose: () => {}
       }
     }
   })

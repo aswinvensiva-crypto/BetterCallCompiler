@@ -8,7 +8,10 @@ import CssWorker from 'monaco-editor/language/css/css.worker?worker'
 import HtmlWorker from 'monaco-editor/language/html/html.worker?worker'
 import TsWorker from 'monaco-editor/language/typescript/ts.worker?worker'
 import { registerBccLanguage } from './bcc-language'
-import { registerNavigationProviders } from './navigation-providers'
+import {
+  registerInteractiveProviders,
+  registerNavigationProviders
+} from './navigation-providers'
 
 /**
  * Monaco worker wiring.
@@ -115,6 +118,26 @@ interface ModeConfiguration {
 let runtime: typeof monacoNs | null = null
 let loading: Promise<typeof monacoNs> | null = null
 
+/**
+ * Whether the interactive daemon was started, so it — and not Monaco's bundled
+ * worker — should answer hover, completions and signature help.
+ *
+ * "Started", not "finished indexing". A query sent while it is still walking is
+ * answered when the walk finishes rather than dropped, so the only case worth
+ * keeping Monaco's providers for is a worker that could not start at all.
+ *
+ * Defaults to false on any failure, which is the safe direction: the editor
+ * keeps exactly the behaviour it had before the daemon existed.
+ */
+async function interactiveDaemonEnabled(): Promise<boolean> {
+  try {
+    const result = await window.betterCallCompiler.compiler.status({})
+    return result.ok && result.value.status.interactive
+  } catch {
+    return false
+  }
+}
+
 /** The runtime if it is already here, and null if it is not. Never waits. */
 export function monacoRuntime(): typeof monacoNs | null {
   return runtime
@@ -134,19 +157,28 @@ export function loadMonaco(): Promise<typeof monacoNs> {
     // Both in parallel: the register module pulls Monaco's TypeScript language
     // support, which is the largest single part of the payload, and serialising
     // the two would add its latency to the editor's first paint for nothing.
-    const [ns, register] = await Promise.all([
+    const [ns, register, daemonAnswers] = await Promise.all([
       import('monaco-editor'),
       // `languages` plural here, and `language` singular in the worker imports
       // above. Different modules; the wrong one does not exist.
-      import('monaco-editor/languages/features/typescript/register') as Promise<TsRegister>
+      import('monaco-editor/languages/features/typescript/register') as Promise<TsRegister>,
+      // Asked ONCE, here, and never revisited — which is not a shortcut but the
+      // only correct place. Monaco's TypeScript contribution reads its mode
+      // configuration when the first `.ts` model appears and never listens for
+      // a change, so a later `setModeConfiguration` is a silent no-op. The
+      // first version of this deferred the decision until the daemon reported
+      // ready and shipped a duplicate hover: `const moved: Point` from ours and
+      // `const moved: any` from Monaco's, stacked in one tooltip.
+      interactiveDaemonEnabled()
     ])
 
     defineTheme(ns)
-    configureLanguageDefaults(register)
+    configureLanguageDefaults(register, daemonAnswers)
     registerBccLanguage(ns)
     // After the language is registered, necessarily: a provider registered for
     // an unknown language id binds to nothing and never fires again.
     registerNavigationProviders(ns)
+    if (daemonAnswers) registerInteractiveProviders(ns)
 
     runtime = ns
     return ns
@@ -240,6 +272,46 @@ export interface EditorHandle {
   readonly editor: monacoNs.editor.IStandaloneCodeEditor
 }
 
+const MODE_CONFIGURATION: ModeConfiguration = {
+  // Single-file and syntactic. Monaco's, and instant.
+  documentSymbols: true,
+  documentRangeFormattingEdits: true,
+  onTypeFormattingEdits: true,
+  documentHighlights: true,
+  // Syntactic validation only — see `setDiagnosticsOptions` below. Turning
+  // this off would take the squiggles for a missing brace with it.
+  diagnostics: true,
+
+  // Correct only with the program, and asked at keystroke frequency — so
+  // they belong to the interactive daemon, and Monaco holds them until it is
+  // up. `adoptInteractiveDaemon` performs that handover exactly once. Monaco's
+  // answers are single-file and therefore right about local code and wrong
+  // about anything imported, which is the better of the two failures while
+  // the alternative is nothing at all.
+  completionItems: true,
+  hovers: true,
+  signatureHelp: true,
+  // Stays Monaco's. An inlay hint is a decoration on every visible line and
+  // is redrawn on every scroll, which is a different cost profile from the
+  // three above — and being wrong about an imported type in a hint is a
+  // smaller harm than the round trips would be.
+  inlayHints: true,
+
+  // Ours. The daemon has the real program, so its answers cross files and
+  // Monaco's cannot — and leaving Monaco's on as well would have it merge
+  // both lists: two identical definitions turning a clean F12 jump into a
+  // peek, and two copies of every quick fix in the lightbulb.
+  //
+  // Rename is the one where the difference is not merely cosmetic. Monaco's
+  // rewrites the occurrences in ONE file, so renaming an exported symbol
+  // silently leaves every importer pointing at a name that no longer exists.
+  definitions: false,
+  references: false,
+  rename: false,
+  codeActions: false
+}
+
+
 let languageDefaultsConfigured = false
 
 /**
@@ -276,45 +348,21 @@ let languageDefaultsConfigured = false
  * `signatureHelp` — is a one-word diff a reviewer can see, instead of a second
  * provider silently answering the same question and Monaco merging both.
  */
-function configureLanguageDefaults(register: TsRegister): void {
+function configureLanguageDefaults(register: TsRegister, daemonAnswers: boolean): void {
   if (languageDefaultsConfigured) return
 
-  const modeConfiguration: ModeConfiguration = {
-    // Single-file and syntactic. Monaco's, and instant.
-    documentSymbols: true,
-    documentRangeFormattingEdits: true,
-    onTypeFormattingEdits: true,
-    documentHighlights: true,
-    // Syntactic validation only — see `setDiagnosticsOptions` below. Turning
-    // this off would take the squiggles for a missing brace with it.
-    diagnostics: true,
 
-    // Correct only with the program, but keystroke-frequency: an IPC round trip
-    // per character is not affordable until A5 gives them their own worker.
-    // Monaco's answers are single-file and therefore right about local code and
-    // wrong about anything imported, which is the better of the two failures
-    // while the alternative is nothing at all.
-    completionItems: true,
-    hovers: true,
-    signatureHelp: true,
-    inlayHints: true,
-
-    // Ours. The daemon has the real program, so its answers cross files and
-    // Monaco's cannot — and leaving Monaco's on as well would have it merge
-    // both lists: two identical definitions turning a clean F12 jump into a
-    // peek, and two copies of every quick fix in the lightbulb.
-    //
-    // Rename is the one where the difference is not merely cosmetic. Monaco's
-    // rewrites the occurrences in ONE file, so renaming an exported symbol
-    // silently leaves every importer pointing at a name that no longer exists.
-    definitions: false,
-    references: false,
-    rename: false,
-    codeActions: false
-  }
+  const configuration: ModeConfiguration = daemonAnswers
+    ? {
+        ...MODE_CONFIGURATION,
+        completionItems: false,
+        hovers: false,
+        signatureHelp: false
+      }
+    : MODE_CONFIGURATION
 
   for (const defaults of [register.typescriptDefaults, register.javascriptDefaults]) {
-    defaults.setModeConfiguration(modeConfiguration)
+    defaults.setModeConfiguration(configuration)
     defaults.setDiagnosticsOptions({
       // The daemon is authoritative: it has the real program, the real config
       // and the whole workspace, and it publishes under its own marker owner so
