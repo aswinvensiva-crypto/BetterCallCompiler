@@ -151,6 +151,30 @@ const pendingLanguageQueries = new Map<number, (result: LanguageQueryAnswer) => 
 /** How long an interactive query waits before answering empty. */
 const LANGUAGE_QUERY_TIMEOUT_MS = 5_000
 
+/**
+ * The one slot that stops a running check.
+ *
+ * Created once per process and handed to every worker this supervisor spawns,
+ * so a restart does not need a new one and nothing has to be re-plumbed. A
+ * `SharedArrayBuffer` rather than a message because a message cannot arrive
+ * while the worker is inside `getSemanticDiagnostics` — that call is
+ * synchronous, and `port.on('message')` dispatches synchronously, so the
+ * worker's event loop is not running. Shared memory the checker polls is the
+ * only channel that reaches it, which is exactly why tsserver uses a
+ * cancellation file for the same job.
+ *
+ * Guarded because `SharedArrayBuffer` can be absent under a hardened runtime;
+ * without it checks simply run to completion, which is what happened before.
+ */
+const cancellationBuffer =
+  typeof SharedArrayBuffer === 'function' ? new SharedArrayBuffer(4) : null
+const cancellationFlag = cancellationBuffer === null ? null : new Int32Array(cancellationBuffer)
+
+/** Asks the worker to stop the check it is running and get to this query. */
+function requestCancellation(): void {
+  if (cancellationFlag !== null) Atomics.store(cancellationFlag, 0, 1)
+}
+
 let emitDiagnostics: ((batch: DiagnosticsBatch) => void) | null = null
 let emitStatus: ((status: CompilerStatus) => void) | null = null
 let emitPass: ((pass: CompilerPass) => void) | null = null
@@ -236,7 +260,12 @@ function spawn(): void {
   startHeartbeat()
 
   if (workspaceRoot !== null) {
-    send({ type: 'boot', workspaceRoot })
+    // Stood down before the new worker sees it. A flag raised for a query the
+    // dead worker never answered would otherwise cancel the fresh daemon's
+    // first check, on a workspace with no diagnostics yet — the one pass it
+    // most needs to finish.
+    if (cancellationFlag !== null) Atomics.store(cancellationFlag, 0, 0)
+    send({ type: 'boot', workspaceRoot, ...(cancellationBuffer === null ? {} : { cancellation: cancellationBuffer }) })
     // Replay open buffers so a restarted daemon sees what the user is looking
     // at, not the last thing written to disk.
     for (const [relativePath, doc] of openDocuments) {
@@ -578,6 +607,11 @@ function languageQuery<K extends LanguageQueryKind>(
       )
     })
 
+    // Raised before the send, so a check already running sees it at its next
+    // checkpoint rather than after this message has been sitting in a queue
+    // nothing is draining. The worker stands it down the moment it starts
+    // answering.
+    requestCancellation()
     send({ type: 'languageQuery', requestId, kind, relativePath, offset, overlay })
   })
 }

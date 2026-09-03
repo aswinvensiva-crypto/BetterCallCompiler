@@ -92,6 +92,47 @@ const overlays = new Map<string, { content: string; version: number }>()
 
 let busySince: number | null = null
 
+/* ------------------------------ cancellation ------------------------------ */
+
+/**
+ * The shared slot main writes to when it wants the current check to stop.
+ *
+ * Null until `boot` delivers one, and a null flag means checks simply cannot be
+ * cancelled — which is the right behaviour for a supervisor that never supplied
+ * a buffer rather than a reason to refuse to work.
+ */
+let cancellationFlag: Int32Array | null = null
+
+function isCancellationRequested(): boolean {
+  return cancellationFlag !== null && Atomics.load(cancellationFlag, 0) === 1
+}
+
+/**
+ * Stands the flag down.
+ *
+ * Called the instant the worker starts answering a query, and not before. The
+ * flag means "someone is waiting for an answer", so clearing it any earlier
+ * would let the check it was raised against run to completion — and clearing it
+ * any later would have the query itself throw `OperationCanceledException`,
+ * because the LanguageService polls the same token for every call.
+ */
+function clearCancellation(): void {
+  if (cancellationFlag !== null) Atomics.store(cancellationFlag, 0, 0)
+}
+
+/**
+ * True for the exception a cancelled `ts.LanguageService` call throws.
+ *
+ * Checked by `instanceof` against the class TypeScript exports rather than by
+ * message, because the message is not part of its API and the consequence of
+ * getting this wrong is severe in one direction: a cancellation mistaken for an
+ * ordinary failure publishes an EMPTY diagnostic set, which the clean sweep
+ * reads as "this file is now clean" and every squiggle in it disappears.
+ */
+function isCancellation(error: unknown): boolean {
+  return error instanceof ts.OperationCanceledException
+}
+
 function heapUsedMb(): number {
   return Math.round((process.memoryUsage().heapUsed / (1024 * 1024)) * 10) / 10
 }
@@ -389,6 +430,12 @@ function applyChanges(
   // paths and this rides the same structured clone as the trace sample.
   checkFiles(root, affected, reason, [...changed, ...removed].slice(0, MAX_TRIGGER_PATHS))
 
+  // A cancelled check owes a resume, and `oweCheck` reports idle when that
+  // lands. Saying idle here as well would have the panel flick to idle in the
+  // gap between getting out of the way and coming back — the one window in
+  // which the daemon most obviously IS still working.
+  if (resumeScheduled) return
+
   busySince = null
   reportState('idle', affected.length)
 }
@@ -486,7 +533,10 @@ function createService(root: string): ts.LanguageService {
     readFile: ts.sys.readFile,
     readDirectory: ts.sys.readDirectory,
     directoryExists: ts.sys.directoryExists,
-    getDirectories: ts.sys.getDirectories
+    getDirectories: ts.sys.getDirectories,
+    // Polled by the checker at its own checkpoints, so the latency of stopping
+    // is bounded by one checkpoint rather than by the whole file.
+    getCancellationToken: () => ({ isCancellationRequested })
   }
 
   return ts.createLanguageService(host, ts.createDocumentRegistry())
@@ -733,9 +783,21 @@ engine.defineQuery(
         ? []
         : languageService.getSyntacticDiagnostics(absolute)
       raw = [...semantic, ...syntactic]
-    } catch {
-      // A file the program cannot load yields nothing rather than abandoning
-      // the pass — the same tolerance the imperative version had.
+    } catch (error) {
+      // The carve-out that has to exist in the same commit as cancellation.
+      //
+      // A bare `catch { return [] }` was correct while nothing could interrupt
+      // this: a file the program cannot load yields nothing rather than
+      // abandoning the pass. The moment a check can be cancelled,
+      // `OperationCanceledException` lands here too — and returning [] would
+      // MEMOISE an empty result, publish it, and have the clean sweep read it
+      // as "this file is now clean". Every squiggle in the file disappears, and
+      // stays gone until its text changes.
+      //
+      // Rethrowing leaves the engine untouched: `compute` creates or updates no
+      // memo when the function throws, so the file is simply not answered and
+      // the resumed pass asks again.
+      if (isCancellation(error)) throw error
       return []
     }
 
@@ -913,13 +975,23 @@ function checkFiles(
   const startedAt = Date.now()
   const before = engine.stats()
 
-  for (const relativePath of ordered) {
+  /** Files this pass never got to, because it was cancelled part-way. */
+  let unfinished: string[] = []
+
+  for (let index = 0; index < ordered.length; index++) {
+    const relativePath = ordered[index] as string
     const absolute = toAbsolute(root, relativePath)
 
     let diagnostics: DiagnosticMessage[]
     try {
       diagnostics = engine.get<DiagnosticMessage[]>(queryKey(Q_DIAG, relativePath))
     } catch (error) {
+      // Someone is waiting for an interactive answer. Everything already
+      // computed is real and goes out; the rest is owed and comes back.
+      if (isCancellation(error)) {
+        unfinished = ordered.slice(index)
+        break
+      }
       // A query cycle is a bug in the dependency wiring rather than in the
       // user's code, and it must not cost them the rest of the pass.
       if (!(error instanceof QueryCycleError)) throw error
@@ -933,6 +1005,8 @@ function checkFiles(
     if (diagnostics.length > 0) nowDirty.add(relativePath)
   }
 
+  const cancelled = unfinished.length > 0
+
   // NOTE: the pass is reported at the END of this function, after the
   // diagnostics have gone out. Announcing "the pass is done" before its results
   // are on the wire is a lie a consumer can act on — and did: the first version
@@ -942,27 +1016,89 @@ function checkFiles(
 
   // Clean sweep: anything that had diagnostics last pass but was not re-checked
   // this pass gets an explicit empty set, or its squiggles never clear.
-  for (const relativePath of previouslyDirty) {
-    if (nowDirty.has(relativePath)) continue
-    if (ordered.includes(relativePath)) continue
-    if (!graph.nodes.has(relativePath)) {
-      // Deleted: still emit an empty set so the Problems panel drops the row.
-      const version = (emittedVersions.get(relativePath) ?? 0) + 1
-      emittedVersions.set(relativePath, version)
-      produced.push({
-        relativePath,
-        path: toAbsolute(root, relativePath),
-        diagnostics: [],
-        version
-      })
+  //
+  // SKIPPED on a cancelled pass, and that is the whole hazard. `nowDirty` is a
+  // partial answer when the pass stopped part-way, so sweeping against it would
+  // publish empty sets for files nobody looked at — the same erasure the
+  // `Q_DIAG` carve-out prevents one level down. `previouslyDirty` is left alone
+  // for the same reason: it is the record of what is owed a sweep, and
+  // overwriting it with a partial set forgets the rest.
+  if (!cancelled) {
+    for (const relativePath of previouslyDirty) {
+      if (nowDirty.has(relativePath)) continue
+      if (ordered.includes(relativePath)) continue
+      if (!graph.nodes.has(relativePath)) {
+        // Deleted: still emit an empty set so the Problems panel drops the row.
+        const version = (emittedVersions.get(relativePath) ?? 0) + 1
+        emittedVersions.set(relativePath, version)
+        produced.push({
+          relativePath,
+          path: toAbsolute(root, relativePath),
+          diagnostics: [],
+          version
+        })
+      }
     }
+
+    previouslyDirty = nowDirty
   }
 
-  previouslyDirty = nowDirty
+  // `settled` stops being a literal here. It was `true` on every batch ever
+  // sent, which `compiler-service.ts` accumulates correctly and was therefore
+  // fed a constant — a lie the moment anything is left undone. A cancelled pass
+  // is that moment.
+  if (produced.length > 0) {
+    post({ type: 'diagnostics', files: produced, settled: !cancelled })
+  }
 
-  if (produced.length > 0) post({ type: 'diagnostics', files: produced, settled: true })
-
+  // `requested` stays the size of what this pass was ASKED for, cancelled or
+  // not. Reporting only what it managed would make a cancellation look like a
+  // small pass rather than an interrupted one.
   reportPass(cold ? 'cold' : reason, ordered.length, startedAt, before, trigger)
+
+  if (cancelled) oweCheck(root, unfinished, reason)
+}
+
+/**
+ * Files a cancelled pass still owes, and the resume that pays them.
+ *
+ * `setImmediate`, not `setTimeout(0)`: immediates run in the check phase, after
+ * the poll phase where port messages are delivered, so the query that caused
+ * the cancellation is guaranteed to be answered before the check restarts.
+ * Reversing that order would have the resumed check cancelled by the same flag
+ * and spin.
+ *
+ * The resumed pass keeps the reason it was interrupted from, because that is
+ * what it is: a `watch` pass that got out of the way and came back. Workstream
+ * B's `'idle'` reason is the right home for drained work once the enum grows
+ * one — inventing it here would mean a schema change and three read-side
+ * filters for a nuance nobody is showing yet.
+ */
+const owedFiles = new Set<string>()
+let owedReason: CompilerPass['reason'] = 'watch'
+let resumeScheduled = false
+
+function oweCheck(
+  root: string,
+  files: readonly string[],
+  reason: CompilerPass['reason']
+): void {
+  for (const relativePath of files) owedFiles.add(relativePath)
+  owedReason = reason
+  if (resumeScheduled) return
+  resumeScheduled = true
+
+  setImmediate(() => {
+    resumeScheduled = false
+    const files = [...owedFiles].filter((file) => graph.nodes.has(file))
+    const reason = owedReason
+    owedFiles.clear()
+    if (files.length > 0) checkFiles(root, files, reason, [])
+    // Only once the resume is done, so the panel does not flick to idle in the
+    // gap between the cancellation and the work coming back.
+    busySince = null
+    reportState('idle')
+  })
 }
 
 function describeNode(root: string, relativePath: string): DependencyNode | null {
@@ -1143,6 +1279,11 @@ function answerLanguageQuery(
  * navigation query must cost an empty answer rather than a restart.
  */
 function respondToLanguageQuery(request: LanguageQueryRequest): void {
+  // Before anything touches the LanguageService. The token this flag drives is
+  // polled by EVERY call on it, not only by the checker, so answering with it
+  // still raised would have the query cancel itself.
+  clearCancellation()
+
   const root = workspaceRoot
   let result: LanguageQueryAnswer
 
@@ -1170,6 +1311,8 @@ function handle(request: WorkerRequest): void {
 
     case 'boot':
       workspaceRoot = request.workspaceRoot
+      cancellationFlag =
+        request.cancellation === undefined ? null : new Int32Array(request.cancellation)
       indexWorkspace(request.workspaceRoot)
       return
 

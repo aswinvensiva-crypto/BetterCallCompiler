@@ -148,7 +148,39 @@ describe('lifecycle', () => {
     startCompiler('C:/ws')
 
     expect(workers).toHaveLength(1)
-    expect(newestWorker().sent[0]).toEqual({ type: 'boot', workspaceRoot: 'C:/ws' })
+    expect(newestWorker().sent[0]).toMatchObject({ type: 'boot', workspaceRoot: 'C:/ws' })
+  })
+
+  /**
+   * The only channel that reaches a worker inside `getSemanticDiagnostics`.
+   *
+   * That call is synchronous and `port.on('message')` dispatches synchronously,
+   * so the worker's event loop is not running and no message can arrive. Shared
+   * memory the checker polls is the whole mechanism, and a boot that forgot to
+   * carry it would leave every check uncancellable with nothing to show for it.
+   */
+  it('hands the worker the shared cancellation slot', () => {
+    startCompiler('C:/ws')
+
+    const boot = newestWorker().sent[0] as { cancellation?: SharedArrayBuffer }
+    expect(boot.cancellation).toBeInstanceOf(SharedArrayBuffer)
+    expect(boot.cancellation?.byteLength).toBe(4)
+  })
+
+  it('raises the flag when an interactive query is sent, and lowers it on boot', () => {
+    startCompiler('C:/ws')
+    const boot = newestWorker().sent[0] as { cancellation?: SharedArrayBuffer }
+    const flag = new Int32Array(boot.cancellation as SharedArrayBuffer)
+    expect(Atomics.load(flag, 0)).toBe(0)
+
+    void definitionAt('a.ts', 0, null)
+    expect(Atomics.load(flag, 0)).toBe(1)
+
+    // A flag raised for a query a dead worker never answered must not cancel
+    // the fresh daemon's first check — the one pass it most needs to finish.
+    newestWorker().crash()
+    vi.advanceTimersByTime(1_000)
+    expect(Atomics.load(flag, 0)).toBe(0)
   })
 
   it('adopts the state the worker reports', () => {

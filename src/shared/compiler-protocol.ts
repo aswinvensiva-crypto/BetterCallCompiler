@@ -27,6 +27,22 @@ import type {
 export interface BootRequest {
   readonly type: 'boot'
   readonly workspaceRoot: string
+  /**
+   * One `Int32Array` slot both sides can see, which is how a check is stopped.
+   *
+   * `getSemanticDiagnostics` is synchronous and uninterruptible from the
+   * outside: `port.on('message')` calls the worker's handler synchronously, so
+   * nothing is delivered while a check is running and a priority queue inside
+   * the worker would reorder nothing. The only way in is memory the checker
+   * polls at its own checkpoints, which is exactly what tsserver does with a
+   * cancellation file — and what `getCancellationToken` on the LanguageService
+   * host is for.
+   *
+   * Main writes 1 when it sends an interactive query; the worker writes 0 the
+   * moment it starts answering one. Optional so a supervisor that never sets it
+   * — every unit test's fake worker — simply runs uncancellable checks.
+   */
+  readonly cancellation?: SharedArrayBuffer
 }
 
 export interface FilesChangedRequest {

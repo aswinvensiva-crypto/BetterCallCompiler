@@ -29,11 +29,19 @@ import { fileURLToPath } from 'node:url'
  *      sent, because the renderer keys models on a workspace-relative path and
  *      cannot open one that escapes the root.
  *   4. An overlay on the request changes the answer, and emits no pass.
- *   5. An interactive query issued while a check is running is answered — the
- *      harness prints how long it waited rather than asserting it is fast,
- *      because `port.on('message')` dispatches synchronously and the answer
- *      genuinely queues behind the check. That number is what A4's cancellation
- *      flag is measured against.
+ *   5. An interactive query issued while a check is running is answered, and
+ *      the wait is printed rather than asserted — `port.on('message')`
+ *      dispatches synchronously, so the answer genuinely queues behind the
+ *      check unless something stops it.
+ *   6. With the cancellation flag raised, that check STOPS: the interrupted
+ *      pass reports `settled: false`, publishes only what it finished, and
+ *      publishes NO empty diagnostic set for a file it never reached. That last
+ *      one is the whole hazard — a cancellation mistaken for an ordinary
+ *      failure returns [], the clean sweep reads it as "now clean", and every
+ *      squiggle in the file disappears.
+ *   7. The work comes back. A cancelled pass owes its remaining files and a
+ *      resumed pass delivers them, so the diagnostics converge rather than
+ *      being silently dropped.
  */
 
 const WORKER = join(fileURLToPath(new URL('../../', import.meta.url)), 'out/main/compiler-worker.js')
@@ -156,8 +164,85 @@ function check(label, actual, expected) {
   if (!ok) failures.push(label)
 }
 
+/**
+ * Collects diagnostics batches until one arrives with `settled: true`.
+ *
+ * `settled` was a literal `true` on every batch the daemon ever sent, which the
+ * supervisor accumulates correctly and was therefore fed a constant. A
+ * cancelled pass is the first thing that can honestly say false.
+ */
+function collectUntilSettled(worker, timeoutMs = 60_000) {
+  return new Promise((resolve, reject) => {
+    const files = []
+    const timer = setTimeout(() => {
+      cleanup()
+      reject(new Error('timed out waiting for a settled diagnostics batch'))
+    }, timeoutMs)
+
+    const onMessage = (message) => {
+      if (message?.type !== 'diagnostics') return
+      files.push(...message.files)
+      if (!message.settled) return
+      cleanup()
+      resolve({ files, settled: true })
+    }
+
+    function cleanup() {
+      clearTimeout(timer)
+      worker.off('message', onMessage)
+    }
+
+    worker.on('message', onMessage)
+  })
+}
+
+/**
+ * Records whether the settled batch or the query answer arrives first.
+ *
+ * The point of cancellation stated as an order rather than a duration: a
+ * wall-time comparison on a check this size measures scheduler noise, while
+ * "the answer came out in front of the pass" is exactly the behaviour and is
+ * deterministic.
+ */
+function recordOrder(worker) {
+  const seen = []
+  const onMessage = (message) => {
+    if (message?.type === 'diagnostics' && message.settled) seen.push('settled')
+    if (message?.type === 'languageQueryResult') seen.push('answer')
+  }
+  worker.on('message', onMessage)
+  return {
+    stop() {
+      worker.off('message', onMessage)
+      return seen
+    }
+  }
+}
+
+/** Every diagnostics batch posted within a window, in order. */
+function collectBatches(worker, ms) {
+  return new Promise((resolve) => {
+    const batches = []
+    const onMessage = (message) => {
+      if (message?.type !== 'diagnostics') return
+      batches.push({ files: message.files, settled: message.settled })
+    }
+    worker.on('message', onMessage)
+    setTimeout(() => {
+      worker.off('message', onMessage)
+      resolve(batches)
+    }, ms)
+  })
+}
+
 const root = makeWorkspace()
+
+/** The same shared slot `compiler-service.ts` creates and boots the worker with. */
+const cancellationBuffer = new SharedArrayBuffer(4)
+const cancellationFlag = new Int32Array(cancellationBuffer)
+
 const worker = new Worker(WORKER)
+if (process.env.BCC_TRACE) worker.on('message', (m) => console.log('  [msg]', m.type, m.type === 'diagnostics' ? `files=${m.files.length} settled=${m.settled}` : (m.state ?? m.pass?.reason ?? '')))
 
 let queryId = 0
 
@@ -191,7 +276,7 @@ function offsetOf(text, needle, nth = 0) {
 }
 
 try {
-  worker.postMessage({ type: 'boot', workspaceRoot: root })
+  worker.postMessage({ type: 'boot', workspaceRoot: root, cancellation: cancellationBuffer })
   const graph = await waitForIdle(worker)
   console.log(`\nindexed ${graph.fileCount} files, ${graph.edgeCount} edges`)
   console.log(`tsconfig adopted: ${graph.tsconfigRelativePath ?? '(fallback options)'}\n`)
@@ -278,7 +363,7 @@ console.log(renamed.text)
   )
   check('and no check pass was emitted for it', await silence, null)
 
-  /* --- 5. how long an answer waits behind a check ------------------------- */
+  /* --- 5. how long an answer waits behind a check, uncancelled ------------ */
 
   console.log('\n--- an interactive query issued during a check ---')
 
@@ -287,11 +372,10 @@ console.log(renamed.text)
   // the daemon back on what is on disk, which is what `callSite` indexes into.
   worker.postMessage({ type: 'closeDocument', relativePath: 'src/app.ts' })
 
-  // A workspace big enough for the check to be worth measuring. One `lib.ts`
-  // and FANOUT importers means a signature edit invalidates all of them, which
-  // is the shape that makes a check take long enough to sit in front of a
-  // keystroke.
-  const FANOUT = 60
+  // A workspace big enough for a check to be worth measuring. One `lib.ts` and
+  // FANOUT importers means a signature edit invalidates all of them, which is
+  // the shape that puts a real check in front of a keystroke.
+  const FANOUT = 120
   for (let i = 0; i < FANOUT; i++) {
     writeFileSync(
       join(root, 'src', `dep${i}.ts`),
@@ -304,26 +388,104 @@ console.log(renamed.text)
     changed: Array.from({ length: FANOUT }, (_, i) => `src/dep${i}.ts`),
     removed: []
   })
-  await next(worker, 'pass')
+  await collectUntilSettled(worker)
+
+  const editLib = (parameterType) =>
+    writeFileSync(
+      join(root, 'src', 'lib.ts'),
+      `export interface Greeting {\n  readonly text: string\n}\n\n` +
+        `export function greet(name: ${parameterType}): Greeting {\n` +
+        '  return { text: `hello ${String(name)}` }\n}\n',
+      'utf8'
+    )
 
   // `port.on('message')` calls the worker's handler synchronously, so nothing
-  // is delivered while a check is running and no priority queue inside the
-  // worker could reorder it. This MEASURES the wait rather than asserting it is
-  // small: the number is the baseline A4's cancellation flag has to beat, and
-  // pretending it is already small would make that comparison meaningless.
-  writeFileSync(join(root, 'src', 'lib.ts'), `${LIB}\nexport const marker = 1\n`, 'utf8')
-
-  const startedAt = Date.now()
+  // is delivered while a check runs and a priority queue inside the worker
+  // would reorder nothing. This is the baseline: no flag raised, so the answer
+  // waits for the whole pass.
+  editLib('string')
+  const patientOrder = recordOrder(worker)
+  const uncancelledAt = Date.now()
   worker.postMessage({ type: 'filesChanged', changed: ['src/lib.ts'], removed: [] })
-  const answer = await ask('definition', 'src/app.ts', callSite)
-  const waitedMs = Date.now() - startedAt
+  const patient = await ask('definition', 'src/app.ts', callSite)
+  const uncancelledMs = Date.now() - uncancelledAt
 
-  check('it is answered rather than dropped', answer.locations.length > 0, true)
-  check('and the answer is still correct', answer.locations[0]?.relativePath, 'src/lib.ts')
-  console.log(
-    `      waited ${waitedMs} ms behind a ${FANOUT + 3}-file check ` +
-      '(A4 target: bounded by one cancellation checkpoint)'
+  check('it is answered rather than dropped', patient.locations.length > 0, true)
+  // The ORDER, not the clock. A wall-time comparison on a check this size is
+  // measuring noise; what is structural is that without a flag the whole pass
+  // completes before the query is even dequeued.
+  check('the whole pass lands first', patientOrder.stop(), ['settled', 'answer'])
+  console.log(`      waited ${uncancelledMs} ms behind a ${FANOUT + 3}-file check`)
+
+  /* --- 6. the same query, with the flag raised ---------------------------- */
+
+  console.log('\n--- the same query, cancelling the check ---')
+
+  editLib('number')
+  const impatientOrder = recordOrder(worker)
+  const cancelledAt = Date.now()
+  worker.postMessage({ type: 'filesChanged', changed: ['src/lib.ts'], removed: [] })
+  Atomics.store(cancellationFlag, 0, 1)
+  const impatient = await ask('definition', 'src/app.ts', callSite)
+  const cancelledMs = Date.now() - cancelledAt
+
+  check('still answered, and still correct', impatient.locations[0]?.relativePath, 'src/lib.ts')
+  console.log(`      waited ${cancelledMs} ms with the flag raised`)
+  // The claim, stated as an order rather than a duration: the answer now comes
+  // out IN FRONT of the pass instead of behind it.
+  check('the answer overtakes the pass', impatientOrder.stop()[0], 'answer')
+  check('the worker stood the flag down to answer', Atomics.load(cancellationFlag, 0), 0)
+
+  const afterCancel = await collectUntilSettled(worker)
+  check(
+    'and the work came back rather than being dropped',
+    afterCancel.files.filter((file) => file.diagnostics.length > 0).length > FANOUT / 2,
+    true
   )
+
+  /* --- 7. the erasure a cancelled pass must not cause --------------------- */
+
+  console.log('\n--- a cancellation landing PART-WAY through a pass ---')
+
+  // The hazard needs the pass to get some files done and then stop. Raising the
+  // flag with the message loses the race — `synchronizeHostData` throws on the
+  // very first file, `produced` is empty and nothing is published, which proves
+  // nothing about the sweep. Raising it on a timer lands it mid-pass, where
+  // `nowDirty` is a PARTIAL answer and sweeping against it would publish empty
+  // sets for files nobody looked at.
+  editLib('boolean')
+  const batches = collectBatches(worker, 6_000)
+  worker.postMessage({ type: 'filesChanged', changed: ['src/lib.ts'], removed: [] })
+  setTimeout(() => {
+    Atomics.store(cancellationFlag, 0, 1)
+    void ask('definition', 'src/app.ts', callSite)
+  }, 20)
+  const collected = await batches
+
+  const partial = collected.find((batch) => batch.settled === false)
+  check('an interrupted pass says so instead of claiming to be settled', partial !== undefined, true)
+  check('and it published what it did finish', (partial?.files ?? []).length > 0, true)
+
+  // Every file in that batch was actually checked, so one reported CLEAN there
+  // is either genuinely clean or a casualty of `catch { return [] }` swallowing
+  // the cancellation — which the clean sweep then reads as "now clean" and
+  // every squiggle in the file disappears.
+  const erased = (partial?.files ?? []).filter(
+    (file) => file.relativePath.startsWith('src/dep') && file.diagnostics.length === 0
+  )
+  check('no dependent was published as clean by a cancelled pass', erased.length, 0)
+
+  const converged = new Map()
+  for (const batch of collected) {
+    for (const file of batch.files) converged.set(file.relativePath, file.diagnostics.length)
+  }
+  check(
+    'the resumed pass delivers the rest',
+    [...converged.values()].filter((count) => count > 0).length > FANOUT / 2,
+    true
+  )
+  check('and the last batch settles', collected[collected.length - 1]?.settled, true)
+
 } finally {
   await worker.terminate()
   rmSync(root, { recursive: true, force: true })
