@@ -102,6 +102,23 @@ const emittedVersions = new Map<string, number>()
 /** Files that had diagnostics last time, for the clean sweep. */
 let previouslyDirty = new Set<string>()
 
+/**
+ * Files a QUERY moved ahead of the check that was going to cover them.
+ *
+ * A query adopts the caller's buffer without checking, on purpose — see
+ * `syncOverlay`. But `setInput` only reports a change ONCE, and `openDocument`
+ * decides whether to check from exactly that answer. So a query carrying the
+ * new text, followed 300ms later by the debounced push carrying the same text,
+ * leaves the second one looking like a no-op and no check ever runs: the buffer
+ * is current, the answers are current, and the squiggles are from two edits
+ * ago. Found by the E2E that fixes a file while it is open, which is the
+ * ordinary case rather than a corner one.
+ *
+ * Recording the debt here keeps the two concerns apart — a query still never
+ * costs a check pass, and the debounce still decides when one happens.
+ */
+const checkOwed = new Set<string>()
+
 function heapUsedMb(): number {
   return Math.round((process.memoryUsage().heapUsed / (1024 * 1024)) * 10) / 10
 }
@@ -269,6 +286,9 @@ function check(paths: readonly string[]): void {
   const produced: FileDiagnostics[] = []
   const nowDirty = new Set<string>()
 
+  // Whatever this pass covers is no longer owed, however it came to be owed.
+  for (const relativePath of paths) checkOwed.delete(relativePath)
+
   for (const relativePath of paths) {
     // A deleted file is answered without asking the engine anything.
     //
@@ -400,7 +420,7 @@ function syncOverlay(
   // order is stale and must not overwrite a newer one.
   if (existing !== undefined && existing.version > overlay.version) return
   overlays.set(relativePath, { content: overlay.content, version: overlay.version })
-  refresh(root, relativePath)
+  if (refresh(root, relativePath)) checkOwed.add(relativePath)
 }
 
 /** The three front-end stages for a file, or null when there is no such file. */
@@ -546,6 +566,7 @@ function boot(root: string): void {
   overlays.clear()
   known.clear()
   emittedVersions.clear()
+  checkOwed.clear()
   previouslyDirty = new Set()
 
   const files = walk(root)
@@ -597,7 +618,11 @@ function handle(request: LangRequest): void {
         content: request.content,
         version: request.version
       })
-      if (refresh(root, request.relativePath)) check([request.relativePath])
+      // Two reasons to check: the text moved now, or a query already moved it
+      // and nothing has checked since. Without the second, an interactive query
+      // between two pushes swallows the re-check entirely.
+      const moved = refresh(root, request.relativePath)
+      if (moved || checkOwed.has(request.relativePath)) check([request.relativePath])
       return
     }
 

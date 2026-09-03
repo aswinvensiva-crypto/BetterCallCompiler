@@ -409,6 +409,37 @@ try {
   })
   check('a lower version is ignored', stale.symbols.map((s) => s.name), ['renamedInBuffer'])
 
+  /* --- 9. a query must not swallow the check the push would have done ----- */
+
+  console.log('\n--- a query between two pushes ---')
+
+  // The regression an E2E found, and the reason a query cannot simply adopt an
+  // overlay and stop. `setInput` reports a change exactly ONCE, and
+  // `openDocument` decides whether to check from that answer — so a query
+  // carrying the new text, followed by the debounced push carrying the same
+  // text, leaves the push looking like a no-op. The buffer is current, the
+  // navigation answers are current, and the squiggles are from two edits ago.
+  const BROKEN_BUFFER = 'let oops = ;\n'
+
+  // The query moves the daemon's copy of the file, without checking.
+  const noPassForTheQuery = nothingWithin(worker, 'diagnostics', 800)
+  await ask('documentSymbols', 0, { overlay: { content: BROKEN_BUFFER, version: 60 } })
+  check('still no pass for the query itself', await noPassForTheQuery, null)
+
+  // The debounced push then arrives carrying the SAME text.
+  worker.postMessage({
+    type: 'openDocument',
+    relativePath: 'examples/nav.bcc',
+    content: BROKEN_BUFFER,
+    version: 60
+  })
+  const afterPush = await next(worker, 'diagnostics', 5_000)
+  check(
+    'the push still produces the check the query deferred',
+    fileIn(afterPush, 'examples/nav.bcc').diagnostics.map((d) => d.code),
+    ['BCC0004']
+  )
+
 } finally {
   await worker.terminate()
   rmSync(root, { recursive: true, force: true })
