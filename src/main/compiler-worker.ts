@@ -409,18 +409,26 @@ function createService(root: string): ts.LanguageService {
     root,
     scriptFileNames: () => scriptFileNames(root),
     compilerOptions: () => compilerOptions,
-    textOf: (relativePath) => {
+    textOf: (fileName) => {
+      const relativePath = toRelative(root, fileName)
+
       // Overlay first: the daemon must check the buffer the user is looking at,
       // not the last thing written to disk.
       const overlay = overlays.get(relativePath)
       if (overlay !== undefined) return overlay.content
 
+      // Then the engine's own copy, which is what every query was computed
+      // against. Reading disk here instead would let the service and the engine
+      // disagree about the same file within one pass.
       const held = engineTexts.get(relativePath)
       if (held !== undefined) return held
 
-      return readIfPossible(toAbsolute(root, relativePath))
+      // The path TypeScript ASKED about, not one rebuilt from the root. Most of
+      // what it asks for is inside the workspace, but `lib.es2022.d.ts` is not.
+      return readIfPossible(fileName)
     },
-    versionOf: (relativePath) => {
+    versionOf: (fileName) => {
+      const relativePath = toRelative(root, fileName)
       const overlay = overlays.get(relativePath)
       if (overlay !== undefined) return `o${overlay.version}`
       // A counter the daemon controls, NOT mtime. See `textVersions` for why

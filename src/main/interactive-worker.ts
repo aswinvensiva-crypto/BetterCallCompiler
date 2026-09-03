@@ -99,12 +99,27 @@ function readIfPossible(absolute: string): string | null {
   }
 }
 
-function textOf(relativePath: string): string | null {
-  const overlay = overlays.get(relativePath)
-  if (overlay !== undefined) return overlay.content
+/**
+ * The buffer if there is one, else the file itself.
+ *
+ * Takes the ABSOLUTE path the service asked about. Rebuilding it from the
+ * workspace root would break every `lib.*.d.ts` the moment the workspace and
+ * the app are on different volumes — see `LanguageHostState.textOf`.
+ */
+function textOf(fileName: string): string | null {
+  const root = workspaceRoot
+  if (root !== null) {
+    const overlay = overlays.get(toRelative(root, fileName))
+    if (overlay !== undefined) return overlay.content
+  }
+  return readIfPossible(fileName)
+}
+
+/** The same, for a path already known to be workspace-relative. */
+function textOfRelative(relativePath: string): string | null {
   const root = workspaceRoot
   if (root === null) return null
-  return readIfPossible(toAbsolute(root, relativePath))
+  return textOf(toAbsolute(root, relativePath))
 }
 
 function ensureService(root: string): ts.LanguageService {
@@ -119,7 +134,8 @@ function ensureService(root: string): ts.LanguageService {
         [...new Set([...known, ...overlays.keys()])].map((path) => toAbsolute(root, path)),
       compilerOptions: () => compilerOptions,
       textOf,
-      versionOf: (relativePath) => {
+      versionOf: (fileName) => {
+        const relativePath = toRelative(root, fileName)
         const overlay = overlays.get(relativePath)
         return overlay === undefined
           ? `d${versions.get(relativePath) ?? 0}`
@@ -161,7 +177,7 @@ function flatten(parts: readonly ts.SymbolDisplayPart[] | undefined): string | n
 }
 
 function rangeOf(relativePath: string, span: ts.TextSpan): SourceRange {
-  return rangeFromSpan(lineStartsOf(textOf(relativePath) ?? ''), span.start, span.length)
+  return rangeFromSpan(lineStartsOf(textOfRelative(relativePath) ?? ''), span.start, span.length)
 }
 
 function answer(root: string, request: InteractiveQueryRequest): InteractiveQueryAnswer {

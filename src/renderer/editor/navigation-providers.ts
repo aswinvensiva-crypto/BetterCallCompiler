@@ -499,18 +499,16 @@ export function registerInteractiveProviders(ns: typeof monacoNs): void {
       const relativePath = pathOf(model)
       if (relativePath === null) return null
 
+      // Everything that reads the MODEL happens before the await, and that is
+      // load-bearing rather than tidiness. A completion request outlives the
+      // buffer that started it — close a dirty tab while one is in flight and
+      // `models.close()` disposes the model underneath it — and Monaco throws
+      // "TextModelPart is disposed!" from any read after that. Found by the
+      // existing spec that closes a tab with unsaved changes and then asserts
+      // the console is clean.
       const offset = model.getOffsetAt(position)
-      const result = await api.completions({
-        relativePath,
-        offset,
-        overlay: overlayOf(model)
-      })
-      if (!result.ok) return null
-
-      // The word already typed, which is what an accepted item replaces. Taken
-      // from the model rather than from the daemon: the daemon answered at an
-      // offset, and by the time this renders the model is the only thing that
-      // knows where that offset sits on screen.
+      const overlay = overlayOf(model)
+      // The word already typed, which is what an accepted item replaces.
       const word = model.getWordUntilPosition(position)
       const range: monacoNs.IRange = {
         startLineNumber: position.lineNumber,
@@ -518,6 +516,9 @@ export function registerInteractiveProviders(ns: typeof monacoNs): void {
         endLineNumber: position.lineNumber,
         endColumn: word.endColumn
       }
+
+      const result = await api.completions({ relativePath, offset, overlay })
+      if (!result.ok) return null
 
       const suggestions: ResolvableItem[] = result.value.items.map((item: CompletionItem) => ({
         label: item.label,

@@ -185,20 +185,32 @@ export interface LanguageHostState {
   /**
    * The current text of a file, or null when there is none.
    *
-   * The overlay-beats-disk rule lives in the caller, because what an overlay IS
+   * Takes the ABSOLUTE path TypeScript asked about, not a workspace-relative
+   * one, and that is load-bearing rather than a style choice. Most of what the
+   * service asks for is inside the workspace, but `lib.es2022.d.ts` is not —
+   * it lives beside the typescript package, or under `process.resourcesPath` in
+   * a packaged build. Handing the caller a relative path would mean it had to
+   * rebuild the absolute one to read the file, and `join(root, relative(root,
+   * x))` is only the identity while both are on the same volume: on Windows
+   * with the workspace on D: and the app on C:, `relative` returns `D:\ts\…`
+   * and joining it onto the root produces `C:\app\D:\ts\…`. Every lib file
+   * fails to load and the whole program is untyped.
+   *
+   * The overlay-beats-disk rule stays in the caller, because what an overlay IS
    * differs: the check worker holds the engine's copy so the service and the
    * memos can never disagree within a pass, and the interactive worker holds
    * only the buffer.
    */
-  textOf(relativePath: string): string | null
+  textOf(fileName: string): string | null
   /**
-   * A version string that changes whenever the text does.
+   * A version string that changes whenever the text does. Absolute path, for
+   * the same reason as `textOf`.
    *
    * NOT mtime. The filesystem clock is coarse on some volumes and a save inside
    * one tick would produce the same version for different content, leaving the
    * service serving a stale snapshot.
    */
-  versionOf(relativePath: string): string
+  versionOf(fileName: string): string
   /** Polled by the checker at its own checkpoints; omit for an uncancellable host. */
   isCancellationRequested?(): boolean
 }
@@ -214,9 +226,9 @@ export interface LanguageHostState {
 export function createLanguageServiceHost(state: LanguageHostState): ts.LanguageServiceHost {
   const host: ts.LanguageServiceHost = {
     getScriptFileNames: () => state.scriptFileNames(),
-    getScriptVersion: (fileName) => state.versionOf(toRelative(state.root, fileName)),
+    getScriptVersion: (fileName) => state.versionOf(fileName),
     getScriptSnapshot: (fileName) => {
-      const text = state.textOf(toRelative(state.root, fileName))
+      const text = state.textOf(fileName)
       return text === null ? undefined : ts.ScriptSnapshot.fromString(text)
     },
     getCurrentDirectory: () => state.root,
