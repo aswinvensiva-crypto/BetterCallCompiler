@@ -68,6 +68,15 @@ export const INVOKE_CHANNEL_NAMES = [
   'compiler:closeDocument',
   'compiler:restart',
   'compiler:passes',
+  // Navigation. Deliberately on the `compiler:` namespace rather than a new
+  // one: the renderer asks the same question of a `.ts` and a `.bcc` file and
+  // main routes by extension, exactly as `compiler:openDocument` already does.
+  // A second namespace would put the choice of compiler back in the renderer.
+  'compiler:definition',
+  'compiler:references',
+  'compiler:rename',
+  'compiler:documentSymbols',
+  'compiler:hover',
   'explain:start',
   'artifact:list',
   'artifact:get',

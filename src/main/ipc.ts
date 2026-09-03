@@ -26,6 +26,11 @@ import {
 import { isBccPath } from '../shared/lang-diagnostics'
 import {
   closeLangDocument,
+  langDefinition,
+  langDocumentSymbols,
+  langHover,
+  langReferences,
+  langRename,
   openLangDocument,
   restartLang,
   startLang
@@ -376,6 +381,43 @@ export function createHandlerMap(): HandlerMap {
       return { restarted: true as const }
     },
     'compiler:passes': () => ({ passes: compilerPasses() }),
+
+    /* ----------------------------- navigation ----------------------------- */
+
+    // Routed by extension, exactly as openDocument is. A TypeScript answer is
+    // empty until A3 wires the second daemon's language service, and empty is
+    // the right placeholder rather than an error: Monaco treats "no result"
+    // and "no provider" identically, so the renderer needs no feature flag and
+    // nothing changes for TS/JS users until the day it starts answering.
+    'compiler:definition': async (request) =>
+      isBccPath(request.relativePath)
+        ? await langDefinition(request.relativePath, request.offset, request.overlay)
+        : { locations: [] },
+
+    'compiler:references': async (request) =>
+      isBccPath(request.relativePath)
+        ? await langReferences(request.relativePath, request.offset, request.overlay)
+        : { locations: [], truncated: false },
+
+    'compiler:rename': async (request) =>
+      isBccPath(request.relativePath)
+        ? await langRename(
+            request.relativePath,
+            request.offset,
+            request.newName,
+            request.overlay
+          )
+        : { target: null, placeholder: null, files: [], error: null },
+
+    'compiler:documentSymbols': async (request) =>
+      isBccPath(request.relativePath)
+        ? await langDocumentSymbols(request.relativePath, request.overlay)
+        : { symbols: [] },
+
+    'compiler:hover': async (request) =>
+      isBccPath(request.relativePath)
+        ? await langHover(request.relativePath, request.offset, request.overlay)
+        : { contents: null, range: null },
 
     /* ------------------------------ artifacts ----------------------------- */
 

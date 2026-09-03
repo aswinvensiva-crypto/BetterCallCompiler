@@ -681,6 +681,167 @@ export function stoppedCompilerStatus(): CompilerStatus {
   }
 }
 
+/* ---------------------------- language queries ---------------------------- */
+
+/**
+ * Everything the editor asks about a cursor, in one family of shapes.
+ *
+ * The daemon has the real program — the real tsconfig for TypeScript, the real
+ * resolution for BCC — and until now it was asked exactly two questions, both
+ * about diagnostics. These are the rest of what it already knows.
+ *
+ * Every position is 1-based with an EXCLUSIVE end column, matching
+ * `diagnosticMessageSchema` and Monaco's `IRange`. Offsets never cross this
+ * boundary: the renderer converts a position to an offset with
+ * `getOffsetAt` on the way in, and the worker converts back on the way out,
+ * because for a cross-file target the renderer often has no model to convert
+ * against.
+ */
+export const sourceRangeSchema = z.strictObject({
+  startLine: z.number().int().positive(),
+  startColumn: z.number().int().positive(),
+  endLine: z.number().int().positive(),
+  endColumn: z.number().int().positive()
+})
+export type SourceRange = z.infer<typeof sourceRangeSchema>
+
+export const languageLocationSchema = z.strictObject({
+  /** POSIX-separated, workspace-relative — the key every side joins on. */
+  relativePath: z.string(),
+  /** Absolute, so the renderer can open a file it does not already have. */
+  path: z.string(),
+  range: sourceRangeSchema
+})
+export type LanguageLocation = z.infer<typeof languageLocationSchema>
+
+/**
+ * The unsaved buffer, carried on the request itself.
+ *
+ * `pushOverlay` in `models.ts` debounces 300ms because every push triggers a
+ * re-check, so for up to 300ms after a keystroke the daemon's copy of a file is
+ * behind what the user is looking at. A definition answered at a stale offset
+ * points at the wrong token; a RENAME computed against stale text rewrites the
+ * wrong bytes. Both are worse than no answer at all.
+ *
+ * So an interactive request carries the buffer with it. The daemon adopts it as
+ * the overlay and answers against it WITHOUT scheduling a check — the debounce
+ * keeps doing its real job, which is deciding when to re-check, not deciding
+ * what the file says.
+ */
+export const documentOverlaySchema = z.strictObject({
+  content: z.string(),
+  /** Monaco's version id: monotonic per model, so a late overlay is discardable. */
+  version: z.number().int().nonnegative()
+})
+export type DocumentOverlay = z.infer<typeof documentOverlaySchema>
+
+/**
+ * How many references travel the wire before the answer is cut short.
+ *
+ * Find-all-references on a common identifier in a large workspace returns tens
+ * of thousands of hits, and a result nobody can read is not worth the
+ * structured clone. Same instinct as `MAX_DIAG_TRACE_EVENTS`, and the flag is
+ * the important half: a truncated answer that does not say so is a wrong one.
+ */
+export const MAX_REFERENCE_RESULTS = 5_000
+
+export const referencesResultSchema = z.strictObject({
+  locations: z.array(languageLocationSchema).max(MAX_REFERENCE_RESULTS),
+  truncated: z.boolean()
+})
+export type ReferencesResult = z.infer<typeof referencesResultSchema>
+
+export const definitionResultSchema = z.strictObject({
+  /**
+   * A list rather than a single location, because a TypeScript symbol can have
+   * several declarations (an overload set, a merged interface) and picking one
+   * of them in the daemon would throw away the answer the user wanted.
+   */
+  locations: z.array(languageLocationSchema).max(MAX_REFERENCE_RESULTS)
+})
+export type DefinitionResult = z.infer<typeof definitionResultSchema>
+
+export const documentSymbolKindSchema = z.enum(['function', 'variable', 'parameter'])
+export type DocumentSymbolKind = z.infer<typeof documentSymbolKindSchema>
+
+export interface DocumentSymbolNode {
+  readonly name: string
+  /** The signature or type, appended after the name in the outline. */
+  readonly detail: string
+  readonly kind: DocumentSymbolKind
+  /** The whole declaration — what the outline highlights. */
+  readonly range: SourceRange
+  /** Just the name — where clicking the row puts the cursor. */
+  readonly selectionRange: SourceRange
+  readonly children: readonly DocumentSymbolNode[]
+}
+
+/**
+ * Recursive, so `z.lazy` and an explicit annotation. The interface above is
+ * written by hand rather than inferred because a self-referencing schema cannot
+ * infer its own type.
+ */
+export const documentSymbolNodeSchema: z.ZodType<DocumentSymbolNode> = z.lazy(() =>
+  z.strictObject({
+    name: z.string(),
+    detail: z.string(),
+    kind: documentSymbolKindSchema,
+    range: sourceRangeSchema,
+    selectionRange: sourceRangeSchema,
+    children: z.array(documentSymbolNodeSchema)
+  })
+)
+
+export const documentSymbolsResultSchema = z.strictObject({
+  symbols: z.array(documentSymbolNodeSchema)
+})
+export type DocumentSymbolsResult = z.infer<typeof documentSymbolsResultSchema>
+
+export const hoverResultSchema = z.strictObject({
+  /** Rendered as markdown. Null means "nothing to say", not "not ready". */
+  contents: z.string().nullable(),
+  range: sourceRangeSchema.nullable()
+})
+export type HoverResult = z.infer<typeof hoverResultSchema>
+
+export const textEditSchema = z.strictObject({
+  range: sourceRangeSchema,
+  newText: z.string()
+})
+export type TextEdit = z.infer<typeof textEditSchema>
+
+export const fileEditSchema = z.strictObject({
+  relativePath: z.string(),
+  path: z.string(),
+  /**
+   * Descending by position, so applying them in order cannot invalidate the
+   * ranges of the ones not yet applied. Produced sorted rather than sorted at
+   * the point of use, because every consumer would otherwise have to remember.
+   */
+  edits: z.array(textEditSchema)
+})
+export type FileEdit = z.infer<typeof fileEditSchema>
+
+/**
+ * One channel serves both halves of a rename.
+ *
+ * Monaco asks twice: `resolveRenameLocation` when F2 is pressed, to draw the
+ * inline box over the right word, and `provideRenameEdits` when the new name is
+ * committed. Sending `newName: null` asks the first question — `target` and
+ * `placeholder` come back and `files` is empty — and sending a name asks the
+ * second. Two channels would mean two copies of "where is the symbol under this
+ * offset", which is precisely the part that must agree.
+ */
+export const renameResultSchema = z.strictObject({
+  /** The identifier being renamed. Null when there is nothing renameable here. */
+  target: sourceRangeSchema.nullable(),
+  placeholder: z.string().nullable(),
+  files: z.array(fileEditSchema),
+  /** Shown to the user verbatim by Monaco's rename widget. */
+  error: z.string().nullable()
+})
+export type RenameResult = z.infer<typeof renameResultSchema>
+
 /* -------------------------------- artifacts ------------------------------- */
 
 /**

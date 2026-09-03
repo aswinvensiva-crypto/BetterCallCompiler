@@ -1,4 +1,5 @@
 import type * as monacoNs from 'monaco-editor'
+import { documentUri } from './document-uri'
 import { languageForFile } from './language-id'
 import { loadMonaco } from './monaco-setup'
 import { flushPendingMarkers } from './markers'
@@ -80,9 +81,16 @@ export function anyDirty(): boolean {
   return openDocuments().some(isDirty)
 }
 
-/** Monaco keys models by URI; a stable per-file URI is what dedupes them. */
+/**
+ * Monaco keys models by URI; a stable per-file URI is what dedupes them.
+ *
+ * Built by `document-uri.ts` rather than inline, because the navigation
+ * providers have to run the same construction BACKWARDS to tell the daemon
+ * which file a model is. One encoder and one decoder, or the first path with a
+ * space in it makes go-to-definition ask about a file that does not exist.
+ */
 function uriFor(ns: typeof monacoNs, node: FileNode): monacoNs.Uri {
-  return ns.Uri.parse(`bettercallcompiler:///${encodeURI(node.relativePath)}`)
+  return documentUri(ns, node.relativePath)
 }
 
 /**

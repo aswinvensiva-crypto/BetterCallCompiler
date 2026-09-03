@@ -8,6 +8,7 @@ import CssWorker from 'monaco-editor/language/css/css.worker?worker'
 import HtmlWorker from 'monaco-editor/language/html/html.worker?worker'
 import TsWorker from 'monaco-editor/language/typescript/ts.worker?worker'
 import { registerBccLanguage } from './bcc-language'
+import { registerNavigationProviders } from './navigation-providers'
 
 /**
  * Monaco worker wiring.
@@ -117,6 +118,9 @@ export function loadMonaco(): Promise<typeof monacoNs> {
     defineTheme(ns)
     configureLanguageDefaults(register)
     registerBccLanguage(ns)
+    // After the language is registered, necessarily: a provider registered for
+    // an unknown language id binds to nothing and never fires again.
+    registerNavigationProviders(ns)
 
     runtime = ns
     return ns

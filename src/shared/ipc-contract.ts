@@ -20,9 +20,15 @@ import {
   artifactSummarySchema,
   compilerPassSchema,
   compilerStatusSchema,
+  definitionResultSchema,
   dependencyQuerySchema,
   diagnosticsBatchSchema,
+  documentOverlaySchema,
+  documentSymbolsResultSchema,
   fileDiagnosticsSchema,
+  hoverResultSchema,
+  referencesResultSchema,
+  renameResultSchema,
   gitStatusSchema,
   languageBreakdownSchema,
   repositoryStatsSchema,
@@ -470,6 +476,72 @@ export const INVOKE_CHANNELS = {
   'compiler:passes': {
     request: empty,
     response: z.strictObject({ passes: z.array(compilerPassSchema) })
+  },
+
+  /* ----------------------------- navigation ----------------------------- */
+
+  /**
+   * What every navigation request carries.
+   *
+   * The offset rather than a line and column, because that is what
+   * `ITextModel.getOffsetAt` produces and what both compilers index by — a
+   * position converted twice is a position that can disagree with itself.
+   *
+   * The overlay is the freshness fix and is the reason these are not answered
+   * from whatever the daemon last happened to be told. See
+   * `documentOverlaySchema`.
+   */
+  'compiler:definition': {
+    request: z.strictObject({
+      relativePath: z.string().min(1),
+      offset: z.number().int().nonnegative(),
+      overlay: documentOverlaySchema.nullable()
+    }),
+    response: definitionResultSchema
+  },
+  'compiler:references': {
+    request: z.strictObject({
+      relativePath: z.string().min(1),
+      offset: z.number().int().nonnegative(),
+      overlay: documentOverlaySchema.nullable()
+    }),
+    response: referencesResultSchema
+  },
+  /**
+   * Both halves of a rename. `newName: null` asks where the symbol is, for the
+   * inline box Monaco draws on F2; a name asks for the edits that carry it out.
+   */
+  'compiler:rename': {
+    request: z.strictObject({
+      relativePath: z.string().min(1),
+      offset: z.number().int().nonnegative(),
+      newName: z.string().nullable(),
+      overlay: documentOverlaySchema.nullable()
+    }),
+    response: renameResultSchema
+  },
+  /**
+   * No offset: an outline is about the whole file.
+   *
+   * Served by the daemon for `.bcc` because nothing else can be. For TypeScript
+   * this stays with Monaco's own worker — an outline is single-file and
+   * syntactic, so the tsconfig it lacks is irrelevant and its answer is instant
+   * and never queued behind a check.
+   */
+  'compiler:documentSymbols': {
+    request: z.strictObject({
+      relativePath: z.string().min(1),
+      overlay: documentOverlaySchema.nullable()
+    }),
+    response: documentSymbolsResultSchema
+  },
+  'compiler:hover': {
+    request: z.strictObject({
+      relativePath: z.string().min(1),
+      offset: z.number().int().nonnegative(),
+      overlay: documentOverlaySchema.nullable()
+    }),
+    response: hoverResultSchema
   },
 
   /* ------------------------------ artifacts ----------------------------- */
