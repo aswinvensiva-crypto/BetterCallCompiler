@@ -5,10 +5,10 @@ import {
   type Instruction,
   type IrFunction,
   type Operand,
-  type Terminator,
   type ValueId
 } from '../ir'
 import type { Pass, PassResult } from '../pass-manager'
+import { substituteInBlock } from './substitute'
 
 /**
  * Constant folding: arithmetic the compiler can do so the machine does not.
@@ -23,10 +23,9 @@ import type { Pass, PassResult } from '../pass-manager'
  * and the consequence lands right here: a folded instruction cannot be rewritten
  * into `%6 = 3`, because no such instruction exists. It has to be removed and
  * its result substituted into every operand that read it. So this pass is a
- * fold and a substitution at once, which is why it is written before copy
- * propagation rather than after: the substitution machinery is the same, and
- * doing it twice would be the version of this a reader has to hold two copies
- * of in their head.
+ * fold and a substitution at once. The substitution itself lives in
+ * `./substitute.ts`, because copy propagation and mem2reg need exactly the
+ * same rewrite and three copies of it is three places for one bug.
  *
  * ## It runs to a fixpoint
  *
@@ -150,64 +149,6 @@ function evaluate(instruction: Instruction): Operand | null {
 }
 
 /* -------------------------------------------------------------------------- */
-/*  Substituting                                                               */
-/* -------------------------------------------------------------------------- */
-
-type Substitution = ReadonlyMap<ValueId, Operand>
-
-function substitute(operand: Operand, folded: Substitution): Operand {
-  return operand.kind === 'value' ? (folded.get(operand.id) ?? operand) : operand
-}
-
-function rewriteInstruction(instruction: Instruction, folded: Substitution): Instruction {
-  switch (instruction.op) {
-    case 'binary':
-      return {
-        ...instruction,
-        left: substitute(instruction.left, folded),
-        right: substitute(instruction.right, folded)
-      }
-    case 'unary':
-      return { ...instruction, operand: substitute(instruction.operand, folded) }
-    case 'store':
-      // `slot` is a ValueId rather than an Operand and is deliberately not
-      // substituted: it names an `alloca`, and an alloca is never folded, so a
-      // substitution there could only ever be wrong.
-      return { ...instruction, value: substitute(instruction.value, folded) }
-    case 'call':
-      return { ...instruction, args: instruction.args.map((arg) => substitute(arg, folded)) }
-    case 'print':
-      return { ...instruction, value: substitute(instruction.value, folded) }
-    case 'phi':
-      return {
-        ...instruction,
-        incoming: instruction.incoming.map((edge) => ({
-          ...edge,
-          value: substitute(edge.value, folded)
-        }))
-      }
-    case 'alloca':
-    case 'load':
-      return instruction
-  }
-}
-
-function rewriteTerminator(terminator: Terminator, folded: Substitution): Terminator {
-  switch (terminator.op) {
-    case 'branch':
-      return { ...terminator, condition: substitute(terminator.condition, folded) }
-    case 'return':
-      return {
-        ...terminator,
-        value: terminator.value === null ? null : substitute(terminator.value, folded)
-      }
-    case 'jump':
-    case 'unreachable':
-      return terminator
-  }
-}
-
-/* -------------------------------------------------------------------------- */
 /*  The pass                                                                   */
 /* -------------------------------------------------------------------------- */
 
@@ -228,21 +169,15 @@ function foldOnce(fn: IrFunction): IrFunction | null {
 
   if (folded.size === 0) return null
 
-  const blocks: Block[] = fn.blocks.map((block) => ({
-    ...block,
-    instructions: block.instructions
-      // Drop the folded ones first, then rewrite what is left. Doing it in this
-      // order means a folded instruction is never asked to substitute into
-      // itself, which for `%1 = add 1, 2` would be harmless and for a
-      // self-referential phi would not be.
-      .filter((instruction) => {
-        const definition =
-          instruction.op === 'binary' || instruction.op === 'unary' ? instruction.result : null
-        return definition === null || !folded.has(definition)
-      })
-      .map((instruction) => rewriteInstruction(instruction, folded)),
-    terminator: rewriteTerminator(block.terminator, folded)
-  }))
+  // `substituteInBlock` drops before it rewrites, so a folded instruction is
+  // never asked to substitute into itself.
+  const blocks: Block[] = fn.blocks.map((block) =>
+    substituteInBlock(block, folded, (instruction) => {
+      const definition =
+        instruction.op === 'binary' || instruction.op === 'unary' ? instruction.result : null
+      return definition !== null && folded.has(definition)
+    })
+  )
 
   return { ...fn, blocks }
 }
