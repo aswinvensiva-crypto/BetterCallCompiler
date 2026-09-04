@@ -272,6 +272,116 @@ try {
   rmSync(wideRoot, { recursive: true, force: true })
 }
 
+/* --- module resolution is durable, and a tsconfig edit invalidates it ------- */
+
+// Proves Item 1: import resolution goes through the `mod:` cache instead of a
+// raw `ts.resolveModuleName` on every walk, and a tsconfig change (which can
+// move what a specifier resolves to) drops the cache and re-checks whatever is
+// open, reported as an `'index'` pass rather than `'watch'`.
+const modRoot = mkdtempSync(join(tmpdir(), 'bcc-modres-'))
+
+writeFileSync(join(modRoot, 'tsconfig.json'), JSON.stringify({ compilerOptions: { strict: true } }), 'utf8')
+writeFileSync(
+  join(modRoot, 'app.ts'),
+  `import unresolved from 'nonexistent-package'\nexport const x = 1\n`,
+  'utf8'
+)
+
+const modWorker = new Worker(WORKER)
+
+try {
+  modWorker.postMessage({ type: 'boot', workspaceRoot: modRoot })
+  const graph = await waitForIdle(modWorker)
+  check('tsconfig adopted for the mod-resolution workspace', graph.tsconfigRelativePath, 'tsconfig.json')
+
+  // Open the file so a config reindex has something to recheck.
+  modWorker.postMessage({
+    type: 'openDocument',
+    relativePath: 'app.ts',
+    content: `import unresolved from 'nonexistent-package'\nexport const x = 1\n`,
+    version: 1
+  })
+  await nextPass(modWorker)
+
+  // Editing the tsconfig must be treated as a config change, not an ordinary
+  // source edit — it is not even a source extension, so `applyChanges` would
+  // otherwise silently ignore it and every cached resolution would go stale.
+  writeFileSync(
+    join(modRoot, 'tsconfig.json'),
+    JSON.stringify({ compilerOptions: { strict: false } }),
+    'utf8'
+  )
+  modWorker.postMessage({ type: 'filesChanged', changed: ['tsconfig.json'], removed: [] })
+  const reindexed = await nextPass(modWorker)
+
+  console.log('\n--- tsconfig edit reindexes and rechecks the open file ---')
+  check('reported as an index pass, not a watch pass', reindexed.pass.reason, 'index')
+  check(
+    'the open file was rechecked under the new config',
+    reindexed.diagnostics.some((file) => file.relativePath === 'app.ts'),
+    true
+  )
+} finally {
+  await modWorker.terminate()
+  rmSync(modRoot, { recursive: true, force: true })
+}
+
+/* --- checkedFileCount is cumulative, not the size of the last invalidation -- */
+
+// Proves Item 3: "N of M files checked" must survive a small follow-up edit
+// that invalidates far fewer files than were checked overall. Before the fix
+// this reported `affected.length` for the pass that just ran — 1 file — which
+// made the Problems panel regress from "2 of 2" back down to "1 of 2" on an
+// edit that left app.ts's answer perfectly valid.
+const countRoot = mkdtempSync(join(tmpdir(), 'bcc-count-'))
+writeFileSync(join(countRoot, 'lib.ts'), LIB_ORIGINAL, 'utf8')
+writeFileSync(join(countRoot, 'app.ts'), APP, 'utf8')
+
+const countWorker = new Worker(WORKER)
+
+function nextState(worker, timeoutMs = 30_000) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      worker.off('message', onMessage)
+      reject(new Error('timed out waiting for a state message'))
+    }, timeoutMs)
+    const onMessage = (message) => {
+      if (message?.type === 'state') {
+        clearTimeout(timer)
+        worker.off('message', onMessage)
+        resolve(message)
+      }
+    }
+    worker.on('message', onMessage)
+  })
+}
+
+try {
+  countWorker.postMessage({ type: 'boot', workspaceRoot: countRoot })
+  await waitForIdle(countWorker)
+
+  countWorker.postMessage({ type: 'filesChanged', changed: ['lib.ts'], removed: [] })
+  await nextPass(countWorker)
+  const afterCold = await nextState(countWorker)
+
+  console.log('\n--- checkedFileCount after the cold pass ---')
+  check('both files checked', afterCold.checkedFileCount, 2)
+
+  // A body-only edit invalidates both (the invalidation set still names them)
+  // but only re-type-checks lib.ts — app.ts is served from memo and stays
+  // valid throughout, so the cumulative count must not drop.
+  writeFileSync(join(countRoot, 'lib.ts'), LIB_BODY_EDIT, 'utf8')
+  countWorker.postMessage({ type: 'filesChanged', changed: ['lib.ts'], removed: [] })
+  await nextPass(countWorker)
+  const afterBodyEdit = await nextState(countWorker)
+
+  console.log('--- checkedFileCount after a body-only edit ---')
+  check('still both files, not just the one this pass recomputed', afterBodyEdit.checkedFileCount, 2)
+} finally {
+  await countWorker.terminate()
+  rmSync(countRoot, { recursive: true, force: true })
+}
+
 console.log('')
 if (failures.length > 0) {
   console.error(`${failures.length} check(s) failed: ${failures.join(', ')}`)
