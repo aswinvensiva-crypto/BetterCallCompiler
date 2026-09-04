@@ -1130,7 +1130,7 @@ export const compilerPassSchema = z.strictObject({
    * folded together because they are different events, and conflating them would
    * make the distinction unrecoverable.
    */
-  reason: z.enum(['index', 'cold', 'watch', 'buffer']),
+  reason: z.enum(['index', 'cold', 'watch', 'buffer', 'idle']),
   /**
    * The paths reported changed or removed — the edit that caused this pass.
    *

@@ -187,6 +187,61 @@ export interface EngineOptions {
   readonly now?: (() => number) | undefined
 }
 
+/* ------------------------------ persistence -------------------------------- */
+
+/**
+ * One memo, flattened for storage.
+ *
+ * `key` travels WITH the memo rather than being the map key of some outer
+ * structure, because the wire/on-disk shape is a plain array — the natural
+ * shape for `JSON.stringify` and for appending without rewriting everything.
+ */
+export interface SerializedMemo {
+  readonly key: QueryKey
+  readonly value: unknown
+  readonly verifiedAt: number
+  readonly changedAt: number
+  readonly durability: Durability
+  readonly deps: readonly QueryKey[]
+  readonly isInput: boolean
+}
+
+/**
+ * The engine's full state, sufficient to `hydrate` a fresh engine into
+ * exactly the position `serialize` found this one in.
+ *
+ * `revision` and `lastChangedAt` travel with the memos on purpose — see the
+ * module-level plan this satisfies: a rehydrated `verifiedAt` compared
+ * against a revision counter that restarts at 0 would validate everything as
+ * fresh regardless of what actually changed on disk since the snapshot was
+ * taken.
+ */
+export interface EngineSnapshot {
+  readonly revision: number
+  readonly lastChangedAt: readonly [number, number, number]
+  readonly memos: readonly SerializedMemo[]
+}
+
+/**
+ * True when `value` survives a `JSON.stringify` / `JSON.parse` round trip
+ * unchanged.
+ *
+ * `engine.get<T>` returns `unknown`, so nothing in the type system guarantees
+ * a memoized value is serializable — a `Map`, a class instance, `undefined`
+ * inside an object, `NaN`. `serialize` uses this to skip what cannot survive
+ * disk rather than crash or silently corrupt it; a skipped memo just costs a
+ * recompute on hydrate, which is correct, only slower.
+ */
+export function isJsonRoundTrippable(value: unknown): boolean {
+  try {
+    const json = JSON.stringify(value)
+    if (json === undefined) return false // undefined, a function, a symbol
+    return JSON.stringify(JSON.parse(json)) === json
+  } catch {
+    return false
+  }
+}
+
 export interface EngineStats {
   readonly revision: number
   readonly memoCount: number
@@ -222,6 +277,19 @@ export interface Engine {
   /** Present keys, for the panel's graph view. */
   keys(): QueryKey[]
   dependenciesOf(key: QueryKey): QueryKey[]
+  /**
+   * The engine's full state — every memo whose value round-trips through
+   * JSON, plus `revision` and `lastChangedAt`. Non-serializable memos are
+   * silently dropped rather than crashing the caller; they simply recompute
+   * after `hydrate`.
+   */
+  serialize(): EngineSnapshot
+  /**
+   * Replaces the engine's entire state with `snapshot`. Call on a freshly
+   * created engine — `hydrate` clears whatever memos already exist first, so
+   * calling it later throws away in-memory work rather than merging with it.
+   */
+  hydrate(snapshot: EngineSnapshot): void
 }
 
 export function createEngine(options: EngineOptions = {}): Engine {
@@ -555,6 +623,54 @@ export function createEngine(options: EngineOptions = {}): Engine {
 
     keys: () => [...memos.keys()],
 
-    dependenciesOf: (key) => [...(memos.get(key)?.deps ?? [])]
+    dependenciesOf: (key) => [...(memos.get(key)?.deps ?? [])],
+
+    serialize(): EngineSnapshot {
+      const serialized: SerializedMemo[] = []
+      for (const [key, memo] of memos) {
+        if (!isJsonRoundTrippable(memo.value)) continue
+        serialized.push({
+          key,
+          value: memo.value,
+          verifiedAt: memo.verifiedAt,
+          changedAt: memo.changedAt,
+          durability: memo.durability,
+          deps: [...memo.deps],
+          isInput: memo.isInput
+        })
+      }
+      return {
+        revision,
+        lastChangedAt: [lastChangedAt[0] ?? 0, lastChangedAt[1] ?? 0, lastChangedAt[2] ?? 0],
+        memos: serialized
+      }
+    },
+
+    hydrate(snapshot: EngineSnapshot): void {
+      memos.clear()
+      stack.length = 0
+      active.clear()
+      hits = 0
+      misses = 0
+      recomputes = 0
+      cutoffs = 0
+      durableSkips = 0
+
+      revision = snapshot.revision
+      lastChangedAt[0] = snapshot.lastChangedAt[0] ?? 0
+      lastChangedAt[1] = snapshot.lastChangedAt[1] ?? 0
+      lastChangedAt[2] = snapshot.lastChangedAt[2] ?? 0
+
+      for (const memo of snapshot.memos) {
+        memos.set(memo.key, {
+          value: memo.value,
+          verifiedAt: memo.verifiedAt,
+          changedAt: memo.changedAt,
+          durability: memo.durability,
+          deps: [...memo.deps],
+          isInput: memo.isInput
+        })
+      }
+    }
   }
 }
