@@ -1,6 +1,7 @@
 import { parentPort } from 'node:worker_threads'
 import { readFileSync, statSync } from 'node:fs'
-import { isAbsolute } from 'node:path'
+import { isAbsolute, dirname } from 'node:path'
+import { performance } from 'node:perf_hooks'
 import ts from 'typescript'
 import {
   SOURCE_EXTENSIONS,
@@ -35,7 +36,9 @@ import { lineStartsOf, rangeFromSpan } from '../shared/diagnostic-position'
 import {
   QueryCycleError,
   createEngine,
+  namespaceOf,
   queryKey,
+  type Durability,
   type Engine,
   type QueryTrace
 } from '../shared/query-engine'
@@ -162,6 +165,108 @@ const resolutionCache = (): ts.ModuleResolutionCache | undefined =>
 
 let moduleCache = resolutionCache()
 
+/* --------------------------- module resolution ----------------------------- */
+
+/**
+ * The `mod:` namespace: `ts.resolveModuleName`, cached through the engine as an
+ * INPUT rather than recomputed on every walk.
+ *
+ * Before this, every `importsOf` call re-resolved every specifier from scratch,
+ * and the durability tiers the engine offers (`workspace` / `external` /
+ * `lib`) were never exercised for anything but file text — `durableSkips`
+ * stayed at zero regardless of how much of the graph bottomed out in
+ * node_modules or lib.d.ts. Modelling a resolution as an input keyed on
+ * `(specifier, containing directory)` lets the same durability short-circuit
+ * that skips re-validating `lib.d.ts` skip re-resolving `react` on every
+ * keystroke in a file that never touches it.
+ */
+const Q_MOD = 'mod'
+
+function moduleResolutionKey(specifier: string, containingDir: string): string {
+  return queryKey(Q_MOD, `${specifier}::${containingDir}`)
+}
+
+interface ModuleResolutionValue {
+  readonly resolvedFileName: string | null
+  readonly isExternalLibraryImport: boolean
+}
+
+/**
+ * How stable a resolution is expected to be.
+ *
+ * A specifier that resolves inside the workspace can move on every edit — a
+ * sibling file can appear or disappear — so it stays at `workspace` tier. One
+ * that resolves into node_modules only moves when dependencies are (re)installed,
+ * which is common enough to still revalidate but rare enough to skip most of the
+ * time: `external`. One that fails to resolve at all is treated as `lib`
+ * durability — TypeScript's own libs are the common case that never resolves
+ * differently — and is only reconsidered when `invalidateModuleResolutions`
+ * runs, which is what a tsconfig or lockfile edit triggers.
+ */
+function moduleDurability(resolved: ts.ResolvedModuleFull | undefined): Durability {
+  if (resolved === undefined) return 'lib'
+  if (resolved.isExternalLibraryImport === true || resolved.resolvedFileName.includes('node_modules')) {
+    return 'external'
+  }
+  return 'workspace'
+}
+
+/**
+ * Resolves a specifier through the engine's cache, falling back to
+ * `ts.resolveModuleName` only when nothing valid is on file.
+ *
+ * `engine.isValid` rather than a bare `engine.get`, because `get` on an input
+ * namespace with no memo yet falls through to `compute` — and no compute
+ * function is registered for `mod:`, since every value here is written, never
+ * derived. Checking validity first is what keeps this a plain cache read on the
+ * hot path.
+ */
+function resolveModuleCached(
+  specifier: string,
+  absolute: string
+): ts.ResolvedModuleFull | undefined {
+  const key = moduleResolutionKey(specifier, dirname(absolute))
+
+  if (engine.isValid(key)) {
+    const cached = engine.get<ModuleResolutionValue>(key)
+    if (cached.resolvedFileName === null) return undefined
+    return {
+      resolvedFileName: cached.resolvedFileName,
+      isExternalLibraryImport: cached.isExternalLibraryImport,
+      extension: ts.Extension.Ts
+    } as ts.ResolvedModuleFull
+  }
+
+  const resolved = ts.resolveModuleName(specifier, absolute, compilerOptions, ts.sys, moduleCache)
+    .resolvedModule
+
+  engine.setInput(
+    key,
+    {
+      resolvedFileName: resolved?.resolvedFileName ?? null,
+      isExternalLibraryImport: resolved?.isExternalLibraryImport === true
+    } satisfies ModuleResolutionValue,
+    moduleDurability(resolved)
+  )
+
+  return resolved
+}
+
+/**
+ * Drops every cached resolution.
+ *
+ * Called when the tsconfig or a lockfile changes — either can change what a
+ * specifier resolves to (a new `paths` mapping, a package that got installed or
+ * removed) and a stale resolution is silently wrong: it keeps pointing an import
+ * at a file that is no longer the right answer, or keeps reporting "cannot find
+ * module" for one that now exists.
+ */
+function invalidateModuleResolutions(): void {
+  for (const key of engine.keys()) {
+    if (namespaceOf(key) === Q_MOD) engine.removeInput(key)
+  }
+}
+
 /**
  * Resolved workspace-relative imports for one file.
  *
@@ -178,13 +283,7 @@ function importsOf(root: string, absolute: string, text: string): string[] {
   const out: string[] = []
 
   for (const reference of pre.importedFiles) {
-    const resolved = ts.resolveModuleName(
-      reference.fileName,
-      absolute,
-      compilerOptions,
-      ts.sys,
-      moduleCache
-    ).resolvedModule
+    const resolved = resolveModuleCached(reference.fileName, absolute)
 
     if (resolved === undefined) continue
     if (resolved.isExternalLibraryImport === true) continue
@@ -229,12 +328,33 @@ function summary(): BuildGraphSummary {
   }
 }
 
-function reportState(state: CompilerDaemonState, checkedFileCount = 0): void {
-  post({ type: 'state', state, graph: summary(), checkedFileCount })
+/**
+ * How many files in the current graph have a diagnostics memo that is still
+ * valid, i.e. have actually been checked and not since invalidated.
+ *
+ * NOT `affected.length` — that is the invalidation set for the pass that just
+ * ran, which is a completely different number: it can be 1 while 4000 files
+ * remain checked from earlier passes, or 4000 the moment a leaf-module edit
+ * invalidates half the graph even though nothing has been rechecked yet. The
+ * "N of M files checked" figure in the Problems panel is a cumulative claim —
+ * how much of the workspace the daemon can currently vouch for — and only a
+ * count of live `diag:` memos answers that.
+ */
+function checkedFileCount(): number {
+  let count = 0
+  for (const relativePath of graph.nodes.keys()) {
+    if (engine.isValid(queryKey(Q_DIAG, relativePath))) count++
+  }
+  return count
+}
+
+function reportState(state: CompilerDaemonState, checked = checkedFileCount()): void {
+  post({ type: 'state', state, graph: summary(), checkedFileCount: checked })
 }
 
 function indexWorkspace(root: string): void {
   const started = Date.now()
+  performance.mark('daemon-init-start')
   busySince = started
   reportState('indexing')
 
@@ -275,6 +395,85 @@ function indexWorkspace(root: string): void {
   // workspace.
   service = null
 
+  performance.mark('daemon-init-end')
+  performance.measure('daemon-init', 'daemon-init-start', 'daemon-init-end')
+  const [initMeasure] = performance.getEntriesByName('daemon-init')
+  if (initMeasure !== undefined) {
+    console.debug(`[compiler-worker] init: ${initMeasure.duration.toFixed(1)}ms (${graph.nodes.size} files)`)
+  }
+
+  busySince = null
+  reportState('idle')
+}
+
+/**
+ * Light instrumentation, boot → first diagnostics.
+ *
+ * Only ever measured once per worker lifetime — the number that matters is
+ * time-to-first-signal after opening a workspace, not every subsequent pass,
+ * which already has its own `totalMs` on the `pass` message.
+ */
+let firstDiagnosticsMarked = false
+
+function markFirstDiagnostics(): void {
+  if (firstDiagnosticsMarked) return
+  firstDiagnosticsMarked = true
+
+  performance.mark('first-diagnostics')
+  if (performance.getEntriesByName('daemon-init-start').length === 0) return
+
+  performance.measure('daemon-init-to-first-diagnostics', 'daemon-init-start', 'first-diagnostics')
+  const [measure] = performance.getEntriesByName('daemon-init-to-first-diagnostics')
+  if (measure !== undefined) {
+    console.debug(`[compiler-worker] init -> first diagnostics: ${measure.duration.toFixed(1)}ms`)
+  }
+}
+
+/**
+ * True for a file whose change can move what a specifier resolves to.
+ *
+ * Matched on basename rather than a fixed relative path, because
+ * `tsconfigRelativePath` can point at a tsconfig anywhere `ts.findConfigFile`
+ * walked up to, and a monorepo can have more than one lockfile in play.
+ */
+function isModuleResolutionConfig(relativePath: string): boolean {
+  const base = relativePath.split('/').pop() ?? relativePath
+  return (
+    base === 'tsconfig.json' ||
+    base === 'package-lock.json' ||
+    base === 'yarn.lock' ||
+    base === 'pnpm-lock.yaml'
+  )
+}
+
+/**
+ * A tsconfig or lockfile moved: re-adopt the config, drop every cached
+ * resolution, and recheck whatever the user is actually looking at so the
+ * Problems panel does not sit on diagnostics computed against a program that no
+ * longer exists.
+ *
+ * Reported as `'index'`, not `'watch'` — this pass exists because the
+ * WORKSPACE's shape changed, not because of an edit to any one file, and the
+ * latency panel already has a distinct bucket for it (see `pass-analysis.ts`).
+ */
+function reindexForConfigChange(root: string): void {
+  loadConfig(root)
+  moduleCache = resolutionCache()
+  invalidateModuleResolutions()
+  // The program's shape may have moved (compilerOptions changed), so nothing
+  // cached against the old one can be trusted — same reasoning as the `service`
+  // reset after a full `indexWorkspace`.
+  engine.invalidateDerived()
+  service = null
+
+  const openFiles = [...overlays.keys()].filter((file) => graph.nodes.has(file))
+  if (openFiles.length > 0) {
+    busySince = Date.now()
+    reportState('checking')
+    checkFiles(root, openFiles, 'index', [])
+    if (resumeScheduled) return
+  }
+
   busySince = null
   reportState('idle')
 }
@@ -286,6 +485,11 @@ function applyChanges(
   reason: CompilerPass['reason'] = 'watch'
 ): void {
   if (changed.length === 0 && removed.length === 0) return
+
+  if ([...changed, ...removed].some(isModuleResolutionConfig)) {
+    reindexForConfigChange(root)
+    return
+  }
 
   busySince = Date.now()
   reportState('checking')
@@ -363,7 +567,7 @@ function applyChanges(
   if (resumeScheduled) return
 
   busySince = null
-  reportState('idle', affected.length)
+  reportState('idle')
 }
 
 /* ---------------------------- language service ---------------------------- */
@@ -877,6 +1081,12 @@ function checkFiles(
   /** Files this pass never got to, because it was cancelled part-way. */
   let unfinished: string[] = []
 
+  // Files skipped because their own `diag:` query cycled back on itself. Not
+  // "unfinished" in the cancellation sense — nothing owes them a resume, since
+  // asking again would cycle again — but they did NOT get an answer this pass
+  // either, and `settled` must say so rather than claim the pass is complete.
+  const cycled: string[] = []
+
   for (let index = 0; index < ordered.length; index++) {
     const relativePath = ordered[index] as string
     const absolute = toAbsolute(root, relativePath)
@@ -892,8 +1102,10 @@ function checkFiles(
         break
       }
       // A query cycle is a bug in the dependency wiring rather than in the
-      // user's code, and it must not cost them the rest of the pass.
+      // user's code, and it must not cost them the rest of the pass — but it
+      // is also not answered, so it is tracked rather than merely skipped.
       if (!(error instanceof QueryCycleError)) throw error
+      cycled.push(relativePath)
       continue
     }
 
@@ -905,6 +1117,9 @@ function checkFiles(
   }
 
   const cancelled = unfinished.length > 0
+  // Every file this pass owed an answer to and did not get one, cancellation
+  // included — the set `settled` is computed from.
+  const unanswered = cancelled || cycled.length > 0
 
   // NOTE: the pass is reported at the END of this function, after the
   // diagnostics have gone out. Announcing "the pass is done" before its results
@@ -922,7 +1137,7 @@ function checkFiles(
   // `Q_DIAG` carve-out prevents one level down. `previouslyDirty` is left alone
   // for the same reason: it is the record of what is owed a sweep, and
   // overwriting it with a partial set forgets the rest.
-  if (!cancelled) {
+  if (!unanswered) {
     for (const relativePath of previouslyDirty) {
       if (nowDirty.has(relativePath)) continue
       if (ordered.includes(relativePath)) continue
@@ -947,13 +1162,21 @@ function checkFiles(
   // fed a constant — a lie the moment anything is left undone. A cancelled pass
   // is that moment.
   if (produced.length > 0) {
-    post({ type: 'diagnostics', files: produced, settled: !cancelled })
+    post({ type: 'diagnostics', files: produced, settled: !unanswered })
+    markFirstDiagnostics()
   }
 
   // `requested` stays the size of what this pass was ASKED for, cancelled or
   // not. Reporting only what it managed would make a cancellation look like a
   // small pass rather than an interrupted one.
-  reportPass(cold ? 'cold' : reason, ordered.length, startedAt, before, trigger)
+  // `cold` still wins over an ordinary `watch`/`buffer` pass — the point of the
+  // tag is to keep language-service warm-up cost out of ordinary latency
+  // figures. It does NOT win over `'index'`: that reason already means "the
+  // workspace's shape changed", which is a more specific and more useful fact
+  // than "the service happened to be cold at the time", and a config-triggered
+  // reindex nulls `service` itself, so it would otherwise always lose its own
+  // reason to this fallback.
+  reportPass(cold && reason !== 'index' ? 'cold' : reason, ordered.length, startedAt, before, trigger)
 
   if (cancelled) oweCheck(root, unfinished, reason)
 }
