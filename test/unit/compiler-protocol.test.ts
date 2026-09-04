@@ -2,8 +2,11 @@ import { describe, expect, it } from 'vitest'
 import {
   coalesceBatches,
   countSeverities,
+  emptyLanguageQueryAnswer,
   isWorkerMessage,
-  isWorkerRequest
+  isWorkerRequest,
+  type WorkerMessage,
+  type WorkerRequest
 } from '../../src/shared/compiler-protocol'
 import type { DiagnosticMessage, FileDiagnostics } from '../../src/shared/types'
 
@@ -133,30 +136,60 @@ describe('countSeverities', () => {
   })
 })
 
+/**
+ * The one thing TypeScript does not check for us.
+ *
+ * Both guards enumerate their type strings by hand, so adding a member to
+ * either union compiles cleanly and is then silently dropped on the floor — a
+ * new message that never arrives, with nothing pointing at the cause. The
+ * `Record<Union['type'], ...>` tables below close it: a new member makes this
+ * file fail to compile until it has an entry, and the assertions then make the
+ * guards admit it.
+ *
+ * Previously these were bare string arrays, which is the same test with the
+ * compile-time half missing — `languageQuery` was added to the protocol and
+ * these lists would have stayed green without it.
+ */
+const MESSAGE_TYPES: Record<WorkerMessage['type'], true> = {
+  ready: true,
+  state: true,
+  diagnostics: true,
+  dependentsResult: true,
+  languageQueryResult: true,
+  pong: true,
+  pass: true,
+  failure: true
+}
+
+const REQUEST_TYPES: Record<WorkerRequest['type'], true> = {
+  boot: true,
+  filesChanged: true,
+  openDocument: true,
+  closeDocument: true,
+  dependents: true,
+  languageQuery: true,
+  ping: true
+}
+
 describe('message guards', () => {
   it('accepts every worker message type', () => {
-    for (const type of [
-      'ready',
-      'state',
-      'diagnostics',
-      'dependentsResult',
-      'pong',
-      'failure'
-    ]) {
-      expect(isWorkerMessage({ type })).toBe(true)
+    for (const type of Object.keys(MESSAGE_TYPES)) {
+      expect(isWorkerMessage({ type }), type).toBe(true)
     }
   })
 
   it('accepts every request type', () => {
-    for (const type of [
-      'boot',
-      'filesChanged',
-      'openDocument',
-      'closeDocument',
-      'dependents',
-      'ping'
-    ]) {
-      expect(isWorkerRequest({ type })).toBe(true)
+    for (const type of Object.keys(REQUEST_TYPES)) {
+      expect(isWorkerRequest({ type }), type).toBe(true)
+    }
+  })
+
+  it('has an empty answer for every language query kind', () => {
+    // `emptyLanguageQueryAnswer` is what every "no answer" path returns — a
+    // daemon that is down, a timeout, a position the program knows nothing
+    // about. A kind missing from it would be an undefined reaching Monaco.
+    for (const kind of ['definition', 'references'] as const) {
+      expect(emptyLanguageQueryAnswer(kind).kind).toBe(kind)
     }
   })
 
@@ -166,7 +199,18 @@ describe('message guards', () => {
    * not recognise.
    */
   it('rejects anything that is not a known message', () => {
-    for (const value of [null, undefined, 42, 'ready', [], {}, { type: 'nonsense' }]) {
+    for (const value of [
+      null,
+      undefined,
+      42,
+      'ready',
+      [],
+      {},
+      { type: 'nonsense' },
+      { type: 'languagequery' },
+      { type: 'LanguageQuery' },
+      { type: 'languageQueries' }
+    ]) {
       expect(isWorkerMessage(value)).toBe(false)
       expect(isWorkerRequest(value)).toBe(false)
     }

@@ -24,6 +24,12 @@ import {
   stopCompiler
 } from './compiler-service'
 import {
+  notifyInteractiveWatchEvent,
+  setInteractiveReadyListener,
+  startInteractive,
+  stopInteractive
+} from './interactive-service'
+import {
   notifyLangWatchEvent,
   setLangEmitters,
   startLang,
@@ -132,6 +138,7 @@ function createWindow(): BrowserWindow {
     emitEvent(win, 'fs:watchEvent', event)
     notifyWatchEvent(event)
     notifyLangWatchEvent(event)
+    notifyInteractiveWatchEvent(event)
   })
   setCompilerEmitters(
     (batch) => emitEvent(win, 'compiler:diagnosticsChanged', batch),
@@ -148,8 +155,14 @@ function createWindow(): BrowserWindow {
     (batch) => emitEvent(win, 'compiler:diagnosticsChanged', batch),
     () => emitEvent(win, 'compiler:statusChanged', compilerStatus())
   )
+  // The interactive daemon has no stream of its own — it publishes nothing and
+  // is only ever asked. Its readiness still rides on the compiler's status, so
+  // anything watching the daemons sees it come and go; the renderer's choice of
+  // provider is made once at Monaco load and is deliberately NOT revisited.
+  setInteractiveReadyListener(() => emitEvent(win, 'compiler:statusChanged', compilerStatus()))
   startCompiler(getWorkspace().root)
   startLang(getWorkspace().root)
+  startInteractive(getWorkspace().root)
   setTerminalEmitters(
     (id, data) => emitEvent(win, 'terminal:data', { id, data }),
     (payload) => emitEvent(win, 'terminal:exit', payload)
@@ -182,6 +195,7 @@ function createWindow(): BrowserWindow {
     cancelAllAiStreams()
     stopCompiler()
     stopLang()
+    stopInteractive()
   })
 
   const devUrl = devServerUrl()
@@ -387,6 +401,7 @@ if (!gotLock) {
     cancelAllAiStreams()
     stopCompiler()
     stopLang()
+    stopInteractive()
     void stopWatching()
     void stopGitWatch()
   })

@@ -656,7 +656,18 @@ export const compilerStatusSchema = z.strictObject({
   heapUsedMb: z.number().nonnegative(),
   restarts: z.number().int().nonnegative(),
   /** Non-null only in `failed`; shown verbatim. */
-  detail: z.string().nullable()
+  detail: z.string().nullable(),
+  /**
+   * Whether the second, read-only LanguageService is up.
+   *
+   * The renderer's kill switch. Hover, completions and signature help come from
+   * Monaco's own worker until this turns true, and from the daemon afterwards —
+   * never from both, because two providers answering the same question means
+   * Monaco merges the lists and every completion appears twice. A worker that
+   * fails to start therefore degrades to what shipped before rather than to
+   * nothing.
+   */
+  interactive: z.boolean()
 })
 export type CompilerStatus = z.infer<typeof compilerStatusSchema>
 
@@ -677,9 +688,286 @@ export function stoppedCompilerStatus(): CompilerStatus {
     checkedFileCount: 0,
     heapUsedMb: 0,
     restarts: 0,
-    detail: null
+    detail: null,
+    interactive: false
   }
 }
+
+/* ---------------------------- language queries ---------------------------- */
+
+/**
+ * Everything the editor asks about a cursor, in one family of shapes.
+ *
+ * The daemon has the real program — the real tsconfig for TypeScript, the real
+ * resolution for BCC — and until now it was asked exactly two questions, both
+ * about diagnostics. These are the rest of what it already knows.
+ *
+ * Every position is 1-based with an EXCLUSIVE end column, matching
+ * `diagnosticMessageSchema` and Monaco's `IRange`. Offsets never cross this
+ * boundary: the renderer converts a position to an offset with
+ * `getOffsetAt` on the way in, and the worker converts back on the way out,
+ * because for a cross-file target the renderer often has no model to convert
+ * against.
+ */
+export const sourceRangeSchema = z.strictObject({
+  startLine: z.number().int().positive(),
+  startColumn: z.number().int().positive(),
+  endLine: z.number().int().positive(),
+  endColumn: z.number().int().positive()
+})
+export type SourceRange = z.infer<typeof sourceRangeSchema>
+
+export const languageLocationSchema = z.strictObject({
+  /** POSIX-separated, workspace-relative — the key every side joins on. */
+  relativePath: z.string(),
+  /** Absolute, so the renderer can open a file it does not already have. */
+  path: z.string(),
+  range: sourceRangeSchema
+})
+export type LanguageLocation = z.infer<typeof languageLocationSchema>
+
+/**
+ * The unsaved buffer, carried on the request itself.
+ *
+ * `pushOverlay` in `models.ts` debounces 300ms because every push triggers a
+ * re-check, so for up to 300ms after a keystroke the daemon's copy of a file is
+ * behind what the user is looking at. A definition answered at a stale offset
+ * points at the wrong token; a RENAME computed against stale text rewrites the
+ * wrong bytes. Both are worse than no answer at all.
+ *
+ * So an interactive request carries the buffer with it. The daemon adopts it as
+ * the overlay and answers against it WITHOUT scheduling a check — the debounce
+ * keeps doing its real job, which is deciding when to re-check, not deciding
+ * what the file says.
+ */
+export const documentOverlaySchema = z.strictObject({
+  content: z.string(),
+  /** Monaco's version id: monotonic per model, so a late overlay is discardable. */
+  version: z.number().int().nonnegative()
+})
+export type DocumentOverlay = z.infer<typeof documentOverlaySchema>
+
+/**
+ * How many references travel the wire before the answer is cut short.
+ *
+ * Find-all-references on a common identifier in a large workspace returns tens
+ * of thousands of hits, and a result nobody can read is not worth the
+ * structured clone. Same instinct as `MAX_DIAG_TRACE_EVENTS`, and the flag is
+ * the important half: a truncated answer that does not say so is a wrong one.
+ */
+export const MAX_REFERENCE_RESULTS = 5_000
+
+export const referencesResultSchema = z.strictObject({
+  locations: z.array(languageLocationSchema).max(MAX_REFERENCE_RESULTS),
+  truncated: z.boolean()
+})
+export type ReferencesResult = z.infer<typeof referencesResultSchema>
+
+export const definitionResultSchema = z.strictObject({
+  /**
+   * A list rather than a single location, because a TypeScript symbol can have
+   * several declarations (an overload set, a merged interface) and picking one
+   * of them in the daemon would throw away the answer the user wanted.
+   */
+  locations: z.array(languageLocationSchema).max(MAX_REFERENCE_RESULTS)
+})
+export type DefinitionResult = z.infer<typeof definitionResultSchema>
+
+export const documentSymbolKindSchema = z.enum(['function', 'variable', 'parameter'])
+export type DocumentSymbolKind = z.infer<typeof documentSymbolKindSchema>
+
+export interface DocumentSymbolNode {
+  readonly name: string
+  /** The signature or type, appended after the name in the outline. */
+  readonly detail: string
+  readonly kind: DocumentSymbolKind
+  /** The whole declaration — what the outline highlights. */
+  readonly range: SourceRange
+  /** Just the name — where clicking the row puts the cursor. */
+  readonly selectionRange: SourceRange
+  readonly children: readonly DocumentSymbolNode[]
+}
+
+/**
+ * Recursive, so `z.lazy` and an explicit annotation. The interface above is
+ * written by hand rather than inferred because a self-referencing schema cannot
+ * infer its own type.
+ */
+export const documentSymbolNodeSchema: z.ZodType<DocumentSymbolNode> = z.lazy(() =>
+  z.strictObject({
+    name: z.string(),
+    detail: z.string(),
+    kind: documentSymbolKindSchema,
+    range: sourceRangeSchema,
+    selectionRange: sourceRangeSchema,
+    children: z.array(documentSymbolNodeSchema)
+  })
+)
+
+export const documentSymbolsResultSchema = z.strictObject({
+  symbols: z.array(documentSymbolNodeSchema)
+})
+export type DocumentSymbolsResult = z.infer<typeof documentSymbolsResultSchema>
+
+export const hoverResultSchema = z.strictObject({
+  /** Rendered as markdown. Null means "nothing to say", not "not ready". */
+  contents: z.string().nullable(),
+  range: sourceRangeSchema.nullable()
+})
+export type HoverResult = z.infer<typeof hoverResultSchema>
+
+export const textEditSchema = z.strictObject({
+  range: sourceRangeSchema,
+  newText: z.string()
+})
+export type TextEdit = z.infer<typeof textEditSchema>
+
+export const fileEditSchema = z.strictObject({
+  relativePath: z.string(),
+  path: z.string(),
+  /**
+   * Descending by position, so applying them in order cannot invalidate the
+   * ranges of the ones not yet applied. Produced sorted rather than sorted at
+   * the point of use, because every consumer would otherwise have to remember.
+   */
+  edits: z.array(textEditSchema)
+})
+export type FileEdit = z.infer<typeof fileEditSchema>
+
+/**
+ * One channel serves both halves of a rename.
+ *
+ * Monaco asks twice: `resolveRenameLocation` when F2 is pressed, to draw the
+ * inline box over the right word, and `provideRenameEdits` when the new name is
+ * committed. Sending `newName: null` asks the first question — `target` and
+ * `placeholder` come back and `files` is empty — and sending a name asks the
+ * second. Two channels would mean two copies of "where is the symbol under this
+ * offset", which is precisely the part that must agree.
+ */
+export const renameResultSchema = z.strictObject({
+  /** The identifier being renamed. Null when there is nothing renameable here. */
+  target: sourceRangeSchema.nullable(),
+  placeholder: z.string().nullable(),
+  files: z.array(fileEditSchema),
+  /** Shown to the user verbatim by Monaco's rename widget. */
+  error: z.string().nullable()
+})
+export type RenameResult = z.infer<typeof renameResultSchema>
+
+/**
+ * A quick fix, with the edits that carry it out.
+ *
+ * `edits` covers every file the fix touches, which for an import fix is often
+ * two — the file with the error and the one the symbol comes from. That is why
+ * this carries the same `FileEdit` shape a rename does rather than a single
+ * file's worth: the caller has the same partition to make between open buffers
+ * and files on disk, and the same all-or-nothing rule to enforce.
+ */
+export const codeActionSchema = z.strictObject({
+  /** Shown in the lightbulb menu, verbatim. */
+  title: z.string(),
+  /**
+   * `quickfix` or `refactor`, in Monaco's vocabulary. Kept as a string rather
+   * than an enum because Monaco matches these by dotted prefix and inventing a
+   * closed set here would mean widening it every time TypeScript adds a fix.
+   */
+  kind: z.string(),
+  /** True for the fix TypeScript itself would apply first. */
+  preferred: z.boolean(),
+  edits: z.array(fileEditSchema)
+})
+export type CodeAction = z.infer<typeof codeActionSchema>
+
+/** Capped for the same reason references are: a menu nobody can read is waste. */
+export const MAX_CODE_ACTIONS = 32
+
+export const codeActionsResultSchema = z.strictObject({
+  actions: z.array(codeActionSchema).max(MAX_CODE_ACTIONS)
+})
+export type CodeActionsResult = z.infer<typeof codeActionsResultSchema>
+
+/* ---------------------------- interactive answers ------------------------- */
+
+/**
+ * Completions, hover and signature help — the answers that are asked for at
+ * keystroke frequency.
+ *
+ * These are correct only with the whole program, and Monaco's bundled worker
+ * has none of it: with no tsconfig and no module resolution, what it can say
+ * about a symbol that came from another file is a guess. But they are also
+ * asked hundreds of times a minute, which is why they cannot come from the
+ * check worker — cancelling the check on every keystroke would mean diagnostics
+ * never converge while typing. They come from a second, read-only
+ * LanguageService that is never interrupted.
+ */
+
+/**
+ * TypeScript's own `ScriptElementKind`, passed through as a string.
+ *
+ * Not an enum here. TypeScript adds kinds between versions, and a closed set
+ * would turn a new one into a validation failure that drops the whole
+ * completion list rather than one icon. The renderer maps what it recognises
+ * and falls back to a plain text icon for the rest.
+ */
+export const completionItemSchema = z.strictObject({
+  label: z.string(),
+  kind: z.string(),
+  /** What is written when the item is accepted; usually the label. */
+  insertText: z.string(),
+  /** TypeScript's own ordering, which puts locals above globals. */
+  sortText: z.string(),
+  /**
+   * Opaque, and handed straight back on the detail request.
+   *
+   * `getCompletionEntryDetails` needs the entry's name and the module it came
+   * from to describe it, and an auto-import entry's `source` is the only thing
+   * distinguishing two identically named symbols from different modules.
+   */
+  source: z.string().nullable()
+})
+export type CompletionItem = z.infer<typeof completionItemSchema>
+
+/**
+ * A cap, and a flag that says when it bit.
+ *
+ * A global completion list in a DOM project is several thousand entries, and
+ * every one of them crosses a structured clone on a keystroke. `incomplete`
+ * asks Monaco to re-request as the user types — which is what narrows the list
+ * — rather than silently serving a truncated one.
+ */
+export const MAX_COMPLETION_ITEMS = 2_000
+
+export const completionsResultSchema = z.strictObject({
+  items: z.array(completionItemSchema).max(MAX_COMPLETION_ITEMS),
+  incomplete: z.boolean()
+})
+export type CompletionsResult = z.infer<typeof completionsResultSchema>
+
+export const completionDetailResultSchema = z.strictObject({
+  /** The signature, as TypeScript renders it. */
+  detail: z.string().nullable(),
+  /** The doc comment, already flattened to text. */
+  documentation: z.string().nullable()
+})
+export type CompletionDetailResult = z.infer<typeof completionDetailResultSchema>
+
+export const signatureParameterSchema = z.strictObject({
+  label: z.string(),
+  documentation: z.string().nullable()
+})
+
+export const signatureSchema = z.strictObject({
+  label: z.string(),
+  documentation: z.string().nullable(),
+  parameters: z.array(signatureParameterSchema)
+})
+
+export const signatureHelpResultSchema = z.strictObject({
+  signatures: z.array(signatureSchema).max(64),
+  activeSignature: z.number().int().nonnegative(),
+  activeParameter: z.number().int().nonnegative()
+})
+export type SignatureHelpResult = z.infer<typeof signatureHelpResultSchema>
 
 /* -------------------------------- artifacts ------------------------------- */
 

@@ -68,6 +68,27 @@ export const INVOKE_CHANNEL_NAMES = [
   'compiler:closeDocument',
   'compiler:restart',
   'compiler:passes',
+  // Navigation. Deliberately on the `compiler:` namespace rather than a new
+  // one: the renderer asks the same question of a `.ts` and a `.bcc` file and
+  // main routes by extension, exactly as `compiler:openDocument` already does.
+  // A second namespace would put the choice of compiler back in the renderer.
+  'compiler:definition',
+  'compiler:references',
+  'compiler:rename',
+  'compiler:documentSymbols',
+  'compiler:hover',
+  'compiler:codeActions',
+  // Keystroke-frequency, and served by the third worker — see
+  // `interactive-protocol.ts` for why it is not the one that checks.
+  'compiler:completions',
+  'compiler:completionDetail',
+  'compiler:signatureHelp',
+  // The write half of a rename or a quick fix, for the files that have no
+  // buffer. Open files are edited through their model so they stay dirty and
+  // undoable; a bulk edit spanning CLOSED files would have Monaco create models
+  // with no lifecycle owner — exactly the leak `closeSyntaxDocument` exists to
+  // prevent — so those cross to main instead.
+  'compiler:applyWorkspaceEdit',
   'explain:start',
   'artifact:list',
   'artifact:get',

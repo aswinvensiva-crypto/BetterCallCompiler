@@ -4,11 +4,24 @@ import { join } from 'node:path'
 import { coalesceBatches } from '../shared/compiler-protocol'
 import { isBccPath } from '../shared/lang-diagnostics'
 import {
+  emptyLangQueryResult,
   isLangMessage,
   type LangMessage,
+  type LangQueryKind,
+  type LangQueryResult,
   type LangRequest
 } from '../shared/lang-protocol'
-import type { DiagnosticsBatch, FileDiagnostics, FsWatchEvent } from '../shared/types'
+import type {
+  DefinitionResult,
+  DiagnosticsBatch,
+  DocumentOverlay,
+  DocumentSymbolsResult,
+  FileDiagnostics,
+  FsWatchEvent,
+  HoverResult,
+  ReferencesResult,
+  RenameResult
+} from '../shared/types'
 import { clearOwner, publishDiagnostics } from './diagnostic-store'
 
 /**
@@ -85,6 +98,23 @@ let watchTimer: ReturnType<typeof setTimeout> | null = null
 let heartbeatTimer: ReturnType<typeof setInterval> | null = null
 let heartbeatNonce = 0
 let missedHeartbeats = 0
+
+/**
+ * In-flight navigation queries, keyed by request id.
+ *
+ * Cloned from `compiler-service.ts`'s `pendingDependents` for the same three
+ * reasons it exists: a worker answers out of order, an answer can never arrive,
+ * and a restart must settle everything rather than leave a caller waiting
+ * forever. That last one is the easiest to forget and the one that leaks —
+ * every resolver here has to be settled beside `clearOwner('bcc')`, or a daemon
+ * crash during a Find All References hangs the invoke until its timeout and
+ * leaks the resolver until the process exits.
+ */
+let nextRequestId = 1
+const pendingQueries = new Map<number, (result: LangQueryResult) => void>()
+
+/** How long an interactive query waits before answering empty. */
+const QUERY_TIMEOUT_MS = 5_000
 
 let emitDiagnostics: ((batch: DiagnosticsBatch) => void) | null = null
 let emitChanged: (() => void) | null = null
@@ -184,6 +214,7 @@ function scheduleRestart(reason: string): void {
   // squiggles — that is the whole point of the two workers being separate, and
   // a shared clear here would quietly undo it.
   clearOwner('bcc')
+  abandonQueries()
   flushNow(true)
 
   const now = Date.now()
@@ -255,10 +286,92 @@ function receive(message: LangMessage): void {
       scheduleFlush()
       return
 
+    case 'queryResult': {
+      const settle = pendingQueries.get(message.requestId)
+      pendingQueries.delete(message.requestId)
+      settle?.(message.result)
+      return
+    }
+
     case 'failure':
       failure = message.detail
       return
   }
+}
+
+/* ------------------------------- querying --------------------------------- */
+
+/**
+ * Asks the daemon one question about one offset.
+ *
+ * Resolves empty rather than rejecting when the daemon is down or slow, for the
+ * reason `dependentsOf` does the same: Monaco logs a rejected provider as a
+ * console error and shows the user nothing different, so a rejection buys a
+ * red line in the log and costs the ability to tell "no answer" from "broken".
+ *
+ * The generic is what keeps the narrowing honest. A caller asking for `'hover'`
+ * gets a `HoverResult` back, and a worker that answered with the wrong kind —
+ * which would be a bug in the worker's switch — is treated as no answer rather
+ * than handed to a caller that will read fields it does not have.
+ */
+type AnswerFor<K extends LangQueryKind> = Omit<Extract<LangQueryResult, { kind: K }>, 'kind'>
+
+/**
+ * Drops the discriminant.
+ *
+ * It exists to correlate the answer with the question ON THE WIRE and has no
+ * business past this boundary — `renameResultSchema` and its siblings are
+ * `strictObject`, so a stray `kind` would be rejected as a BAD_RESPONSE and the
+ * user would see nothing with no clue why. Stripping it here rather than in
+ * five `ipc.ts` handlers keeps that from being something four of them remember.
+ */
+function withoutKind<K extends LangQueryKind>(result: Extract<LangQueryResult, { kind: K }>): AnswerFor<K> {
+  const { kind: _discriminant, ...answer } = result
+  return answer as AnswerFor<K>
+}
+
+function query<K extends LangQueryKind>(
+  kind: K,
+  relativePath: string,
+  offset: number,
+  overlay: DocumentOverlay | null,
+  newName: string | null = null
+): Promise<AnswerFor<K>> {
+  const empty = withoutKind(emptyLangQueryResult(kind))
+  if (worker === null) return Promise.resolve(empty)
+
+  return new Promise((settle) => {
+    const requestId = nextRequestId++
+
+    const timer = setTimeout(() => {
+      pendingQueries.delete(requestId)
+      settle(empty)
+    }, QUERY_TIMEOUT_MS)
+    timer.unref?.()
+
+    pendingQueries.set(requestId, (result) => {
+      clearTimeout(timer)
+      // A worker that answered the wrong question is a bug in its switch, and
+      // the caller must not read fields the shape it asked for does not have.
+      settle(
+        result.kind === kind
+          ? withoutKind(result as Extract<LangQueryResult, { kind: K }>)
+          : empty
+      )
+    })
+
+    send({ type: 'query', requestId, kind, relativePath, offset, newName, overlay })
+  })
+}
+
+/** Settles every in-flight query, so a restart never leaves a caller hanging. */
+function abandonQueries(): void {
+  const settling = [...pendingQueries.values()]
+  pendingQueries.clear()
+  // The kind is unrecoverable from the resolver alone, and it does not need to
+  // be: `query` above discards a result whose kind does not match what it asked
+  // for, so any of them collapses to that caller's own empty answer.
+  for (const settle of settling) settle(emptyLangQueryResult('definition'))
 }
 
 /* -------------------------------- batching -------------------------------- */
@@ -344,6 +457,7 @@ export function stopLang(): void {
   if (dying !== null) void dying.terminate()
 
   clearOwner('bcc')
+  abandonQueries()
   openDocuments.clear()
   pendingDiagnostics = []
   pendingChanged = new Set()
@@ -373,6 +487,51 @@ export function closeLangDocument(relativePath: string): void {
   send({ type: 'closeDocument', relativePath })
 }
 
+/* ------------------------------- navigation ------------------------------- */
+
+export function langDefinition(
+  relativePath: string,
+  offset: number,
+  overlay: DocumentOverlay | null
+): Promise<DefinitionResult> {
+  return query('definition', relativePath, offset, overlay)
+}
+
+export function langReferences(
+  relativePath: string,
+  offset: number,
+  overlay: DocumentOverlay | null
+): Promise<ReferencesResult> {
+  return query('references', relativePath, offset, overlay)
+}
+
+export function langRename(
+  relativePath: string,
+  offset: number,
+  newName: string | null,
+  overlay: DocumentOverlay | null
+): Promise<RenameResult> {
+  return query('rename', relativePath, offset, overlay, newName)
+}
+
+export function langDocumentSymbols(
+  relativePath: string,
+  overlay: DocumentOverlay | null
+): Promise<DocumentSymbolsResult> {
+  // Offset zero, and unused: an outline is about the whole file. Sent anyway
+  // because one message shape for every query is what keeps the correlation,
+  // the timeout and the restart cleanup to one copy each.
+  return query('documentSymbols', relativePath, 0, overlay)
+}
+
+export function langHover(
+  relativePath: string,
+  offset: number,
+  overlay: DocumentOverlay | null
+): Promise<HoverResult> {
+  return query('hover', relativePath, offset, overlay)
+}
+
 /** Test seam: resets every module-level value between cases. */
 export function resetLangForTests(): void {
   stopLang()
@@ -383,4 +542,5 @@ export function resetLangForTests(): void {
   restartTimestamps = []
   missedHeartbeats = 0
   heartbeatNonce = 0
+  nextRequestId = 1
 }
