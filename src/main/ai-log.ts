@@ -139,7 +139,41 @@ export async function applyAiEdit(request: ApplyRequest): Promise<AiLogEntry> {
     file: relative(root, target).split(sep).join('/'),
     range: request.range,
     applied: true,
-    revertOf: null
+    revertOf: null,
+    batchId: null
+  }
+
+  await append(root, entry)
+  return entry
+}
+
+/** Writes back the snapshot for one applied entry and journals the revert. */
+async function restoreOne(root: string, original: AiLogEntry): Promise<AiLogEntry> {
+  let snapshot: string
+  try {
+    snapshot = await fsp.readFile(snapshotPath(root, original.id), 'utf8')
+  } catch {
+    throw new BetterCallCompilerServiceError('NOT_FOUND', `the snapshot for ${original.id} is missing`)
+  }
+
+  const target = await confinePath(root, join(root, original.file))
+  try {
+    await fsp.writeFile(target, snapshot, 'utf8')
+  } catch {
+    throw new BetterCallCompilerServiceError('IO_ERROR', `cannot restore ${original.file}`)
+  }
+
+  const entry: AiLogEntry = {
+    id: nextId(),
+    timestamp: new Date().toISOString(),
+    model: original.model,
+    mode: original.mode,
+    promptHash: original.promptHash,
+    file: original.file,
+    range: original.range,
+    applied: false,
+    revertOf: original.id,
+    batchId: original.batchId
   }
 
   await append(root, entry)
@@ -165,34 +199,121 @@ export async function revertAiEdit(id: string): Promise<AiLogEntry> {
     throw new BetterCallCompilerServiceError('ALREADY_EXISTS', `edit ${id} was already reverted`)
   }
 
-  let snapshot: string
-  try {
-    snapshot = await fsp.readFile(snapshotPath(root, id), 'utf8')
-  } catch {
-    throw new BetterCallCompilerServiceError('NOT_FOUND', `the snapshot for ${id} is missing`)
+  return restoreOne(root, original)
+}
+
+/* ------------------------------------------------------------------ *
+ * Multi-file agent batches
+ * ------------------------------------------------------------------ */
+
+export interface AgentBatchEdit {
+  readonly path: string
+  readonly content: string
+}
+
+export interface ApplyAgentBatchRequest {
+  readonly batchId: string
+  readonly edits: readonly AgentBatchEdit[]
+  readonly model: string
+  readonly promptHash: string
+}
+
+/**
+ * Writes every file in a multi-file agent edit, snapshotting each one first,
+ * and tags all of their log entries with the same `batchId` so
+ * `revertAgentBatch` can undo the whole thing as a unit.
+ *
+ * Every target is read before anything is written — the same all-or-nothing
+ * discipline `compiler:applyWorkspaceEdit` uses for a rename — so a file this
+ * batch cannot even read fails the apply before any file on disk changes.
+ * Once writing starts, though, this is NOT transactional the way a database
+ * migration is: a write that fails partway through the list leaves the files
+ * written so far applied, snapshotted and individually revertible — the
+ * batch is left able to be finished later or torn down via
+ * `revertAgentBatch`, rather than the write silently reporting success on
+ * work it did not finish.
+ */
+export async function applyAgentBatch(request: ApplyAgentBatchRequest): Promise<AiLogEntry[]> {
+  const root = requireRoot()
+  if (request.edits.length === 0) {
+    throw new BetterCallCompilerServiceError('BAD_REQUEST', 'a batch needs at least one file')
   }
 
-  const target = await confinePath(root, join(root, original.file))
-  try {
-    await fsp.writeFile(target, snapshot, 'utf8')
-  } catch {
-    throw new BetterCallCompilerServiceError('IO_ERROR', `cannot restore ${original.file}`)
+  const resolved: { target: string; relativePath: string; previous: string; content: string }[] = []
+  for (const edit of request.edits) {
+    const target = await confinePath(root, join(root, edit.path))
+    let previous: string
+    try {
+      previous = await fsp.readFile(target, 'utf8')
+    } catch {
+      throw new BetterCallCompilerServiceError('NOT_FOUND', `cannot read ${edit.path}`)
+    }
+    resolved.push({
+      target,
+      relativePath: relative(root, target).split(sep).join('/'),
+      previous,
+      content: edit.content
+    })
   }
 
-  const entry: AiLogEntry = {
-    id: nextId(),
-    timestamp: new Date().toISOString(),
-    model: original.model,
-    mode: original.mode,
-    promptHash: original.promptHash,
-    file: original.file,
-    range: original.range,
-    applied: false,
-    revertOf: id
+  await fsp.mkdir(join(root, BETTERCALLCOMPILER_DIR, SNAPSHOT_DIR), { recursive: true })
+
+  const entries: AiLogEntry[] = []
+  for (const file of resolved) {
+    const id = nextId()
+    await fsp.writeFile(snapshotPath(root, id), file.previous, 'utf8')
+
+    try {
+      await fsp.writeFile(file.target, file.content, 'utf8')
+    } catch {
+      throw new BetterCallCompilerServiceError('IO_ERROR', `cannot write ${file.relativePath}`)
+    }
+
+    const entry: AiLogEntry = {
+      id,
+      timestamp: new Date().toISOString(),
+      model: request.model,
+      mode: 'agent',
+      promptHash: request.promptHash,
+      file: file.relativePath,
+      range: 'whole file',
+      applied: true,
+      revertOf: null,
+      batchId: request.batchId
+    }
+    await append(root, entry)
+    entries.push(entry)
   }
 
-  await append(root, entry)
-  return entry
+  return entries
+}
+
+/**
+ * Reverts every not-yet-reverted entry in a batch, in one call — the "roll
+ * back the whole multi-file edit in one click" the plan asks for.
+ */
+export async function revertAgentBatch(batchId: string): Promise<AiLogEntry[]> {
+  const root = requireRoot()
+
+  const entries = await readAiLog()
+  const batch = entries.filter((entry) => entry.batchId === batchId && entry.applied)
+  if (batch.length === 0) {
+    throw new BetterCallCompilerServiceError('NOT_FOUND', `no applied edits in batch ${batchId}`)
+  }
+
+  const alreadyReverted = new Set(
+    entries.map((entry) => entry.revertOf).filter((id): id is string => id !== null)
+  )
+  const pending = batch.filter((entry) => !alreadyReverted.has(entry.id))
+  if (pending.length === 0) {
+    throw new BetterCallCompilerServiceError('ALREADY_EXISTS', `batch ${batchId} was already reverted`)
+  }
+
+  const reverts: AiLogEntry[] = []
+  for (const original of pending) {
+    reverts.push(await restoreOne(root, original))
+  }
+  return reverts
 }
 
 /** Test hook: the id counter is session state. */

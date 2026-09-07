@@ -21,3 +21,6 @@ blob-report/
 .bettercallcompiler/
 .env
 .env.*
+
+# The eval harness's pass-rate history — machine-local, not repository content.
+.eval-results/

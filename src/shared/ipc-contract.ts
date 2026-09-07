@@ -4,10 +4,13 @@ import { codeGraphSchema } from './code-graph'
 import {
   aiContextSchema,
   aiDoneSchema,
+  agentContextSchema,
+  agentFileEditSchema,
   aiLogEntrySchema,
   aiModeSchema,
   aiStartedSchema,
   aiStreamDeltaSchema,
+  aiUsageTotalsSchema,
   fileNodeSchema,
   fsWatchEventSchema,
   searchMatchSchema,
@@ -43,10 +46,13 @@ import {
   runExitSchema,
   runOutputSchema,
   runStartedSchema,
+  semanticIndexStatusSchema,
+  semanticMatchSchema,
   terminalDataSchema,
   terminalExitSchema,
   terminalSessionSchema,
   toolchainSchema,
+  walkthroughRequestSchema,
   workspaceSchema
 } from './types'
 
@@ -380,6 +386,98 @@ export const INVOKE_CHANNELS = {
   'ai:log': {
     request: empty,
     response: z.strictObject({ entries: z.array(aiLogEntrySchema) })
+  },
+  /** Cumulative token spend for this session, for the status bar. */
+  'ai:usage': {
+    request: empty,
+    response: z.strictObject({ totals: aiUsageTotalsSchema })
+  },
+  /**
+   * Ghost text: one suggestion for the text at the cursor, given what
+   * surrounds it. Capped at 8000 chars each side — enough context for a
+   * confident completion without turning every keystroke into a multi-KB
+   * payload.
+   */
+  'ai:ghostCompletion': {
+    request: z.strictObject({
+      languageId: z.string().min(1),
+      prefix: z.string().max(8000),
+      suffix: z.string().max(8000)
+    }),
+    response: z.strictObject({ text: z.string().nullable() })
+  },
+
+  /* --------------------------- multi-file agent -------------------------- */
+
+  /**
+   * Same transport as `ai:start` — deltas and completion ride `ai:delta` /
+   * `ai:done`, exactly like Explain, Find bugs and Improve — but a different
+   * context shape: several whole files and an instruction, rather than one
+   * selection.
+   */
+  'agent:start': {
+    request: z.strictObject({ context: agentContextSchema }),
+    response: z.strictObject({ started: aiStartedSchema })
+  },
+  /**
+   * Writes every file in the batch, tagging their log entries with the same
+   * `batchId` the renderer generated — a random-enough id it can also use
+   * client-side to group the diff review UI, before any entry naming it
+   * exists in the journal.
+   */
+  'agent:apply': {
+    request: z.strictObject({
+      batchId: z.string().min(1),
+      edits: z.array(agentFileEditSchema).min(1).max(20),
+      model: z.string().min(1),
+      promptHash: z.string().min(1)
+    }),
+    response: z.strictObject({ entries: z.array(aiLogEntrySchema) })
+  },
+  /** Reverts every entry in the batch as one action — the one-click rollback. */
+  'agent:revert': {
+    request: z.strictObject({ batchId: z.string().min(1) }),
+    response: z.strictObject({ entries: z.array(aiLogEntrySchema) })
+  },
+
+  /* ------------------------------ walkthrough ----------------------------- */
+
+  /**
+   * Same transport as `explain:start` and `agent:start` — deltas and
+   * completion ride the existing `ai:delta` / `ai:done` channels. The
+   * renderer stores the finished stream as a `kind: 'walkthrough'` artifact
+   * via the existing `artifact:create`, so this channel only has to start
+   * the stream, not know anything about durable storage.
+   */
+  'walkthrough:start': {
+    request: walkthroughRequestSchema,
+    response: z.strictObject({ started: aiStartedSchema })
+  },
+
+  /* ---------------------------- semantic index ----------------------------- */
+
+  /**
+   * Rebuilds the on-disk semantic index from the workspace's current files.
+   * On-demand rather than watched: a live-updating index would mean paying
+   * the chunk-and-embed cost on every keystroke that saves a file, for a
+   * feature (retrieval for a prompt) that is only ever consulted right
+   * before sending one.
+   */
+  'index:build': {
+    request: empty,
+    response: z.strictObject({ status: semanticIndexStatusSchema })
+  },
+  'index:status': {
+    request: empty,
+    response: z.strictObject({ status: semanticIndexStatusSchema })
+  },
+  /** Ranked candidate files/chunks for an instruction — see `semantic-scoring.ts`. */
+  'index:query': {
+    request: z.strictObject({
+      instruction: z.string().min(1),
+      limit: z.number().int().positive().max(50).default(8)
+    }),
+    response: z.strictObject({ matches: z.array(semanticMatchSchema) })
   },
 
   /**

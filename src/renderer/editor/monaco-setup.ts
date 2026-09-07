@@ -8,6 +8,7 @@ import CssWorker from 'monaco-editor/language/css/css.worker?worker'
 import HtmlWorker from 'monaco-editor/language/html/html.worker?worker'
 import TsWorker from 'monaco-editor/language/typescript/ts.worker?worker'
 import { registerBccLanguage } from './bcc-language'
+import { registerGhostTextProvider } from './ghost-completion'
 import {
   registerInteractiveProviders,
   registerNavigationProviders
@@ -179,6 +180,7 @@ export function loadMonaco(): Promise<typeof monacoNs> {
     // an unknown language id binds to nothing and never fires again.
     registerNavigationProviders(ns)
     if (daemonAnswers) registerInteractiveProviders(ns)
+    registerGhostTextProvider(ns)
 
     runtime = ns
     return ns
@@ -400,7 +402,11 @@ export async function createEditor(
     cursorBlinking: 'smooth',
     tabSize: 2,
     fixedOverflowWidgets: true,
-    padding: { top: 8 }
+    padding: { top: 8 },
+    // Ghost text: gray suggestion ahead of the cursor, Tab to accept.
+    // Explicit rather than relied-upon-as-default — this option is the whole
+    // reason `registerGhostTextProvider`'s items ever become visible.
+    inlineSuggest: { enabled: true, mode: 'prefix' }
   })
 }
 

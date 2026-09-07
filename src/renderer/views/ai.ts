@@ -23,7 +23,10 @@ import { emptyState, showSideBarView } from '../workbench/side-bar'
 const MODE_LABELS: Readonly<Record<AiMode, string>> = {
   explain: 'Explain',
   'find-bugs': 'Find bugs',
-  improve: 'Improve'
+  improve: 'Improve',
+  // Journal entries from a multi-file agent batch carry this mode — the log
+  // here shows both kinds of edit side by side, so it needs a real label.
+  agent: 'Agent'
 }
 
 let titleHost: HTMLElement | null = null
