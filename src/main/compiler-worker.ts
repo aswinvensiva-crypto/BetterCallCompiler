@@ -1286,8 +1286,17 @@ function checkFiles(
   // sent, which `compiler-service.ts` accumulates correctly and was therefore
   // fed a constant — a lie the moment anything is left undone. A cancelled pass
   // is that moment.
+  //
+  // `ledger.pending.size === 0` is load-bearing here, not redundant with
+  // `unanswered`: a drain slice checks at most `SMALL_PASS_FILES` files and,
+  // having deferred nothing new itself, is locally `unanswered === false` —
+  // but the ledger can still owe dozens more files from the large pass that
+  // started the drain. Reporting THIS slice settled while the ledger is not
+  // empty is the same lie `unanswered` exists to catch, one layer up: a
+  // caller collecting batches until the first `settled: true` would stop
+  // after 16 of 120 files and believe the check finished.
   if (produced.length > 0) {
-    post({ type: 'diagnostics', files: produced, settled: !unanswered })
+    post({ type: 'diagnostics', files: produced, settled: !unanswered && ledger.pending.size === 0 })
     markFirstDiagnostics()
   }
 
