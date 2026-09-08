@@ -203,6 +203,23 @@ test('runs to the breakpoint, inspects a local, steps, and continues to exit', a
   // off the breakpoint line onto `i = i + 1;`.
   await expect(debugStatus()).toContainText('step at line 8')
 
+  /*
+   * F5 again does nothing, which is the point.
+   *
+   * The Debug button is disabled while a session is live, but F5 is bound on
+   * the document and had no such gate — a second press started a second worker
+   * that the panel stopped following the instant it did.
+   *
+   * It matters WHERE this is asserted. The first version pressed F5 at the
+   * first breakpoint arrival and checked the state was still `i = 0` on line 7
+   * — which is exactly what a fresh session would also show, so removing the
+   * guard left it green and it proved nothing. Asserted here, after a step, the
+   * two are finally distinguishable: a second session would be back on line 7,
+   * and staying on line 8 is what says the first one is still the one running.
+   */
+  await window.keyboard.press('F5')
+  await expect(debugStatus()).toContainText('step at line 8')
+
   await press('continue')
   await expect(debugStatus()).toContainText(`breakpoint at line ${BREAKPOINT_LINE}`)
   await expect(localValue('i')).toHaveText('1')

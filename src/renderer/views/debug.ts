@@ -223,6 +223,17 @@ async function send(command: DebugCommandName): Promise<void> {
 }
 
 export async function startDebugging(): Promise<void> {
+  /*
+   * One session at a time, because this panel tracks exactly one.
+   *
+   * The Debug button is disabled while a session is live, but F5 is bound on
+   * `document` and has no such gate — pressing it again would start a second
+   * worker that the panel immediately stopped following, leaking it until the
+   * window closed. Refusing matches what the greyed button says; Stop then
+   * Debug is how a session is restarted.
+   */
+  if (runId !== null) return
+
   const doc = activeDocument()
   if (doc === null) {
     notifyError('Open a file to debug.')
