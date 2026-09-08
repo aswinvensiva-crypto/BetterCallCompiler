@@ -79,6 +79,7 @@ let workspaceRoot: string | null = null
 let transportFactory: LspTransportFactory | null = null
 let emitDiagnostics: ((files: readonly FileDiagnostics[]) => void) | null = null
 let emitNotice: ((notice: string) => void) | null = null
+let commandProbe: ((command: string) => string | null) | null = null
 
 /** Reported once per server, so a missing binary is not a log every keystroke. */
 const announced = new Set<string>()
@@ -94,6 +95,29 @@ export function setLspEmitters(
 /** Injected so the supervisor can be tested without spawning a process. */
 export function setLspTransportFactory(factory: LspTransportFactory | null): void {
   transportFactory = factory
+}
+
+/**
+ * How a command is looked up on PATH. Injected for the same reason the
+ * transport is.
+ *
+ * Without this seam the tests inherit whatever the machine happens to have
+ * installed, and that is not hypothetical: it produced two red CI runs in a
+ * row. The first drove pyright, which this sandbox has and CI does not. The
+ * second switched to clangd on the belief that neither machine had it — but
+ * GitHub's windows-latest image ships LLVM, so CI had clangd and the sandbox
+ * did not, and the assertion inverted rather than being fixed.
+ *
+ * Injecting the probe is what makes the whole supervisor testable rather than
+ * testable-on-this-laptop. A test that says "nothing is installed" now means
+ * it.
+ */
+export function setLspCommandProbe(probe: ((command: string) => string | null) | null): void {
+  commandProbe = probe
+}
+
+function lookUp(command: string): string | null {
+  return (commandProbe ?? findOnPath)(command)
 }
 
 export function startLsp(root: string): void {
@@ -145,7 +169,7 @@ export function lspStatus(): readonly LspServerStatus[] {
      * transport can be injected, in which case PATH is not the thing that
      * decided anything.
      */
-    const installed = session?.started === true || findOnPath(spec.command) !== null
+    const installed = session?.started === true || lookUp(spec.command) !== null
 
     return {
       id: spec.id,
@@ -180,7 +204,7 @@ export function lspStatus(): readonly LspServerStatus[] {
  * with EINVAL under Node's default settings.
  */
 function spawnTransport(spec: LspServerSpec, root: string): LspTransport | null {
-  const resolved = findOnPath(spec.command)
+  const resolved = lookUp(spec.command)
   if (resolved === null) return null
 
   const child = spawnExecutable(resolved, spec.args, { cwd: root })
@@ -448,6 +472,7 @@ export function resetLspForTests(): void {
   announced.clear()
   workspaceRoot = null
   transportFactory = null
+  commandProbe = null
   emitDiagnostics = null
   emitNotice = null
 }

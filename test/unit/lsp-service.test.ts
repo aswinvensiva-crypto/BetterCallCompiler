@@ -9,6 +9,7 @@ import {
   lspStatus,
   openLspDocument,
   resetLspForTests,
+  setLspCommandProbe,
   setLspEmitters,
   setLspTransportFactory,
   startLsp
@@ -45,8 +46,17 @@ let spawned: Spawned[] = []
 let notices: string[] = []
 let emitted: FileDiagnostics[] = []
 
-/** Every server is present, unless a test says otherwise. */
+/**
+ * Every server can be SPAWNED, and by default none is on PATH.
+ *
+ * Those are separate facts and the tests need both. The transport factory
+ * decides what happens when the service tries to start a server; the probe
+ * decides what `lspStatus` reports about installation. Defaulting the probe to
+ * "nothing installed" is what makes these tests say what they mean instead of
+ * inheriting the machine — two red CI runs came from tests that read PATH.
+ */
 function installEverything(missing: readonly string[] = []): void {
+  setLspCommandProbe(() => null)
   setLspTransportFactory((spec) => {
     if (missing.includes(spec.id)) return null as unknown as LspTransport
 
@@ -191,12 +201,19 @@ describe('status', () => {
     expect(status.every((server) => typeof server.installed === 'boolean')).toBe(true)
   })
 
+  it('reports a server the probe finds as installed, with no complaint', () => {
+    installEverything()
+    setLspCommandProbe((command) => (command === 'gopls' ? '/usr/local/bin/gopls' : null))
+
+    const status = lspStatus()
+    expect(status.find((server) => server.id === 'gopls')?.installed).toBe(true)
+    expect(status.find((server) => server.id === 'gopls')?.detail).toBeNull()
+    expect(status.find((server) => server.id === 'clangd')?.installed).toBe(false)
+  })
+
   it('reports the install hint for a server that never ran', () => {
-    /*
-     * The other direction of the precedence fix. clangd again, because it is on
-     * neither this sandbox nor CI — so "not installed" here is a fact about the
-     * code path rather than about the machine.
-     */
+    // The other direction of the precedence fix. The probe says nothing is
+    // installed, so this is a fact about the code rather than about the runner.
     installEverything()
     const clangd = lspStatus().find((server) => server.id === 'clangd')
 
@@ -326,12 +343,12 @@ describe('when a server dies', () => {
      * the editor being slow. And a stale squiggle from a server that will never
      * run again is worse than none, because nothing will ever remove it.
      *
-     * Driven through CLANGD rather than pyright, deliberately. The transport is
-     * injected, so any server can be driven — but `lspStatus` also consults the
-     * real PATH, and this sandbox happens to have pyright installed while CI
-     * does not. Written against pyright this passed here and failed on CI, for
-     * a reason that had nothing to do with what it was testing. clangd is on
-     * neither machine, so the assertion below is about the code.
+     * The status assertion below is about PRECEDENCE: a recorded failure has to
+     * outrank the install hint. It needs the server to look uninstalled, which
+     * the injected probe now guarantees. Two earlier versions of this test read
+     * the real PATH instead and were red on CI for reasons that had nothing to
+     * do with what they were testing — first pyright, which only this sandbox
+     * has, then clangd, which only the Windows runner has.
      */
     installEverything()
     openLspDocument('/w/a.c', 'c', 'int main() {}', 1)
