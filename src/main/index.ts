@@ -15,6 +15,7 @@ import { getWorkspace, setWatchEmitter, setWorkspace, stopWatching } from './fs-
 import { createHandlerMap, emitEvent, registerIpcHandlers } from './ipc'
 import { disposeAllSessions, setTerminalEmitters } from './terminal'
 import { cancelAllRuns, setRunEmitters } from './runner'
+import { setDebugEmitters, stopAllDebugSessions } from './debug-service'
 import { setGitChangeEmitter, startGitWatch, stopGitWatch } from './git-service'
 import {
   compilerStatus,
@@ -172,6 +173,13 @@ function createWindow(): BrowserWindow {
       emitEvent(win, payload.stream === 'stdout' ? 'run:stdout' : 'run:stderr', payload),
     (payload) => emitEvent(win, 'run:exit', payload)
   )
+  // The debugger's own pair. Not folded onto `setRunEmitters`: a debug session
+  // outlives the program ending, so its events cannot ride on a channel whose
+  // exit means the run is over.
+  setDebugEmitters(
+    (payload) => emitEvent(win, 'debug:stopped', payload),
+    (payload) => emitEvent(win, 'debug:exited', payload)
+  )
   setGitChangeEmitter(() => emitEvent(win, 'git:changed', {}))
   setAiEmitters(
     (payload) => emitEvent(win, 'ai:delta', payload),
@@ -192,6 +200,7 @@ function createWindow(): BrowserWindow {
   win.on('closed', () => {
     disposeAllSessions()
     cancelAllRuns()
+    stopAllDebugSessions()
     cancelAllAiStreams()
     stopCompiler()
     stopLang()
@@ -398,6 +407,7 @@ if (!gotLock) {
   app.on('will-quit', () => {
     disposeAllSessions()
     cancelAllRuns()
+    stopAllDebugSessions()
     cancelAllAiStreams()
     stopCompiler()
     stopLang()
