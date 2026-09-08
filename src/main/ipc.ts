@@ -29,6 +29,12 @@ import {
 } from './compiler-service'
 import { isBccPath } from '../shared/lang-diagnostics'
 import {
+  sendCommand,
+  setBreakpoints as setDebugBreakpoints,
+  startDebug,
+  stopDebug
+} from './debug-service'
+import {
   closeInteractiveDocument,
   interactiveCompletionDetail,
   interactiveCompletions,
@@ -264,6 +270,16 @@ export function createHandlerMap(): HandlerMap {
     'run:start': async (request) => ({ run: await startRun(request.path, request.languageId) }),
 
     'run:cancel': (request) => ({ cancelled: cancelRun(request.runId) }),
+
+    // Acknowledgements only; the state arrives on `debug:stopped`, so there is
+    // one path that paints the panel whether the stop came from a command or
+    // from a breakpoint hit while the program ran.
+    'debug:start': async (request) => ({ session: await startDebug(request.path) }),
+    'debug:command': (request) => ({ accepted: sendCommand(request.runId, request.command) }),
+    'debug:setBreakpoints': (request) => ({
+      accepted: setDebugBreakpoints(request.runId, request.lines)
+    }),
+    'debug:stop': (request) => ({ stopped: stopDebug(request.runId) }),
 
     'git:status': async () => ({ status: await gitStatus() }),
 

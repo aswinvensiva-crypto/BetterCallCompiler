@@ -48,6 +48,10 @@ import {
   runStartedSchema,
   semanticIndexStatusSchema,
   semanticMatchSchema,
+  debugCommandSchema,
+  debugExitSchema,
+  debugStartedSchema,
+  debugStateSchema,
   terminalDataSchema,
   terminalExitSchema,
   terminalSessionSchema,
@@ -281,6 +285,38 @@ export const INVOKE_CHANNELS = {
   'run:cancel': {
     request: z.strictObject({ runId: z.string().min(1) }),
     response: z.strictObject({ cancelled: z.boolean() })
+  },
+
+  /*
+   * The debugger. Every one of these returns an acknowledgement, not state:
+   * the state arrives on `debug:stopped`, so there is exactly one path that
+   * paints the panel whether the stop came from a command the user pressed or
+   * from a breakpoint hit while it was running. Two paths would drift.
+   */
+  'debug:start': {
+    request: z.strictObject({ path: z.string().min(1) }),
+    response: z.strictObject({ session: debugStartedSchema })
+  },
+  'debug:command': {
+    request: z.strictObject({
+      runId: z.string().min(1),
+      command: debugCommandSchema
+    }),
+    // False when the session is gone — the window can race a program that
+    // ended, and silently dropping the command would leave the panel waiting
+    // for a `stopped` that is never coming.
+    response: z.strictObject({ accepted: z.boolean() })
+  },
+  'debug:setBreakpoints': {
+    request: z.strictObject({
+      runId: z.string().min(1),
+      lines: z.array(z.number().int().positive())
+    }),
+    response: z.strictObject({ accepted: z.boolean() })
+  },
+  'debug:stop': {
+    request: z.strictObject({ runId: z.string().min(1) }),
+    response: z.strictObject({ stopped: z.boolean() })
   },
 
   'git:status': {
@@ -816,6 +852,11 @@ export const EVENT_CHANNELS = {
   'run:stdout': { payload: runOutputSchema },
   'run:stderr': { payload: runOutputSchema },
   'run:exit': { payload: runExitSchema },
+  // Carries the whole state, unlike `run:stdout` which carries a delta: a debug
+  // session can step BACKWARDS, which un-prints, and a delta channel cannot say
+  // that. See `debugStateSchema`.
+  'debug:stopped': { payload: debugStateSchema },
+  'debug:exited': { payload: debugExitSchema },
   // Payload-free: the view re-reads status itself, so the event cannot carry a
   // snapshot that is already stale by the time it is rendered.
   'git:changed': { payload: z.strictObject({}) },

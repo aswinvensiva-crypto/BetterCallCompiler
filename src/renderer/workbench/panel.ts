@@ -1,6 +1,7 @@
 import { createTerminal, hasTerminals, mountTerminals, refitActive } from '../terminal/xterm-view'
 import { mountRunView, refitOutput, showRunActions } from '../views/run'
 import { mountProblems, onProblemsShown } from '../views/problems'
+import { mountDebugView, onDebugShown } from '../views/debug'
 
 /**
  * The bottom panel.
@@ -20,7 +21,7 @@ import { mountProblems, onProblemsShown } from '../views/problems'
  * views, each with its own body element created in `mountPanel`, and the tab
  * strip is meant to stay small enough to read at a glance.
  */
-export type PanelViewId = 'terminal' | 'output' | 'problems'
+export type PanelViewId = 'terminal' | 'output' | 'problems' | 'debug'
 
 interface PanelView {
   readonly id: PanelViewId
@@ -118,6 +119,10 @@ export async function showProblems(): Promise<void> {
   await showPanelView('problems')
 }
 
+export async function showDebug(): Promise<void> {
+  await showPanelView('debug')
+}
+
 export function mountPanel(
   panel: HTMLElement,
   tabs: HTMLElement,
@@ -153,7 +158,12 @@ export function mountPanel(
   problemsActions.id = 'panel-problems-actions'
   problemsActions.hidden = true
 
-  tabs.append(viewTabStrip, divider, terminalActions, outputActions, problemsActions)
+  const debugActions = document.createElement('div')
+  debugActions.className = 'panel__actions'
+  debugActions.id = 'panel-debug-actions'
+  debugActions.hidden = true
+
+  tabs.append(viewTabStrip, divider, terminalActions, outputActions, problemsActions, debugActions)
 
   const terminalBody = document.createElement('div')
   terminalBody.className = 'panel__view'
@@ -169,7 +179,12 @@ export function mountPanel(
   problemsBody.id = 'panel-problems-view'
   problemsBody.hidden = true
 
-  body.append(terminalBody, outputBody, problemsBody)
+  const debugBody = document.createElement('div')
+  debugBody.className = 'panel__view panel__view--debug'
+  debugBody.id = 'panel-debug-view'
+  debugBody.hidden = true
+
+  body.append(terminalBody, outputBody, problemsBody, debugBody)
 
   views.set('terminal', {
     id: 'terminal',
@@ -197,12 +212,25 @@ export function mountPanel(
     onShow: onProblemsShown
   })
 
+  views.set('debug', {
+    id: 'debug',
+    label: 'Debug',
+    body: debugBody,
+    actions: debugActions,
+    onShow: onDebugShown
+  })
+
   mountTerminals(terminalBody, terminalActions)
   mountRunView(outputBody, outputActions)
   // Mounted eagerly, unlike the side-bar views: it subscribes to the daemon's
   // event stream, and a panel that only starts listening when first opened
   // would miss every diagnostic produced before that.
   mountProblems(problemsBody, problemsActions)
+  // Also eager, for the same reason and one more: the session's `stopped`
+  // events start arriving the moment Debug is pressed, and the command that
+  // presses it can be run from the palette without the panel ever having been
+  // opened. A view that subscribed on first show would miss the entry stop.
+  mountDebugView(debugBody, debugActions)
   renderViewTabs()
 
   document.addEventListener('keydown', (event) => {

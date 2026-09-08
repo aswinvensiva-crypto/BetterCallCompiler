@@ -12,6 +12,7 @@ import type { FileNode, WorkbenchLayout } from '../shared/types'
 import { mountExplorer, OPEN_FILE_EVENT } from './views/explorer'
 import { createEditor } from './editor/monaco-setup'
 import { attachEditor, activeDocument, openFile, reloadFromDisk, saveActive } from './editor/models'
+import { attachBreakpoints } from './editor/breakpoints'
 import { mountTabs } from './editor/tabs'
 import { notifyError } from './workbench/notifications'
 import { mountPanel, showOutput, showProblems as showProblemsPanel } from './workbench/panel'
@@ -80,7 +81,8 @@ import { isQuickPickOpen } from './workbench/quick-pick'
 import { openFolderCommand } from './views/explorer'
 import { rescanToolchains } from './workbench/status-bar'
 import { cancelActiveRun, isRunning } from './views/run'
-import { showPanelView } from './workbench/panel'
+import { showPanelView, showDebug as showDebugPanel } from './workbench/panel'
+import { isDebugging, startDebugging, stopDebugging } from './views/debug'
 import { mountDiffEditor } from './editor/diff'
 
 declare global {
@@ -157,12 +159,18 @@ async function mountEditor(editorHost: HTMLElement, tabBar: HTMLElement): Promis
     }
   })
 
-  // Ctrl+F5 — VS Code's "Run Without Debugging". Plain F5 is deliberately left
-  // alone: it means "start debugging", and there is no debugger until M2.
+  /*
+   * F5 and Ctrl+F5 — VS Code's "Start Debugging" and "Run Without Debugging".
+   *
+   * Plain F5 was left unbound until now with a note saying it meant "start
+   * debugging" and there was no debugger yet. There is one; this is the
+   * reservation being honoured rather than a new key being invented.
+   */
   document.addEventListener('keydown', (event) => {
-    if (event.key !== 'F5' || !event.ctrlKey) return
+    if (event.key !== 'F5' || event.altKey || event.shiftKey) return
     event.preventDefault()
-    void saveThenRun()
+    if (event.ctrlKey || event.metaKey) void saveThenRun()
+    else void saveThenDebug()
   })
 
   // A file changed on disk (git checkout, another editor) is reloaded only when
@@ -176,6 +184,10 @@ async function mountEditor(editorHost: HTMLElement, tabBar: HTMLElement): Promis
 
   const editor = await createEditor(surface)
   attachEditor(editor)
+  // The glyph margin, and the line the debugger is stopped on. Attached here
+  // rather than inside `createEditor` because it is a feature of the workbench
+  // rather than of an editor instance — the diff editor gets no breakpoints.
+  attachBreakpoints(editor)
   mountTabs(tabBar)
 
   // The diff surface sits on top of the editor in the same region rather than
@@ -404,6 +416,20 @@ async function saveThenRun(): Promise<void> {
   await saveActive()
   await showOutput()
   await runActiveFile()
+}
+
+/**
+ * Save, show the panel, then start the session.
+ *
+ * The save is not optional. The debugger compiles the file FROM DISK — main
+ * reads it, the same as a run does — so debugging a dirty buffer would step
+ * through the last saved version while the user watched a different one, and
+ * every line number would be a lie the moment an edit added a line.
+ */
+async function saveThenDebug(): Promise<void> {
+  await saveActive()
+  await showDebugPanel()
+  await startDebugging()
 }
 
 /**
@@ -760,6 +786,21 @@ function registerWorkbenchCommands(): void {
       when: () => isRunning(),
       run: () => void cancelActiveRun()
     },
+
+    {
+      id: 'debug.start',
+      title: 'Debug: Start Debugging',
+      keybinding: 'F5',
+      when: () => activeDocument() !== null && !isDebugging(),
+      run: () => void saveThenDebug()
+    },
+    {
+      id: 'debug.stop',
+      title: 'Debug: Stop',
+      when: () => isDebugging(),
+      run: () => void stopDebugging()
+    },
+    { id: 'view.debug', title: 'View: Debug', run: () => void showDebugPanel() },
 
     { id: 'toolchains.rescan', title: 'Toolchains: Rescan', run: () => void rescanToolchains() }
   ])

@@ -6,6 +6,7 @@ import ts from 'typescript'
 import {
   SOURCE_EXTENSIONS,
   createLanguageServiceHost,
+  defaultLibPath,
   extensionOf,
   loadWorkspaceConfig,
   toAbsolute,
@@ -35,6 +36,7 @@ import {
 import { lineStartsOf, rangeFromSpan } from '../shared/diagnostic-position'
 import {
   QueryCycleError,
+  argumentOf,
   createEngine,
   namespaceOf,
   queryKey,
@@ -43,7 +45,24 @@ import {
   type QueryTrace
 } from '../shared/query-engine'
 import { isMemoReuse } from '../shared/pass-analysis'
+import {
+  SMALL_PASS_FILES,
+  createLedger,
+  departed,
+  nextDrain,
+  noteAbandoned,
+  noteChecked,
+  noteDeferred,
+  planPass,
+  type CheckLedger
+} from '../shared/check-ledger'
 import { moduleSignature } from './module-signature'
+import {
+  computeCacheKey,
+  readCache,
+  writeCache,
+  type CachedFileRecord
+} from './memo-cache'
 import {
   MAX_CODE_ACTIONS,
   MAX_REFERENCE_RESULTS,
@@ -352,6 +371,40 @@ function reportState(state: CompilerDaemonState, checked = checkedFileCount()): 
   post({ type: 'state', state, graph: summary(), checkedFileCount: checked })
 }
 
+/**
+ * The cache key for the workspace currently loaded, or null before the first
+ * `indexWorkspace`. Computed once per boot/re-index and reused by the write
+ * side in `checkFiles`, so a cold pass does not have to recompute compiler
+ * identity for the write it may schedule.
+ */
+let memoCacheKey: string | null = null
+/** True once this boot's cache has been written, so it is written at most once. */
+let memoCacheWritten = false
+
+/**
+ * True when every file the cache recorded is still on disk, at the same
+ * path, with the same mtime, and nothing new has appeared in the walk.
+ *
+ * The cache KEY (ts.version, compilerOptions, lib identity, tsconfig,
+ * workspace root) proves the compiler is the one that produced these
+ * diagnostics. It says nothing about whether the files it was run against are
+ * still the files on disk — a workspace edited while the daemon was not
+ * running would otherwise have its stale diagnostics served as current ones,
+ * which is the exact failure this whole feature exists not to cause. mtime
+ * is the same signal `dependency-graph`'s own `mtimeMs` already trusts for
+ * display; here it gates whether the cache is trusted at all.
+ */
+function cacheMatchesDisk(root: string, files: readonly CachedFileRecord[], walked: readonly string[]): boolean {
+  const walkedRelative = new Set(walked.map((absolute) => toRelative(root, absolute)))
+  if (walkedRelative.size !== files.length) return false
+
+  for (const record of files) {
+    if (!walkedRelative.has(record.relativePath)) return false
+    if (mtimeOf(toAbsolute(root, record.relativePath)) !== record.mtimeMs) return false
+  }
+  return true
+}
+
 function indexWorkspace(root: string): void {
   const started = Date.now()
   performance.mark('daemon-init-start')
@@ -372,7 +425,52 @@ function indexWorkspace(root: string): void {
   // call, sees a version it has already cached and keeps a stale snapshot.
   for (const [path, version] of textVersions) textVersions.set(path, version + 1)
 
-  for (const absolute of walk(root)) {
+  memoCacheWritten = false
+  memoCacheKey = computeCacheKey({
+    tsVersion: ts.version,
+    compilerOptions,
+    defaultLibPath: defaultLibPath(compilerOptions),
+    tsconfigRelativePath,
+    workspaceRoot: root
+  })
+
+  const walked = walk(root)
+  const cached = readCache(root, memoCacheKey)
+
+  if (cached !== null && cacheMatchesDisk(root, cached.files, walked)) {
+    for (const record of cached.files) {
+      upsertNode(graph, { relativePath: record.relativePath, imports: [...record.imports], mtimeMs: record.mtimeMs })
+    }
+
+    engine.hydrate(cached.snapshot)
+    // The engine's memos are restored, but `engineTexts`/`textVersions` are
+    // this worker's own bookkeeping on top of the engine and are not part of
+    // its snapshot — rebuilt here from the rehydrated `text:` inputs so the
+    // LanguageService host and the engine cannot disagree about a file's
+    // content, same invariant `writeText` keeps on the live path.
+    for (const key of engine.keys()) {
+      if (namespaceOf(key) !== Q_TEXT) continue
+      const relativePath = argumentOf(key)
+      engineTexts.set(relativePath, engine.get<string>(key))
+      textVersions.set(relativePath, (textVersions.get(relativePath) ?? 0) + 1)
+    }
+
+    cycles = assignComponents(graph)
+    lastBuildMs = Date.now() - started
+    service = null
+
+    console.debug(
+      `[compiler-worker] cache hit: ${graph.nodes.size} files, ${engine.stats().memoCount} memos restored`
+    )
+
+    performance.mark('daemon-init-end')
+    performance.measure('daemon-init', 'daemon-init-start', 'daemon-init-end')
+    busySince = null
+    reportState('idle')
+    return
+  }
+
+  for (const absolute of walked) {
     const text = readIfPossible(absolute)
     if (text === null) continue
 
@@ -465,6 +563,21 @@ function reindexForConfigChange(root: string): void {
   // reset after a full `indexWorkspace`.
   engine.invalidateDerived()
   service = null
+
+  // The compiler options are part of the cache key, so a config change makes
+  // whatever key this boot was using stale. Recompute it and allow one fresh
+  // write under the new identity — writing under the OLD key here would cache
+  // post-config-change diagnostics under a key that no longer describes this
+  // workspace's compiler identity, and the next boot with the OLD config
+  // would then hydrate diagnostics computed under the NEW one.
+  memoCacheWritten = false
+  memoCacheKey = computeCacheKey({
+    tsVersion: ts.version,
+    compilerOptions,
+    defaultLibPath: defaultLibPath(compilerOptions),
+    tsconfigRelativePath,
+    workspaceRoot: root
+  })
 
   const openFiles = [...overlays.keys()].filter((file) => graph.nodes.has(file))
   if (openFiles.length > 0) {
@@ -1062,10 +1175,15 @@ function checkFiles(
   const cold = service === null
   ensureService(root)
 
-  const ordered = [
-    ...files.filter((file) => overlays.has(file)),
-    ...files.filter((file) => !overlays.has(file))
-  ]
+  // Open files first, then the rest — `planPass` also decides, above
+  // `SMALL_PASS_FILES`, how much of that ordering this pass is guaranteed to
+  // check. Below the threshold `guaranteed` is the whole list and nothing
+  // changes from the old behaviour.
+  const plan = planPass(files, (file) => overlays.has(file))
+  const ordered =
+    plan.ordered.length > SMALL_PASS_FILES ? plan.ordered.slice(0, plan.guaranteed) : plan.ordered
+  const deferredNow =
+    plan.ordered.length > SMALL_PASS_FILES ? plan.ordered.slice(plan.guaranteed) : []
 
   const produced: FileDiagnostics[] = []
   const nowDirty = new Set<string>()
@@ -1106,6 +1224,7 @@ function checkFiles(
       // is also not answered, so it is tracked rather than merely skipped.
       if (!(error instanceof QueryCycleError)) throw error
       cycled.push(relativePath)
+      noteAbandoned(ledger, relativePath)
       continue
     }
 
@@ -1114,12 +1233,18 @@ function checkFiles(
 
     produced.push({ relativePath, path: absolute, diagnostics, version })
     if (diagnostics.length > 0) nowDirty.add(relativePath)
+    noteChecked(ledger, relativePath, diagnostics.length > 0)
   }
+
+  // Everything this pass chose not to check at all (the large-pass tail) is
+  // owed a check later — unioned into the ledger, never dropped, and drained
+  // in the background as `'idle'` passes below.
+  if (deferredNow.length > 0) noteDeferred(ledger, deferredNow)
 
   const cancelled = unfinished.length > 0
   // Every file this pass owed an answer to and did not get one, cancellation
-  // included — the set `settled` is computed from.
-  const unanswered = cancelled || cycled.length > 0
+  // and proactive deferral both included — the set `settled` is computed from.
+  const unanswered = cancelled || cycled.length > 0 || deferredNow.length > 0
 
   // NOTE: the pass is reported at the END of this function, after the
   // diagnostics have gone out. Announcing "the pass is done" before its results
@@ -1161,8 +1286,17 @@ function checkFiles(
   // sent, which `compiler-service.ts` accumulates correctly and was therefore
   // fed a constant — a lie the moment anything is left undone. A cancelled pass
   // is that moment.
+  //
+  // `ledger.pending.size === 0` is load-bearing here, not redundant with
+  // `unanswered`: a drain slice checks at most `SMALL_PASS_FILES` files and,
+  // having deferred nothing new itself, is locally `unanswered === false` —
+  // but the ledger can still owe dozens more files from the large pass that
+  // started the drain. Reporting THIS slice settled while the ledger is not
+  // empty is the same lie `unanswered` exists to catch, one layer up: a
+  // caller collecting batches until the first `settled: true` would stop
+  // after 16 of 120 files and believe the check finished.
   if (produced.length > 0) {
-    post({ type: 'diagnostics', files: produced, settled: !unanswered })
+    post({ type: 'diagnostics', files: produced, settled: !unanswered && ledger.pending.size === 0 })
     markFirstDiagnostics()
   }
 
@@ -1176,9 +1310,95 @@ function checkFiles(
   // than "the service happened to be cold at the time", and a config-triggered
   // reindex nulls `service` itself, so it would otherwise always lose its own
   // reason to this fallback.
-  reportPass(cold && reason !== 'index' ? 'cold' : reason, ordered.length, startedAt, before, trigger)
+  // `files.length`, not `ordered.length`: the latter is only the guaranteed
+  // head a large pass actually answered this time. `requested` reports what
+  // this pass was ASKED for, deferral included — the same reasoning as the
+  // cancellation case just below it.
+  reportPass(cold && reason !== 'index' ? 'cold' : reason, files.length, startedAt, before, trigger)
 
   if (cancelled) oweCheck(root, unfinished, reason)
+  if (deferredNow.length > 0) scheduleDrain(root)
+
+  // Write the memo cache once per boot, and only once this pass is fully
+  // settled — cancelled, cycled or deferred all disqualify it. Writing a
+  // partial pass would cache a state this very worker considers unfinished,
+  // and the next boot would hydrate believing it complete.
+  if (!memoCacheWritten && memoCacheKey !== null && !unanswered && !cancelled) {
+    memoCacheWritten = true
+    scheduleCacheWrite(root, memoCacheKey)
+  }
+}
+
+/**
+ * Persists the engine's memo state to `.bettercallcompiler/cache/`.
+ *
+ * Deferred one tick with `setImmediate` for the same reason the drain is:
+ * this runs right after a pass has posted its diagnostics, and serializing
+ * every memo plus writing a JSON file to disk should not be what stands
+ * between that pass and the caller seeing it.
+ */
+function scheduleCacheWrite(root: string, key: string): void {
+  setImmediate(() => {
+    const files: CachedFileRecord[] = []
+    for (const [relativePath, node] of graph.nodes) {
+      files.push({ relativePath, imports: [...node.imports], mtimeMs: node.mtimeMs })
+    }
+    writeCache(root, key, { createdAt: Date.now(), files, snapshot: engine.serialize() })
+  })
+}
+
+/**
+ * Ledger-backed deferral for large passes.
+ *
+ * `checkFiles` guarantees a head of a large pass and unions the rest into
+ * `ledger.pending`. This drains that tail in the background, one bounded
+ * slice at a time, tagged `reason: 'idle'` so it never masquerades as
+ * interactive latency.
+ *
+ * `setImmediate` between slices for the same reason `oweCheck` uses it: it
+ * yields to the poll phase first, so a ping or an interactive query queued
+ * while a drain slice was running gets answered before the next slice starts,
+ * rather than a naive loop over thousands of files blocking the thread
+ * outright.
+ */
+const ledger: CheckLedger = createLedger()
+let drainScheduled = false
+
+function scheduleDrain(root: string): void {
+  if (drainScheduled) return
+  if (ledger.pending.size === 0) return
+  drainScheduled = true
+
+  setImmediate(() => {
+    drainScheduled = false
+    if (workspaceRoot === null) return
+
+    // Files the ledger is still tracking that left the graph since they were
+    // deferred. Reported empty so their squiggles clear rather than being
+    // drained forever against a file that is gone — the one case
+    // `noteChecked`'s invariant permits an empty result without a query.
+    const gone = departed(ledger, (relativePath) => graph.nodes.has(relativePath))
+    if (gone.length > 0) {
+      const files: FileDiagnostics[] = gone.map((relativePath) => {
+        const version = (emittedVersions.get(relativePath) ?? 0) + 1
+        emittedVersions.set(relativePath, version)
+        return { relativePath, path: toAbsolute(root, relativePath), diagnostics: [], version }
+      })
+      post({ type: 'diagnostics', files, settled: ledger.pending.size === 0 })
+    }
+
+    const slice = nextDrain(ledger, SMALL_PASS_FILES)
+    if (slice.length === 0) {
+      if (ledger.pending.size > 0) scheduleDrain(root)
+      return
+    }
+
+    checkFiles(root, slice, 'idle', [])
+    // A slice never exceeds SMALL_PASS_FILES, so it cannot itself re-defer —
+    // but more may have piled into `pending` since (a fresh edit named more
+    // files than the drain covered), so keep going until it is empty.
+    if (ledger.pending.size > 0) scheduleDrain(root)
+  })
 }
 
 /**

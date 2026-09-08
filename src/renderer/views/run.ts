@@ -316,7 +316,14 @@ export async function runFile(node: FileNode): Promise<void> {
   renderBanner(run)
   scheduleWrite(`\x1b[2m${run.relativePath}\x1b[0m\r\n`)
 
-  if (run.mode === 'real') {
+  /*
+   * `streamed` says main is producing the output events for this run — a
+   * spawned process, or the BCC VM in its worker. It is an explicit field
+   * rather than something inferred from `mode` or `command`, because both
+   * processes have to agree and two inference rules that must stay in step is
+   * one bug waiting for a third execution shape. BCC was that third shape.
+   */
+  if (run.streamed) {
     // Output arrives as events; the exit handler clears the busy state. Adopting
     // rather than assigning drains anything that beat this response back.
     adoptRun(run.runId)

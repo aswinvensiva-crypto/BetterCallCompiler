@@ -526,7 +526,19 @@ export const runStartedSchema = z.strictObject({
   /** Bundled pack id for `bundled` runs, e.g. `web`. */
   pack: z.string().nullable(),
   /** Why this mode was chosen. Always set for `bundled` and `unsupported`. */
-  reason: z.string().nullable()
+  reason: z.string().nullable(),
+  /**
+   * Whether MAIN is producing output events for this run.
+   *
+   * Explicit rather than inferred. Both processes have to agree about who
+   * carries a plan out, and until now each worked it out from a different
+   * field — the renderer from `mode`, then from `command`, while main used
+   * `command` alone. Two inference rules that must stay in step is one bug
+   * waiting for a third execution shape to be added, and BCC is that third
+   * shape: no toolchain to spawn and no renderer pack either, because it runs
+   * on the VM in a worker.
+   */
+  streamed: z.boolean()
 })
 export type RunStarted = z.infer<typeof runStartedSchema>
 
@@ -545,6 +557,141 @@ export const runExitSchema = z.strictObject({
   cancelled: z.boolean()
 })
 export type RunExit = z.infer<typeof runExitSchema>
+
+/* -------------------------------- debug --------------------------------- */
+
+/**
+ * The debugger's wire shapes.
+ *
+ * Deliberately the same vocabulary as `dap-protocol.ts` — `stackFrames`,
+ * `variables`, `breakpoints` — rather than something invented for the BCC VM.
+ * Workstream D built a DAP client for external adapters that answers in these
+ * shapes, so one panel can eventually drive both. The schemas live here because
+ * everything crossing IPC is validated in main, and `dap-protocol.ts` is a
+ * type-only description of somebody else's protocol.
+ */
+
+export const debugStopReasonSchema = z.enum([
+  'entry',
+  'breakpoint',
+  'step',
+  'pause',
+  'exception',
+  'exited',
+  'start'
+])
+export type DebugStopReason = z.infer<typeof debugStopReasonSchema>
+
+export const debugStopSchema = z.strictObject({
+  reason: debugStopReasonSchema,
+  /** Null once the program has ended: there is no line to highlight. */
+  line: z.number().int().positive().nullable(),
+  message: z.string().nullable()
+})
+
+/**
+ * Optional exactly where DAP makes it optional.
+ *
+ * The temptation is to require everything, because the built-in VM session
+ * always fills every field. But this panel is meant to render an EXTERNAL
+ * adapter's answer too — that is the whole reason the vocabulary was borrowed
+ * — and an adapter that omits a source or a type is within spec. Tightening
+ * the schema here would mean either dropping such a frame on the floor or
+ * inventing a value for it, and both are ways of lying about what the debugger
+ * said. The panel handles absence instead; it is one branch per field.
+ */
+export const debugFrameSchema = z.strictObject({
+  /**
+   * The frame's DEPTH, not an index into the array.
+   *
+   * The array is innermost-first for display, so a caller that stored an index
+   * would read the wrong frame after one step changed the stack.
+   */
+  id: z.number().int(),
+  name: z.string(),
+  source: z.strictObject({ name: z.string().optional(), path: z.string().optional() }).optional(),
+  line: z.number().int(),
+  column: z.number().int()
+})
+
+export const debugVariableSchema = z.strictObject({
+  name: z.string(),
+  value: z.string(),
+  type: z.string().optional(),
+  variablesReference: z.number().int()
+})
+
+export const debugBreakpointSchema = z.strictObject({
+  id: z.number().int().optional(),
+  /**
+   * False when it could not be set where the user clicked. `line` then says
+   * where it moved to, and `message` says why — showing it as a solid red dot
+   * anyway is the single most common way a debugger lies to its user.
+   */
+  verified: z.boolean(),
+  line: z.number().int().optional(),
+  message: z.string().optional()
+})
+
+/**
+ * Everything the panel paints, in one message.
+ *
+ * One snapshot rather than a stop event the UI then queries three more times:
+ * the state is a handful of frames and a handful of locals, and a round trip
+ * per pane would show a half-updated view while they arrived.
+ *
+ * `output` is the WHOLE transcript, not a delta. A run can only append, so
+ * `run:stdout` streams; a debug session can step backwards, which un-prints.
+ * The panel replaces rather than appends, and stepping back over a `print`
+ * visibly removes the line.
+ */
+export const debugStateSchema = z.strictObject({
+  runId: z.string(),
+  stop: debugStopSchema,
+  frames: z.array(debugFrameSchema),
+  /** Locals per frame, keyed by the frame id, which is its depth. */
+  locals: z.array(
+    z.strictObject({
+      frameId: z.number().int(),
+      variables: z.array(debugVariableSchema)
+    })
+  ),
+  output: z.string(),
+  breakpoints: z.array(debugBreakpointSchema),
+  /**
+   * The program has ended. NOT that the session has: the end is the most
+   * interesting place to step backwards from, so a finished session still
+   * takes commands.
+   */
+  finished: z.boolean()
+})
+export type DebugState = z.infer<typeof debugStateSchema>
+
+export const debugCommandSchema = z.enum([
+  'continue',
+  'stepInto',
+  'stepOver',
+  'stepOut',
+  'stepBack',
+  'reverseContinue'
+])
+export type DebugCommandName = z.infer<typeof debugCommandSchema>
+
+export const debugStartedSchema = z.strictObject({
+  runId: z.string(),
+  filePath: z.string(),
+  relativePath: z.string()
+})
+export type DebugStarted = z.infer<typeof debugStartedSchema>
+
+export const debugExitSchema = z.strictObject({
+  runId: z.string(),
+  /** 2 when the program could not be compiled, 130 when the session was ended. */
+  code: z.number().int(),
+  /** Compile diagnostics, or empty when the session was simply ended. */
+  message: z.string()
+})
+export type DebugExit = z.infer<typeof debugExitSchema>
 
 /* ------------------------------- terminal ------------------------------- */
 
@@ -605,8 +752,14 @@ export type DiagnosticSeverity = z.infer<typeof diagnosticSeveritySchema>
  * Which producer owns a diagnostic. Grouping metadata only — everything lands
  * under one Monaco marker owner, so a single `setModelMarkers` call replaces
  * the complete set for a file.
+ *
+ * `lsp` covers every language server at once rather than one member per
+ * server. The member is for grouping in the UI, and "which of pyright, clangd
+ * and gopls said this" is already in the diagnostic's `code`; a member per
+ * server would make the enum grow with the server registry and force a schema
+ * change to support a language.
  */
-export const diagnosticSourceSchema = z.enum(['typescript', 'graph', 'bcc'])
+export const diagnosticSourceSchema = z.enum(['typescript', 'graph', 'bcc', 'lsp'])
 export type DiagnosticSource = z.infer<typeof diagnosticSourceSchema>
 
 export const diagnosticMessageSchema = z.strictObject({
@@ -1240,7 +1393,7 @@ export const compilerPassSchema = z.strictObject({
    * folded together because they are different events, and conflating them would
    * make the distinction unrecoverable.
    */
-  reason: z.enum(['index', 'cold', 'watch', 'buffer']),
+  reason: z.enum(['index', 'cold', 'watch', 'buffer', 'idle']),
   /**
    * The paths reported changed or removed — the edit that caused this pass.
    *

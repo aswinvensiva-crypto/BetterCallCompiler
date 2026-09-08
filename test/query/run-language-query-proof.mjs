@@ -30,9 +30,11 @@ import { fileURLToPath } from 'node:url'
  *      cannot open one that escapes the root.
  *   4. An overlay on the request changes the answer, and emits no pass.
  *   5. An interactive query issued while a check is running is answered, and
- *      the wait is printed rather than asserted — `port.on('message')`
- *      dispatches synchronously, so the answer genuinely queues behind the
- *      check unless something stops it.
+ *      the wait is printed rather than asserted. For a check large enough to
+ *      defer its tail (see check-ledger.ts), the query is answered without
+ *      waiting for the deferred part to finish — `scheduleDrain` yields to a
+ *      queued query between every background slice, unconditionally, not
+ *      only when the cancellation flag is raised.
  *   6. With the cancellation flag raised, that check STOPS: the interrupted
  *      pass reports `settled: false`, publishes only what it finished, and
  *      publishes NO empty diagnostic set for a file it never reached. That last
@@ -415,10 +417,17 @@ console.log(renamed.text)
       'utf8'
     )
 
-  // `port.on('message')` calls the worker's handler synchronously, so nothing
-  // is delivered while a check runs and a priority queue inside the worker
-  // would reorder nothing. This is the baseline: no flag raised, so the answer
-  // waits for the whole pass.
+  // `port.on('message')` calls the worker's handler synchronously within one
+  // pass — but a check this size (well above `SMALL_PASS_FILES`) is not one
+  // pass any more. Its tail is deferred into the ledger and drained as
+  // background `'idle'` passes, and `scheduleDrain` yields with `setImmediate`
+  // between every slice specifically so a queued interactive query is
+  // answered before the next slice starts. That yield is unconditional — it
+  // does not consult the cancellation flag — so for a pass this large the
+  // query is NOT expected to wait behind the whole thing even here, with no
+  // flag raised. (A pass small enough to stay under the threshold still runs
+  // as one synchronous block, and a query behind THAT genuinely queues — this
+  // fan-out is deliberately sized past the threshold to exercise deferral.)
   editLib('string')
   const patientOrder = recordOrder(worker)
   const uncancelledAt = Date.now()
@@ -428,9 +437,11 @@ console.log(renamed.text)
 
   check('it is answered rather than dropped', patient.locations.length > 0, true)
   // The ORDER, not the clock. A wall-time comparison on a check this size is
-  // measuring noise; what is structural is that without a flag the whole pass
-  // completes before the query is even dequeued.
-  check('the whole pass lands first', patientOrder.stop(), ['settled', 'answer'])
+  // measuring noise; what is structural is that the query is answered without
+  // waiting for the deferred tail to finish draining — `settled` (which now
+  // honestly reports only once the ledger is fully empty, see
+  // compiler-worker.ts) has not fired by the time the answer comes back.
+  check('the answer is not held behind the deferred tail', patientOrder.stop(), ['answer'])
   console.log(`      waited ${uncancelledMs} ms behind a ${FANOUT + 3}-file check`)
 
   /* --- 6. the same query, with the flag raised ---------------------------- */
