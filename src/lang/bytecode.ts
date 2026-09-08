@@ -112,6 +112,22 @@ export interface CompiledFunction {
   readonly arity: number
   /** Frame size. Every SSA value and every phi gets one. */
   readonly slots: number
+  /**
+   * The source name of each slot, where one survived.
+   *
+   * This is the locals view. Parameters keep their names, and so do variables
+   * that mem2reg turned into phi nodes — which is every variable assigned more
+   * than once, so every loop counter and accumulator.
+   *
+   * What does NOT survive is a variable assigned exactly once and then read:
+   * mem2reg promotes it to an ordinary SSA value and nothing carries the name
+   * past that point. `let mine = a * 10;` shows as `%4`. That is a real cost of
+   * optimising before running rather than an oversight — real toolchains pay it
+   * too and answer with debug info that survives optimisation, which this
+   * compiler does not have yet. Stating it here is better than a locals pane
+   * that silently omits half the variables.
+   */
+  readonly slotNames: readonly (string | null)[]
   readonly code: readonly Instr[]
   /** Whether the function returns a value the caller should keep. */
   readonly returnsValue: boolean
@@ -147,24 +163,37 @@ export class BytecodeError extends Error {
  * down keeps a frame the size of what the function actually uses, which is what
  * Part 10's locals view will page through.
  */
-function assignSlots(fn: IrFunction): Map<ValueId, number> {
-  const slots = new Map<ValueId, number>()
-  const take = (id: ValueId): void => {
-    if (!slots.has(id)) slots.set(id, slots.size)
+interface SlotTable {
+  readonly indices: Map<ValueId, number>
+  /** Parallel to the slot indices; null where no source name survived. */
+  readonly names: (string | null)[]
+}
+
+function assignSlots(fn: IrFunction): SlotTable {
+  const indices = new Map<ValueId, number>()
+  const names: (string | null)[] = []
+
+  const take = (id: ValueId, name: string | null): void => {
+    if (indices.has(id)) return
+    indices.set(id, indices.size)
+    names.push(name)
   }
 
   // Parameters first, and in order: the VM stores incoming arguments into
   // slots 0..n-1 without consulting this map, so the order is load-bearing.
-  for (const param of fn.params) take(param.value)
+  for (const param of fn.params) take(param.value, param.name)
 
   for (const block of fn.blocks) {
     for (const instruction of block.instructions) {
       const defined = definitionOf(instruction)
-      if (defined !== null) take(defined)
+      if (defined === null) continue
+      // A phi keeps the variable it came from, which is how a loop counter
+      // still has a name after mem2reg.
+      take(defined, instruction.op === 'phi' ? instruction.name : null)
     }
   }
 
-  return slots
+  return { indices, names }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -178,7 +207,7 @@ interface Patch {
 }
 
 export function compileFunction(fn: IrFunction): CompiledFunction {
-  const slots = assignSlots(fn)
+  const { indices: slots, names: slotNames } = assignSlots(fn)
   const code: Instr[] = []
   const patches: Patch[] = []
   const blockStart = new Map<BlockId, number>()
@@ -396,6 +425,7 @@ export function compileFunction(fn: IrFunction): CompiledFunction {
     name: fn.name,
     arity: fn.params.length,
     slots: slots.size,
+    slotNames,
     code,
     returnsValue: fn.returnType.kind !== 'unit',
     span: fn.span
