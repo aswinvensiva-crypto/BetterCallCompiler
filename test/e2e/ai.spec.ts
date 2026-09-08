@@ -228,6 +228,16 @@ test('the bridge exposes no way to read the Anthropic key', async () => {
     return { ai: Object.keys(bridge['ai'] ?? {}).sort(), secrets: Object.keys(bridge['secrets'] ?? {}).sort() }
   })
 
-  expect(surface.ai).toEqual(['apply', 'cancel', 'log', 'onDelta', 'onDone', 'revert', 'start'])
+  expect(surface.ai).toEqual([
+    'apply',
+    'cancel',
+    'ghostCompletion',
+    'log',
+    'onDelta',
+    'onDone',
+    'revert',
+    'start',
+    'usage'
+  ])
   expect(surface.secrets).toEqual(['clearKey', 'hasKey', 'setKey'])
 })
