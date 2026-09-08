@@ -38,13 +38,39 @@ export interface RunPlan {
   readonly reason: string | null
   /** Present for compiled languages; must succeed before `command` runs. */
   readonly compile: CompileStep | null
+  /**
+   * Extra environment for the spawn, or null for the inherited one.
+   *
+   * Exists for the bundled runtime below, which needs `ELECTRON_RUN_AS_NODE`
+   * to turn the app's own binary into a plain Node process.
+   */
+  readonly env: Readonly<Record<string, string>> | null
 }
 
 interface LanguageRecipe {
   /** Toolchain id this language wants, when it wants one. */
   readonly toolchainId: string
-  /** Bundled pack to fall back to, or null when none exists yet. */
+  /**
+   * Bundled pack to fall back to, or null when none exists yet.
+   *
+   * Two kinds share this field, told apart by whether the resulting plan has a
+   * `command`. A RENDERER pack (`web`) draws into the run panel and has none. A
+   * PROCESS pack (`node`) is spawned by main like any other run and has one.
+   * The distinction is what lets the renderer keep one branch: a plan with a
+   * command is something main is already streaming.
+   */
   readonly pack: string | null
+  /**
+   * Whether the bundled fallback runs out of process on the app's own Node.
+   *
+   * The renderer cannot execute workspace code — `script-src 'self'` forbids
+   * `eval` and `new Function`, and that invariant is what makes the preload
+   * boundary worth anything, so it is not negotiable. `web.ts` says as much and
+   * names an out-of-process runtime as the answer. This is it: Electron already
+   * bundles Node, so `ELECTRON_RUN_AS_NODE=1` on `process.execPath` is a real
+   * JavaScript runtime that ships with the app and needs nothing installed.
+   */
+  readonly bundledProcess: boolean
   /** Compiled languages produce an artefact first. */
   readonly compiled: boolean
   readonly humanName: string
@@ -55,14 +81,16 @@ interface LanguageRecipe {
 const RECIPES: Readonly<Record<string, LanguageRecipe>> = {
   javascript: {
     toolchainId: 'node',
-    pack: null,
+    pack: 'node',
+    bundledProcess: true,
     compiled: false,
     humanName: 'JavaScript',
     installHint: 'Install Node.js from nodejs.org to run JavaScript files.'
   },
   typescript: {
     toolchainId: 'node',
-    pack: null,
+    pack: 'node',
+    bundledProcess: true,
     compiled: false,
     humanName: 'TypeScript',
     installHint: 'Install Node.js 22.6 or newer from nodejs.org to run TypeScript files directly.'
@@ -70,6 +98,7 @@ const RECIPES: Readonly<Record<string, LanguageRecipe>> = {
   python: {
     toolchainId: 'python',
     pack: null,
+    bundledProcess: false,
     compiled: false,
     humanName: 'Python',
     installHint: 'Install Python from python.org to run Python files.'
@@ -77,6 +106,7 @@ const RECIPES: Readonly<Record<string, LanguageRecipe>> = {
   c: {
     toolchainId: 'gcc',
     pack: null,
+    bundledProcess: false,
     compiled: true,
     humanName: 'C',
     installHint: 'Install GCC (MSYS2, MinGW-w64 or Build Tools) to compile and run C files.'
@@ -84,6 +114,7 @@ const RECIPES: Readonly<Record<string, LanguageRecipe>> = {
   cpp: {
     toolchainId: 'g++',
     pack: null,
+    bundledProcess: false,
     compiled: true,
     humanName: 'C++',
     installHint: 'Install G++ (MSYS2, MinGW-w64 or Build Tools) to compile and run C++ files.'
@@ -91,6 +122,7 @@ const RECIPES: Readonly<Record<string, LanguageRecipe>> = {
   html: {
     toolchainId: 'html',
     pack: 'web',
+    bundledProcess: false,
     compiled: false,
     humanName: 'HTML',
     installHint: ''
@@ -118,7 +150,16 @@ export function planRun(
   languageId: string,
   filePath: string,
   workspaceRoot: string,
-  toolchains: readonly Toolchain[]
+  toolchains: readonly Toolchain[],
+  /**
+   * The app's own executable, which doubles as a Node runtime.
+   *
+   * Passed in rather than read from `process`, for the same reason the
+   * toolchain list is: this function stays pure and every branch — bundled
+   * available, bundled absent — is reachable from a test without touching the
+   * environment it happens to run in.
+   */
+  bundledNodePath: string | null = null
 ): RunPlan {
   const recipe = RECIPES[languageId]
 
@@ -130,7 +171,8 @@ export function planRun(
       args: [],
       pack: null,
       reason: `BetterCallCompiler cannot run .${extname(filePath).replace(/^\./, '') || 'this'} files yet.`,
-      compile: null
+      compile: null,
+      env: null
     }
   }
 
@@ -143,7 +185,8 @@ export function planRun(
       args: [],
       pack: recipe.pack,
       reason: 'Rendered by the bundled web runtime — no toolchain required.',
-      compile: null
+      compile: null,
+      env: null
     }
   }
 
@@ -158,7 +201,8 @@ export function planRun(
         args: [filePath],
         pack: null,
         reason: null,
-        compile: null
+        compile: null,
+        env: null
       }
     }
 
@@ -171,7 +215,8 @@ export function planRun(
       pack: null,
       reason: null,
       // -g keeps the diagnostics and any crash addresses meaningful.
-      compile: { command: toolchain.path, args: ['-g', filePath, '-o', outputPath], outputPath }
+      compile: { command: toolchain.path, args: ['-g', filePath, '-o', outputPath], outputPath },
+      env: null
     }
   }
 
@@ -182,7 +227,31 @@ export function planRun(
       ? `${recipe.humanName} is not on your PATH.`
       : (toolchain.guidance ?? `${recipe.humanName} is installed but not usable.`)
 
-  if (recipe.pack !== null) {
+  /*
+   * The bundled runtime that is a real process.
+   *
+   * Electron ships a Node, and `ELECTRON_RUN_AS_NODE` turns the app's own
+   * binary into it — so this is genuinely zero-install rather than a second
+   * name for "find Node on PATH". It is preferred over a renderer pack because
+   * it actually EXECUTES the file, which is what the user asked for.
+   */
+  if (recipe.bundledProcess && bundledNodePath !== null) {
+    return {
+      mode: 'bundled',
+      toolchainId: null,
+      command: bundledNodePath,
+      args: [filePath],
+      pack: recipe.pack,
+      reason: `${why} Running on the ${recipe.humanName} runtime bundled with BetterCallCompiler.`,
+      compile: null,
+      // Without this the app re-launches itself as an editor instead of
+      // running the file — a spectacular failure that is obvious the first
+      // time and impossible to guess from the symptom.
+      env: { ELECTRON_RUN_AS_NODE: '1' }
+    }
+  }
+
+  if (recipe.pack !== null && !recipe.bundledProcess) {
     return {
       mode: 'bundled',
       toolchainId: null,
@@ -190,7 +259,8 @@ export function planRun(
       args: [],
       pack: recipe.pack,
       reason: `${why} Falling back to the bundled ${recipe.humanName} runtime.`,
-      compile: null
+      compile: null,
+      env: null
     }
   }
 
@@ -201,7 +271,8 @@ export function planRun(
     args: [],
     pack: null,
     reason: `${why} BetterCallCompiler has no bundled ${recipe.humanName} runtime yet — ${recipe.installHint}`,
-    compile: null
+    compile: null,
+    env: null
   }
 }
 
@@ -258,12 +329,18 @@ function runProcess(
   run: ActiveRun,
   command: string,
   args: readonly string[],
-  cwd: string
+  cwd: string,
+  extraEnv: Readonly<Record<string, string>> | null = null
 ): Promise<number | null> {
   return new Promise((resolve) => {
     let child: ChildProcess
     try {
-      child = spawnExecutable(command, args, { cwd })
+      child = spawnExecutable(command, args, {
+        cwd,
+        // Merged onto the inherited environment rather than replacing it: the
+        // debuggee still needs PATH, HOME and the rest to behave normally.
+        env: extraEnv === null ? undefined : { ...process.env, ...extraEnv }
+      })
     } catch (error) {
       write(run, 'stderr', `${error instanceof Error ? error.message : 'could not start'}\r\n`)
       resolve(null)
@@ -310,7 +387,7 @@ export async function startRun(requestedPath: string, languageId: string): Promi
 
   const filePath = await confinePath(workspaceRoot, requestedPath)
   const toolchains = await listToolchains()
-  const plan = planRun(languageId, filePath, workspaceRoot, toolchains)
+  const plan = planRun(languageId, filePath, workspaceRoot, toolchains, process.execPath)
 
   const runId = `run-${++sequence}`
   const relativePath = relative(workspaceRoot, filePath).split(sep).join('/')
@@ -328,14 +405,22 @@ export async function startRun(requestedPath: string, languageId: string): Promi
     reason: plan.reason
   }
 
-  // Bundled and unsupported runs have nothing to spawn. The renderer owns what
-  // happens next; main's job was the decision.
-  if (plan.mode !== 'real' || plan.command === null) return started
+  /*
+   * Whether there is a COMMAND decides who carries the plan out, not the mode.
+   *
+   * A bundled runtime that is a real process — JavaScript on the Node inside
+   * this app — is spawned and streamed here exactly like a toolchain run. Only
+   * a plan with nothing to spawn goes to the renderer, which is the renderer
+   * packs and the unsupported case. Keying on the mode instead would send the
+   * bundled Node run to a renderer pack that does not exist.
+   */
+  if (plan.command === null) return started
 
   // Pulled out of `plan` before the closure: TypeScript discards narrowing on a
   // property access once it is read inside a nested function.
   const command = plan.command
   const compile = plan.compile
+  const env = plan.env
 
   const run: ActiveRun = { runId, startedAt: Date.now(), child: null, cancelled: false, finished: false }
   active.set(runId, run)
@@ -361,7 +446,7 @@ export async function startRun(requestedPath: string, languageId: string): Promi
         }
       }
 
-      const code = await runProcess(run, command, plan.args, workspaceRoot)
+      const code = await runProcess(run, command, plan.args, workspaceRoot, env)
       finish(run, code)
     } catch (error) {
       write(run, 'stderr', `${error instanceof Error ? error.message : 'run failed'}\r\n`)
