@@ -316,7 +316,13 @@ export async function runFile(node: FileNode): Promise<void> {
   renderBanner(run)
   scheduleWrite(`\x1b[2m${run.relativePath}\x1b[0m\r\n`)
 
-  if (run.mode === 'real') {
+  /*
+   * A run with a COMMAND is one main is already spawning and streaming, whether
+   * it found the toolchain on PATH or fell back to the runtime bundled with the
+   * app. Keying on the mode instead would send a bundled Node run looking for a
+   * renderer pack that does not exist.
+   */
+  if (run.command !== null) {
     // Output arrives as events; the exit handler clears the busy state. Adopting
     // rather than assigning drains anything that beat this response back.
     adoptRun(run.runId)

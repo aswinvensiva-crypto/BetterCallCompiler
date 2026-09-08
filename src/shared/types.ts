@@ -529,8 +529,14 @@ export type DiagnosticSeverity = z.infer<typeof diagnosticSeveritySchema>
  * Which producer owns a diagnostic. Grouping metadata only — everything lands
  * under one Monaco marker owner, so a single `setModelMarkers` call replaces
  * the complete set for a file.
+ *
+ * `lsp` covers every language server at once rather than one member per
+ * server. The member is for grouping in the UI, and "which of pyright, clangd
+ * and gopls said this" is already in the diagnostic's `code`; a member per
+ * server would make the enum grow with the server registry and force a schema
+ * change to support a language.
  */
-export const diagnosticSourceSchema = z.enum(['typescript', 'graph', 'bcc'])
+export const diagnosticSourceSchema = z.enum(['typescript', 'graph', 'bcc', 'lsp'])
 export type DiagnosticSource = z.infer<typeof diagnosticSourceSchema>
 
 export const diagnosticMessageSchema = z.strictObject({

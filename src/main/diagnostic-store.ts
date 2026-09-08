@@ -27,7 +27,7 @@ import type { FileDiagnostics } from '../shared/types'
  * entry owns it, and only they can clear it.
  */
 
-export type DiagnosticOwner = 'typescript' | 'bcc'
+export type DiagnosticOwner = 'typescript' | 'bcc' | 'lsp'
 
 interface Entry {
   readonly owner: DiagnosticOwner
