@@ -102,8 +102,26 @@ import {
 import { clearInsightsCache, fetchInsights } from './github-service'
 import { clearSecret, hasSecret, isEncryptionAvailable, setSecret } from './secrets'
 import { loadSettings, saveSettings } from './settings'
-import { cancelAiStream, startAiStream } from './ai-service'
-import { applyAiEdit, readAiLog, revertAiEdit } from './ai-log'
+import {
+  cancelAiStream,
+  getAiUsageTotals,
+  requestGhostCompletion,
+  startAgentStream,
+  startAiStream
+} from './ai-service'
+import { startWalkthrough } from './walkthrough-service'
+import {
+  buildSemanticIndex,
+  getSemanticIndexStatus,
+  querySemanticIndex
+} from './semantic-index'
+import {
+  applyAgentBatch,
+  applyAiEdit,
+  readAiLog,
+  revertAgentBatch,
+  revertAiEdit
+} from './ai-log'
 import {
   closeVisualizerWindow,
   getVisualizerHostWindow,
@@ -335,6 +353,36 @@ export function createHandlerMap(): HandlerMap {
     'ai:revert': async (request) => ({ entry: await revertAiEdit(request.id) }),
 
     'ai:log': async () => ({ entries: await readAiLog() }),
+
+    'ai:usage': async () => ({ totals: getAiUsageTotals() }),
+
+    'ai:ghostCompletion': async (request) => ({
+      text: await requestGhostCompletion(request)
+    }),
+
+    'agent:start': async (request) => ({
+      started: await startAgentStream(request.context)
+    }),
+
+    'agent:apply': async (request) => ({
+      entries: await applyAgentBatch(request)
+    }),
+
+    'agent:revert': async (request) => ({
+      entries: await revertAgentBatch(request.batchId)
+    }),
+
+    'walkthrough:start': async (request) => ({
+      started: await startWalkthrough(request)
+    }),
+
+    'index:build': async () => ({ status: await buildSemanticIndex() }),
+
+    'index:status': async () => ({ status: await getSemanticIndexStatus() }),
+
+    'index:query': async (request) => ({
+      matches: await querySemanticIndex(request.instruction, request.limit)
+    }),
 
     // The sender is the parent for *positioning only* — the same way
     // `fs:openFolder` hands the dialog a window to sit over. Passing it as

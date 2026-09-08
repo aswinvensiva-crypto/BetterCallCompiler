@@ -13,6 +13,9 @@ import { settingsSchema, type Settings } from '../shared/types'
 
 const DEFAULTS: Settings = {
   aiModel: 'claude-sonnet-5',
+  aiProvider: 'anthropic',
+  ollamaModel: 'llama3.1',
+  ollamaHost: 'http://localhost:11434',
   githubUser: '',
   telemetry: false,
   /**

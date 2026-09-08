@@ -3,6 +3,7 @@ import {
   type ExplainArtifactDetail
 } from '../editor/ai-actions'
 import { openFile, revealLocation } from '../editor/models'
+import { OPEN_ARTIFACT_EVENT, type OpenArtifactDetail } from '../workbench/artifact-events'
 import { notify, notifyError } from '../workbench/notifications'
 import { parseAnchors, titleForExplanation } from '../../shared/artifact-format'
 import type {
@@ -562,6 +563,14 @@ function bindEvents(): void {
     const detail = (event as CustomEvent<ExplainArtifactDetail>).detail
     activate?.()
     void startExplain(detail.context, null, null, null)
+  })
+
+  // Fired by `agent.ts` once a walkthrough it generated has been stored —
+  // this panel is what displays it, but the agent panel is what created it.
+  document.addEventListener(OPEN_ARTIFACT_EVENT, (event) => {
+    const detail = (event as CustomEvent<OpenArtifactDetail>).detail
+    activate?.()
+    void show(detail.artifactId)
   })
 }
 

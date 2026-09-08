@@ -1,4 +1,4 @@
-import type { Toolchain } from '../../shared/types'
+import type { AiUsageTotals, Toolchain } from '../../shared/types'
 import { notify, notifyError } from './notifications'
 
 /**
@@ -184,6 +184,35 @@ async function loadToolchains(): Promise<void> {
   renderIndicator()
 }
 
+/* ------------------------------ AI spend ---------------------------------- */
+
+let usageItem: HTMLSpanElement | null = null
+
+function formatCost(costUsd: number): string {
+  if (costUsd === 0) return '$0.00'
+  if (costUsd < 0.01) return '<$0.01'
+  return `$${costUsd.toFixed(2)}`
+}
+
+function renderUsage(totals: AiUsageTotals): void {
+  if (usageItem === null) return
+  if (totals.requests === 0) {
+    usageItem.hidden = true
+    return
+  }
+  usageItem.hidden = false
+  const tokens = totals.inputTokens + totals.outputTokens
+  usageItem.textContent = `AI: ${tokens.toLocaleString()} tok · ${formatCost(totals.costUsd)}`
+  usageItem.title =
+    `${totals.requests} request(s) this session · ` +
+    `${totals.inputTokens.toLocaleString()} in / ${totals.outputTokens.toLocaleString()} out`
+}
+
+async function refreshUsage(): Promise<void> {
+  const result = await window.betterCallCompiler.ai.usage({})
+  if (result.ok) renderUsage(result.value.totals)
+}
+
 /* -------------------------- Visualizer foothold -------------------------- */
 
 export interface VisualizerStatus {
@@ -275,6 +304,10 @@ export function mountStatusBar(statusBar: HTMLElement): StatusBarHandle {
   })
   host.append(indicator)
 
+  usageItem = el('span', 'status-bar__item')
+  usageItem.hidden = true
+  host.append(usageItem)
+
   const build = el('span', 'status-bar__item', 'BetterCallCompiler')
   host.append(build)
 
@@ -285,6 +318,15 @@ export function mountStatusBar(statusBar: HTMLElement): StatusBarHandle {
 
   // Probing spawns six processes; let the window paint first.
   void loadToolchains()
+
+  // Every stream — explain, find-bugs, improve, an artifact — ends on the same
+  // `ai:done` event, so one listener here keeps the counter live without the
+  // AI panel or the Artifacts view having to know the status bar exists.
+  window.betterCallCompiler.ai.onDone((payload) => {
+    if (payload.usage === null) return
+    void refreshUsage()
+  })
+  void refreshUsage()
 
   return {
     setBridge: (text, state) => {

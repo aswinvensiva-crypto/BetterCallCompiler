@@ -5,16 +5,27 @@ import { join } from 'node:path'
 import {
   buildPrompt,
   describeAiError,
+  estimateCostUsd,
   extractCodeBlock,
+  getAiUsageTotals,
   hashPrompt,
   renderContext,
+  requestGhostCompletion,
+  resetAiUsageForTests,
   setAiProvider,
   startAiStream,
   cancelAiStream,
   setAiEmitters,
   type AiProvider
 } from '../../src/main/ai-service'
-import { applyAiEdit, readAiLog, resetAiLogForTests, revertAiEdit } from '../../src/main/ai-log'
+import {
+  applyAgentBatch,
+  applyAiEdit,
+  readAiLog,
+  resetAiLogForTests,
+  revertAgentBatch,
+  revertAiEdit
+} from '../../src/main/ai-log'
 import { resetForTests, setWorkspace } from '../../src/main/fs-service'
 import {
   extractCodeBlock as extractInRenderer,
@@ -311,8 +322,12 @@ describe('streaming', () => {
     )
   })
 
-  function stubProvider(behaviour: (request: Parameters<AiProvider['stream']>[0]) => Promise<{ stopReason: string | null }>): void {
-    setAiProvider({ id: 'stub', stream: behaviour })
+  function stubProvider(
+    behaviour: (
+      request: Parameters<AiProvider['stream']>[0]
+    ) => Promise<{ stopReason: string | null; usage?: { inputTokens: number; outputTokens: number } | null }>
+  ): void {
+    setAiProvider({ id: 'stub', stream: behaviour as AiProvider['stream'] })
   }
 
   it('reports the prompt and context before any token arrives', async () => {
@@ -372,6 +387,149 @@ describe('streaming', () => {
 
   it('reports nothing to cancel for an unknown stream', () => {
     expect(cancelAiStream('ai-does-not-exist')).toBe(false)
+  })
+
+  it('carries usage through to the done event and the session total', async () => {
+    resetAiUsageForTests()
+    stubProvider(async () => ({
+      stopReason: 'end_turn',
+      usage: { inputTokens: 1000, outputTokens: 500 }
+    }))
+
+    await startAiStream('explain', CONTEXT)
+    await new Promise((resolve) => setTimeout(resolve, 10))
+
+    expect(dones[0]?.usage).toEqual({
+      inputTokens: 1000,
+      outputTokens: 500,
+      costUsd: estimateCostUsd('claude-sonnet-5', 1000, 500)
+    })
+
+    const totals = getAiUsageTotals()
+    expect(totals.requests).toBe(1)
+    expect(totals.inputTokens).toBe(1000)
+    expect(totals.outputTokens).toBe(500)
+  })
+
+  it('reports no usage for a cancelled or failed stream, and does not add to the total', async () => {
+    resetAiUsageForTests()
+    stubProvider(async () => {
+      throw new Error('boom')
+    })
+
+    await startAiStream('explain', CONTEXT)
+    await new Promise((resolve) => setTimeout(resolve, 10))
+
+    expect(dones[0]?.usage).toBeNull()
+    expect(getAiUsageTotals().requests).toBe(0)
+  })
+})
+
+/* ------------------------------------------------------------------ *
+ * Token & cost accounting
+ * ------------------------------------------------------------------ */
+
+describe('estimateCostUsd', () => {
+  it('prices by model family, input and output at different rates', () => {
+    const sonnetCost = estimateCostUsd('claude-sonnet-5', 1_000_000, 1_000_000)
+    expect(sonnetCost).toBeCloseTo(3 + 15, 5)
+
+    const haikuCost = estimateCostUsd('claude-haiku-4-5-20251001', 1_000_000, 1_000_000)
+    expect(haikuCost).toBeCloseTo(0.8 + 4, 5)
+
+    expect(haikuCost).toBeLessThan(sonnetCost)
+  })
+
+  it('matches a dated model snapshot by prefix', () => {
+    const dated = estimateCostUsd('claude-opus-4-20250514', 1_000_000, 0)
+    expect(dated).toBeCloseTo(15, 5)
+  })
+
+  it('is free for a local Ollama model', () => {
+    expect(estimateCostUsd('ollama:llama3.1', 1_000_000, 1_000_000)).toBe(0)
+  })
+
+  it('is zero for zero tokens', () => {
+    expect(estimateCostUsd('claude-sonnet-5', 0, 0)).toBe(0)
+  })
+})
+
+/* ------------------------------------------------------------------ *
+ * Ghost text
+ * ------------------------------------------------------------------ */
+
+describe('requestGhostCompletion', () => {
+  afterEach(() => {
+    setAiProvider(null)
+  })
+
+  it('returns the trimmed suggestion', async () => {
+    setAiProvider({
+      id: 'stub',
+      stream: async (request) => {
+        request.onText('  return a + b;  ')
+        return { stopReason: 'end_turn', usage: null }
+      }
+    })
+
+    const text = await requestGhostCompletion({ languageId: 'typescript', prefix: 'function f() {', suffix: '}' })
+    expect(text).toBe('return a + b;')
+  })
+
+  it('returns null when the model has nothing to add', async () => {
+    setAiProvider({ id: 'stub', stream: async () => ({ stopReason: 'end_turn', usage: null }) })
+
+    const text = await requestGhostCompletion({ languageId: 'typescript', prefix: '', suffix: '' })
+    expect(text).toBeNull()
+  })
+
+  it('returns null rather than throwing on a provider failure', async () => {
+    setAiProvider({
+      id: 'stub',
+      stream: async () => {
+        throw new Error('no key configured')
+      }
+    })
+
+    const text = await requestGhostCompletion({ languageId: 'typescript', prefix: '', suffix: '' })
+    expect(text).toBeNull()
+  })
+
+  it('aborts the previous request when a new one supersedes it', async () => {
+    let releaseFirstStarted: () => void = () => {}
+    const firstStarted = new Promise<void>((resolve) => {
+      releaseFirstStarted = resolve
+    })
+    let firstAborted = false
+    let calls = 0
+
+    setAiProvider({
+      id: 'stub',
+      stream: async (request) => {
+        calls += 1
+        if (calls === 1) {
+          releaseFirstStarted()
+          return new Promise((_resolve, reject) => {
+            request.signal.addEventListener('abort', () => {
+              firstAborted = true
+              reject(new Error('aborted'))
+            })
+          })
+        }
+        return { stopReason: 'end_turn', usage: null }
+      }
+    })
+
+    const first = requestGhostCompletion({ languageId: 'typescript', prefix: 'a', suffix: '' })
+    // Only issue the second request once the first has actually reached the
+    // provider and attached its abort listener — the same ordering a real
+    // keystroke gets from network latency, without depending on it.
+    await firstStarted
+    const second = requestGhostCompletion({ languageId: 'typescript', prefix: 'b', suffix: '' })
+
+    const [firstResult] = await Promise.all([first, second])
+    expect(firstResult).toBeNull()
+    expect(firstAborted).toBe(true)
   })
 })
 
@@ -521,12 +679,164 @@ describe('the AI edit journal', () => {
 })
 
 /* ------------------------------------------------------------------ *
+ * Multi-file agent batches
+ * ------------------------------------------------------------------ */
+
+describe('multi-file agent batches', () => {
+  let workspace = ''
+
+  beforeEach(async () => {
+    workspace = await mkdtemp(join(tmpdir(), 'bettercallcompiler-agentbatch-'))
+    await setWorkspace(workspace)
+    resetAiLogForTests()
+  })
+
+  afterEach(async () => {
+    await resetForTests()
+    if (workspace !== '') await rm(workspace, { recursive: true, force: true })
+  })
+
+  async function seed(name: string, content: string): Promise<void> {
+    await mkdir(join(workspace), { recursive: true })
+    await writeFile(join(workspace, name), content, 'utf8')
+  }
+
+  it('writes every file in the batch, tagged with the same batchId', async () => {
+    await seed('a.ts', 'old a')
+    await seed('b.ts', 'old b')
+
+    const entries = await applyAgentBatch({
+      batchId: 'batch-1',
+      edits: [
+        { path: 'a.ts', content: 'new a' },
+        { path: 'b.ts', content: 'new b' }
+      ],
+      model: 'claude-sonnet-5',
+      promptHash: 'h'
+    })
+
+    expect(entries).toHaveLength(2)
+    expect(entries.every((entry) => entry.batchId === 'batch-1')).toBe(true)
+    expect(entries.every((entry) => entry.mode === 'agent')).toBe(true)
+    expect(await readFile(join(workspace, 'a.ts'), 'utf8')).toBe('new a')
+    expect(await readFile(join(workspace, 'b.ts'), 'utf8')).toBe('new b')
+  })
+
+  it('refuses an empty batch', async () => {
+    await expect(
+      applyAgentBatch({ batchId: 'empty', edits: [], model: 'm', promptHash: 'h' })
+    ).rejects.toThrow(/at least one file/)
+  })
+
+  it('fails the whole batch before writing anything if one file cannot be read', async () => {
+    await seed('a.ts', 'old a')
+    // b.ts does not exist.
+
+    await expect(
+      applyAgentBatch({
+        batchId: 'batch-2',
+        edits: [
+          { path: 'a.ts', content: 'new a' },
+          { path: 'b.ts', content: 'new b' }
+        ],
+        model: 'm',
+        promptHash: 'h'
+      })
+    ).rejects.toThrow(/cannot read/)
+
+    // a.ts must be untouched: the read pass happens before any write.
+    expect(await readFile(join(workspace, 'a.ts'), 'utf8')).toBe('old a')
+  })
+
+  it('refuses to write outside the workspace', async () => {
+    await seed('a.ts', 'old a')
+    await expect(
+      applyAgentBatch({
+        batchId: 'batch-3',
+        edits: [{ path: '../escape.ts', content: 'x' }],
+        model: 'm',
+        promptHash: 'h'
+      })
+    ).rejects.toThrow()
+  })
+
+  it('reverts every file in the batch back to its snapshot in one call', async () => {
+    await seed('a.ts', 'old a')
+    await seed('b.ts', 'old b')
+
+    await applyAgentBatch({
+      batchId: 'batch-4',
+      edits: [
+        { path: 'a.ts', content: 'new a' },
+        { path: 'b.ts', content: 'new b' }
+      ],
+      model: 'm',
+      promptHash: 'h'
+    })
+
+    const reverts = await revertAgentBatch('batch-4')
+    expect(reverts).toHaveLength(2)
+    expect(reverts.every((entry) => entry.applied === false)).toBe(true)
+    expect(await readFile(join(workspace, 'a.ts'), 'utf8')).toBe('old a')
+    expect(await readFile(join(workspace, 'b.ts'), 'utf8')).toBe('old b')
+  })
+
+  it('reverts only what a file-level revert left standing, when part of a batch was already reverted', async () => {
+    await seed('a.ts', 'old a')
+    await seed('b.ts', 'old b')
+
+    const applied = await applyAgentBatch({
+      batchId: 'batch-5',
+      edits: [
+        { path: 'a.ts', content: 'new a' },
+        { path: 'b.ts', content: 'new b' }
+      ],
+      model: 'm',
+      promptHash: 'h'
+    })
+
+    const first = applied.find((entry) => entry.file === 'a.ts')
+    expect(first).toBeDefined()
+    await revertAiEdit(first?.id ?? '')
+
+    const reverts = await revertAgentBatch('batch-5')
+    expect(reverts).toHaveLength(1)
+    expect(reverts[0]?.file).toBe('b.ts')
+  })
+
+  it('refuses to revert an unknown batch', async () => {
+    await expect(revertAgentBatch('does-not-exist')).rejects.toThrow(/no applied edits/)
+  })
+
+  it('refuses to revert a batch twice', async () => {
+    await seed('a.ts', 'old a')
+    await applyAgentBatch({
+      batchId: 'batch-6',
+      edits: [{ path: 'a.ts', content: 'new a' }],
+      model: 'm',
+      promptHash: 'h'
+    })
+
+    await revertAgentBatch('batch-6')
+    await expect(revertAgentBatch('batch-6')).rejects.toThrow(/already reverted/)
+  })
+})
+
+/* ------------------------------------------------------------------ *
  * The boundary
  * ------------------------------------------------------------------ */
 
 describe('the AI channel surface', () => {
   it('declares exactly the AI channels, and no way to read the key', () => {
     const ai = INVOKE_CHANNEL_NAMES.filter((channel) => channel.startsWith('ai:')).sort()
-    expect(ai).toEqual(['ai:apply', 'ai:cancel', 'ai:log', 'ai:revert', 'ai:start'])
+    expect(ai).toEqual([
+      'ai:apply',
+      'ai:cancel',
+      'ai:ghostCompletion',
+      'ai:log',
+      'ai:revert',
+      'ai:start',
+      'ai:usage'
+    ])
   })
 })

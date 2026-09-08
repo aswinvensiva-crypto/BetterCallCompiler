@@ -2210,6 +2210,115 @@ body.workbench--resizing-y * {
   font-size: var(--bcc-font-size-sm);
 }
 
+/* ---------- agent (multi-file) ---------- */
+
+.agent-composer {
+  padding: 8px 12px;
+}
+
+.agent-files {
+  margin: 8px 0;
+}
+
+.agent-files__list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 160px;
+  overflow: auto;
+  border: 1px solid var(--bcc-border);
+  border-radius: var(--bcc-radius);
+  padding: 4px;
+}
+
+.agent-files__row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 4px;
+  cursor: pointer;
+  border-radius: var(--bcc-radius);
+}
+
+.agent-files__row:hover {
+  background: var(--bcc-bg-hover);
+}
+
+.agent-files__path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--bcc-font-mono);
+  font-size: var(--bcc-font-size-sm);
+  color: var(--bcc-fg-muted);
+}
+
+.agent-instruction {
+  width: 100%;
+  margin: 8px 0;
+  padding: 8px 9px;
+  border: 1px solid var(--bcc-border);
+  border-radius: var(--bcc-radius);
+  background: var(--bcc-bg-inset);
+  color: var(--bcc-fg);
+  font-family: inherit;
+  font-size: var(--bcc-font-size-sm);
+  resize: vertical;
+}
+
+.agent-plan {
+  margin: 10px 12px 0;
+}
+
+.agent-plan__summary {
+  margin: 0 0 10px;
+  font-size: var(--bcc-font-size-sm);
+  color: var(--bcc-fg-muted);
+  white-space: pre-wrap;
+}
+
+.agent-plan__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--bcc-border);
+}
+
+.agent-plan__path {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: var(--bcc-font-mono);
+  font-size: var(--bcc-font-size-sm);
+  color: var(--bcc-fg);
+}
+
+.agent-index {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--bcc-border);
+}
+
+.agent-index__status {
+  margin-bottom: 6px;
+}
+
+.agent-index__hint {
+  font-size: var(--bcc-font-size-sm);
+  color: var(--bcc-fg-subtle);
+}
+
+.agent-index__actions {
+  display: flex;
+  gap: 6px;
+}
+
+.agent-walkthrough {
+  margin-top: 8px;
+}
+
 /* ---------- quick pick (Ctrl+P, Ctrl+Shift+P) ---------- */
 
 .quick-pick-overlay {

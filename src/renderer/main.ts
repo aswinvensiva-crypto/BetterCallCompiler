@@ -33,6 +33,7 @@ import { clearDiffSelection, mountScm, onScmShown } from './views/scm'
 import { mountInsights, onInsightsShown } from './views/insights'
 import { mountSettings, onSettingsShown } from './views/settings'
 import { listenForAiActions, mountAi, onAiShown } from './views/ai'
+import { mountAgent, onAgentShown } from './views/agent'
 import { registerAiActions } from './editor/ai-actions'
 import { applyDiagnostics, clearAllMarkers } from './editor/markers'
 import {
@@ -653,6 +654,7 @@ async function mountSideBarViews(): Promise<void> {
   registerSideBarView({ id: 'insights', mount: mountInsights, onShow: onInsightsShown })
   registerSideBarView({ id: 'settings', mount: mountSettings, onShow: onSettingsShown })
   registerSideBarView({ id: 'ai', mount: mountAi, onShow: onAiShown })
+  registerSideBarView({ id: 'agent', mount: mountAgent, onShow: onAgentShown })
   registerSideBarView({ id: 'assist', mount: mountAssist, onShow: onAssistShown })
   registerSideBarView({ id: 'artifacts', mount: mountArtifacts, onShow: onArtifactsShown })
 
@@ -731,6 +733,7 @@ function registerWorkbenchCommands(): void {
     { id: 'view.scm', title: 'View: Source Control', run: showView('scm') },
     { id: 'view.insights', title: 'View: Insights', run: showView('insights') },
     { id: 'view.ai', title: 'View: Assistant', run: showView('ai') },
+    { id: 'view.agent', title: 'View: Agent (multi-file)', run: showView('agent') },
     // Both of these were unreachable from the palette until now — registered
     // in the activity bar and nowhere else, which meant the only way to open
     // them was to know which icon they are.

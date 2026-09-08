@@ -141,8 +141,17 @@ export const workbenchLayoutSchema = z.strictObject({
 })
 export type WorkbenchLayout = z.infer<typeof workbenchLayoutSchema>
 
+export const aiProviderIdSchema = z.enum(['anthropic', 'ollama'])
+export type AiProviderId = z.infer<typeof aiProviderIdSchema>
+
 export const settingsSchema = z.strictObject({
   aiModel: z.string().min(1),
+  /** Which backend serves the three AI actions — cloud Claude, or a local Ollama. */
+  aiProvider: aiProviderIdSchema,
+  /** Model name Ollama should run, e.g. `llama3.1`, `deepseek-coder-v2`, `qwen2.5-coder`. */
+  ollamaModel: z.string(),
+  /** Almost always the default; overridable for a remote or non-standard Ollama host. */
+  ollamaHost: z.string(),
   /** Whose contribution calendar to show when no token names one. */
   githubUser: z.string(),
   telemetry: z.boolean(),
@@ -341,8 +350,40 @@ export type GithubInsights = z.infer<typeof githubInsightsSchema>
 
 /* ----------------------------------- ai ---------------------------------- */
 
-export const aiModeSchema = z.enum(['explain', 'find-bugs', 'improve'])
+/**
+ * `agent` is the multi-file mode: given a plain-language instruction and a
+ * handful of files for context, the model proposes edits across all of them
+ * as one batch. The other three stay selection-scoped, one file at a time.
+ */
+export const aiModeSchema = z.enum(['explain', 'find-bugs', 'improve', 'agent'])
 export type AiMode = z.infer<typeof aiModeSchema>
+
+/** One file offered as context for a multi-file agent request. */
+export const agentFileSchema = z.strictObject({
+  path: z.string().min(1),
+  content: z.string()
+})
+export type AgentFile = z.infer<typeof agentFileSchema>
+
+/**
+ * What the multi-file agent is told: an instruction plus the files it is
+ * allowed to reason about and rewrite. Capped rather than unbounded — the
+ * renderer attaches open tabs and the files the instruction names, not a
+ * repository-wide scan; that scan is `Codebase Semantic Indexing`, a separate
+ * and much larger piece of work.
+ */
+export const agentContextSchema = z.strictObject({
+  instruction: z.string().min(1),
+  files: z.array(agentFileSchema).min(1).max(20)
+})
+export type AgentContext = z.infer<typeof agentContextSchema>
+
+/** One proposed file in a parsed agent plan, before the user accepts or rejects it. */
+export const agentFileEditSchema = z.strictObject({
+  path: z.string().min(1),
+  content: z.string()
+})
+export type AgentFileEdit = z.infer<typeof agentFileEditSchema>
 
 export const aiSelectionSchema = z.strictObject({
   text: z.string(),
@@ -389,12 +430,37 @@ export const aiStreamDeltaSchema = z.strictObject({
 })
 export type AiStreamDelta = z.infer<typeof aiStreamDeltaSchema>
 
+/**
+ * Token counts and an estimated dollar cost for one request.
+ *
+ * `costUsd` is an estimate, not a bill: it is `tokens * a static per-model
+ * rate table`, so a rate the provider changes without our knowledge makes
+ * this stale, not wrong in a way anything downstream needs to defend against.
+ */
+export const aiUsageSchema = z.strictObject({
+  inputTokens: z.number().int().nonnegative(),
+  outputTokens: z.number().int().nonnegative(),
+  costUsd: z.number().nonnegative()
+})
+export type AiUsage = z.infer<typeof aiUsageSchema>
+
+/** Running total across the session, reset only when the app restarts. */
+export const aiUsageTotalsSchema = z.strictObject({
+  requests: z.number().int().nonnegative(),
+  inputTokens: z.number().int().nonnegative(),
+  outputTokens: z.number().int().nonnegative(),
+  costUsd: z.number().nonnegative()
+})
+export type AiUsageTotals = z.infer<typeof aiUsageTotalsSchema>
+
 export const aiDoneSchema = z.strictObject({
   streamId: z.string(),
   stopReason: z.string().nullable(),
   /** Human-readable; already mapped from 401/429/network by the service. */
   error: z.string().nullable(),
-  cancelled: z.boolean()
+  cancelled: z.boolean(),
+  /** Null when the provider reported no usage (a cancelled or failed stream). */
+  usage: aiUsageSchema.nullable()
 })
 export type AiDone = z.infer<typeof aiDoneSchema>
 
@@ -415,7 +481,17 @@ export const aiLogEntrySchema = z.strictObject({
   file: z.string(),
   range: z.string(),
   applied: z.boolean(),
-  revertOf: z.string().nullable()
+  revertOf: z.string().nullable(),
+  /**
+   * Groups the several entries a single multi-file agent apply writes, so a
+   * revert can undo the whole batch as one unit rather than file by file.
+   * Null for every single-file edit — Explain, Find bugs and Improve never
+   * set it. `.default(null)` rather than a bare `.nullable()` so a log line
+   * written before this field existed still parses: `readAiLog` drops any
+   * line that fails validation, and a missing key is not the same failure as
+   * a wrong one.
+   */
+  batchId: z.string().nullable().default(null)
 })
 export type AiLogEntry = z.infer<typeof aiLogEntrySchema>
 
@@ -1211,6 +1287,40 @@ export const artifactSummarySchema = z.strictObject({
   supersedes: z.string().nullable()
 })
 export type ArtifactSummary = z.infer<typeof artifactSummarySchema>
+
+/* ------------------------------ walkthrough ------------------------------- */
+
+export const walkthroughFileChangeSchema = z.strictObject({
+  path: z.string().min(1),
+  before: z.string(),
+  after: z.string()
+})
+export type WalkthroughFileChange = z.infer<typeof walkthroughFileChangeSchema>
+
+export const walkthroughRequestSchema = z.strictObject({
+  instruction: z.string().min(1),
+  files: z.array(walkthroughFileChangeSchema).min(1).max(20)
+})
+export type WalkthroughRequest = z.infer<typeof walkthroughRequestSchema>
+
+/* --------------------------- semantic index -------------------------------- */
+
+export const semanticMatchSchema = z.strictObject({
+  path: z.string(),
+  startLine: z.number().int().positive(),
+  endLine: z.number().int().positive(),
+  preview: z.string(),
+  score: z.number()
+})
+export type SemanticMatch = z.infer<typeof semanticMatchSchema>
+
+export const semanticIndexStatusSchema = z.strictObject({
+  built: z.boolean(),
+  builtAt: z.string().nullable(),
+  fileCount: z.number().int().nonnegative(),
+  chunkCount: z.number().int().nonnegative()
+})
+export type SemanticIndexStatus = z.infer<typeof semanticIndexStatusSchema>
 
 /* --------------------------- compiler intelligence ------------------------ */
 

@@ -23,6 +23,7 @@
     "test:lang": "node test/lang/run-lang-proof.mjs",
     "test:vm": "node test/lang/run-vm-proof.mjs",
     "test:gc": "node test/gc/run-gc-control.mjs",
+    "test:eval": "node test/eval/run-agent-eval.mjs",
     "rebuild": "electron-rebuild",
     "build:win": "npm run build && electron-builder --win --config electron-builder.yml",
     "build:unpacked": "npm run build && electron-builder --win --dir --config electron-builder.yml"
