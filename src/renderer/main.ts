@@ -10,10 +10,24 @@ import type * as monacoNs from 'monaco-editor'
 import type { BetterCallCompilerApi } from '../shared/ipc-contract'
 import type { FileNode, WorkbenchLayout } from '../shared/types'
 import { mountExplorer, OPEN_FILE_EVENT } from './views/explorer'
-import { createEditor } from './editor/monaco-setup'
+import { createEditor, monacoRuntime } from './editor/monaco-setup'
 import { attachEditor, activeDocument, openFile, reloadFromDisk, saveActive } from './editor/models'
 import { mountTabs } from './editor/tabs'
-import { notifyError } from './workbench/notifications'
+import { registerBreakpointGutter } from './editor/breakpoints'
+import {
+  continueDebugging,
+  initDebugListeners,
+  isDebugging,
+  mountDebug,
+  onDebugShown,
+  pauseDebugging,
+  startDebugActiveFile,
+  stepIntoDebugging,
+  stepOutDebugging,
+  stepOverDebugging,
+  stopDebugging
+} from './views/debug'
+import { notify, notifyError } from './workbench/notifications'
 import { mountPanel, showOutput, showProblems as showProblemsPanel } from './workbench/panel'
 import { mountStatusBar } from './workbench/status-bar'
 import { runActiveFile } from './views/run'
@@ -156,12 +170,18 @@ async function mountEditor(editorHost: HTMLElement, tabBar: HTMLElement): Promis
     }
   })
 
-  // Ctrl+F5 — VS Code's "Run Without Debugging". Plain F5 is deliberately left
-  // alone: it means "start debugging", and there is no debugger until M2.
+  // Ctrl+F5 — VS Code's "Run Without Debugging".
   document.addEventListener('keydown', (event) => {
     if (event.key !== 'F5' || !event.ctrlKey) return
     event.preventDefault()
     void saveThenRun()
+  })
+
+  // Plain F5 — "Start Debugging", now that there is one.
+  document.addEventListener('keydown', (event) => {
+    if (event.key !== 'F5' || event.ctrlKey) return
+    event.preventDefault()
+    void saveThenDebug()
   })
 
   // A file changed on disk (git checkout, another editor) is reloaded only when
@@ -176,6 +196,11 @@ async function mountEditor(editorHost: HTMLElement, tabBar: HTMLElement): Promis
   const editor = await createEditor(surface)
   attachEditor(editor)
   mountTabs(tabBar)
+
+  const ns = monacoRuntime()
+  // Never null here: `createEditor` already awaited `loadMonaco`, which is
+  // what sets the runtime before returning.
+  if (ns !== null) registerBreakpointGutter(ns, editor)
 
   // The diff surface sits on top of the editor in the same region rather than
   // becoming a tab: a diff is a transient comparison the user dismisses, not a
@@ -405,6 +430,13 @@ async function saveThenRun(): Promise<void> {
   await runActiveFile()
 }
 
+async function saveThenDebug(): Promise<void> {
+  await saveActive()
+  setSelected('debug')
+  await showSideBarView('debug')
+  await startDebugActiveFile()
+}
+
 /**
  * Mounts the status bar, then proves the whole boundary works by calling
  * `app:ping` — preload bridge, zod-validated request, main handler, and a
@@ -629,6 +661,7 @@ async function mountSideBarViews(): Promise<void> {
   registerSideBarView({ id: 'ai', mount: mountAi, onShow: onAiShown })
   registerSideBarView({ id: 'assist', mount: mountAssist, onShow: onAssistShown })
   registerSideBarView({ id: 'artifacts', mount: mountArtifacts, onShow: onArtifactsShown })
+  registerSideBarView({ id: 'debug', mount: mountDebug, onShow: onDebugShown })
 
   // The Visualizer docks on the right instead of in the side bar. Same view,
   // same handlers, a region three times as wide as the one a control-flow graph
@@ -710,6 +743,7 @@ function registerWorkbenchCommands(): void {
     // them was to know which icon they are.
     { id: 'view.assist', title: 'View: Assist', run: showView('assist') },
     { id: 'view.artifacts', title: 'View: Explanations', run: showView('artifacts') },
+    { id: 'view.debug', title: 'View: Debug', run: showView('debug') },
     {
       id: 'view.compiler',
       title: 'View: Compiler Intelligence',
@@ -756,6 +790,50 @@ function registerWorkbenchCommands(): void {
       title: 'Run: Cancel',
       when: () => isRunning(),
       run: () => void cancelActiveRun()
+    },
+
+    {
+      id: 'debug.start',
+      title: 'Debug: Start Debugging',
+      keybinding: 'F5',
+      when: () => activeDocument() !== null && !isDebugging(),
+      run: () => void saveThenDebug()
+    },
+    {
+      id: 'debug.continue',
+      title: 'Debug: Continue',
+      when: () => isDebugging(),
+      run: () => void continueDebugging()
+    },
+    {
+      id: 'debug.stepOver',
+      title: 'Debug: Step Over',
+      when: () => isDebugging(),
+      run: () => void stepOverDebugging()
+    },
+    {
+      id: 'debug.stepInto',
+      title: 'Debug: Step Into',
+      when: () => isDebugging(),
+      run: () => void stepIntoDebugging()
+    },
+    {
+      id: 'debug.stepOut',
+      title: 'Debug: Step Out',
+      when: () => isDebugging(),
+      run: () => void stepOutDebugging()
+    },
+    {
+      id: 'debug.pause',
+      title: 'Debug: Pause',
+      when: () => isDebugging(),
+      run: () => void pauseDebugging()
+    },
+    {
+      id: 'debug.stop',
+      title: 'Debug: Stop',
+      when: () => isDebugging(),
+      run: () => void stopDebugging()
     },
 
     { id: 'toolchains.rescan', title: 'Toolchains: Rescan', run: () => void rescanToolchains() }
@@ -948,6 +1026,8 @@ async function boot(): Promise<void> {
   await mountWorkbenchLayout()
   listenForAiActions()
   bindCompilerDiagnostics()
+  initDebugListeners()
+  window.betterCallCompiler.lsp.onNotice((payload) => notify(payload.message, 'warning', 8_000))
   registerWorkbenchCommands()
   bindGlobalKeys()
   watchForFileChanges()

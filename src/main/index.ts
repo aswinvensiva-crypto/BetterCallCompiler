@@ -35,6 +35,8 @@ import {
   startLang,
   stopLang
 } from './lang-service'
+import { setLspEmitters, startLsp, stopLsp } from './lsp-service'
+import { setDapEmitters, startDap, stopDap } from './dap-service'
 import { cancelAllAiStreams, setAiEmitters } from './ai-service'
 import { buildCspHeader, isAllowedExternalUrl, isInternalNavigation } from './security'
 import { closeVisualizerWindow, setVisualizerHostWindow } from './visualizer-window'
@@ -163,6 +165,22 @@ function createWindow(): BrowserWindow {
   startCompiler(getWorkspace().root)
   startLang(getWorkspace().root)
   startInteractive(getWorkspace().root)
+  // Diagnostics land on the SAME renderer event as the other two daemons —
+  // the Problems panel, the markers and the status bar already do not care
+  // which compiler produced a row, and a third producer changes nothing there.
+  setLspEmitters(
+    // `settled: true` always: one LSP publish is already a complete answer for
+    // that file, the same reasoning `lang-service.ts` uses for `.bcc` batches.
+    (files) => emitEvent(win, 'compiler:diagnosticsChanged', { files: [...files], settled: true }),
+    (notice) => emitEvent(win, 'lsp:notice', { message: notice })
+  )
+  startLsp(getWorkspace().root)
+  setDapEmitters(
+    (status) => emitEvent(win, 'dap:statusChanged', status),
+    (payload) => emitEvent(win, 'dap:output', payload),
+    (notice) => emitEvent(win, 'dap:notice', { message: notice })
+  )
+  startDap(getWorkspace().root)
   setTerminalEmitters(
     (id, data) => emitEvent(win, 'terminal:data', { id, data }),
     (payload) => emitEvent(win, 'terminal:exit', payload)
@@ -196,6 +214,8 @@ function createWindow(): BrowserWindow {
     stopCompiler()
     stopLang()
     stopInteractive()
+    void stopLsp()
+    void stopDap()
   })
 
   const devUrl = devServerUrl()
@@ -402,6 +422,8 @@ if (!gotLock) {
     stopCompiler()
     stopLang()
     stopInteractive()
+    void stopLsp()
+    void stopDap()
     void stopWatching()
     void stopGitWatch()
   })

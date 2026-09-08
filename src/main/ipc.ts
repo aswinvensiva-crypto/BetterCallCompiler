@@ -58,11 +58,40 @@ import {
   listFiles,
   readDirectory,
   readFile,
+  resolveWorkspacePath,
   searchWorkspace,
   remove,
   rename,
   writeFile
 } from './fs-service'
+import {
+  changeLspDocument,
+  closeLspDocument,
+  lspDefinition,
+  lspHover,
+  lspReferences,
+  lspStatus,
+  openLspDocument,
+  startLsp
+} from './lsp-service'
+import {
+  dapAdapters,
+  dapContinue,
+  dapEvaluate,
+  dapPause,
+  dapScopes,
+  dapStackTrace,
+  dapStepBack,
+  dapStepIn,
+  dapStepOut,
+  dapStepOver,
+  dapThreads,
+  dapVariables,
+  setDapBreakpoints,
+  startDap,
+  startDapSession,
+  stopDap
+} from './dap-service'
 import {
   createSession,
   disposeSession,
@@ -175,6 +204,8 @@ export function createHandlerMap(): HandlerMap {
       // open-folder response on it would stall the explorer behind a full walk.
       startCompiler(workspace.root)
       startLang(workspace.root)
+      startLsp(workspace.root)
+      startDap(workspace.root)
       return workspace
     },
 
@@ -546,6 +577,98 @@ export function createHandlerMap(): HandlerMap {
       notifyArtifactsChanged(event)
       return { artifact }
     },
+
+    /* -------------------------- external language servers ------------------------- */
+
+    'lsp:status': () => ({
+      servers: lspStatus().map((server) => ({ ...server, languageIds: [...server.languageIds] }))
+    }),
+
+    'lsp:openDocument': async (request) => {
+      const absolute = await resolveWorkspacePath(request.relativePath)
+      openLspDocument(absolute, request.languageId, request.content, request.version)
+      return { accepted: true as const }
+    },
+
+    'lsp:changeDocument': async (request) => {
+      const absolute = await resolveWorkspacePath(request.relativePath)
+      changeLspDocument(absolute, request.content, request.version)
+      return { accepted: true as const }
+    },
+
+    'lsp:closeDocument': async (request) => {
+      const absolute = await resolveWorkspacePath(request.relativePath)
+      closeLspDocument(absolute)
+      return { closed: true as const }
+    },
+
+    'lsp:definition': async (request) => {
+      const absolute = await resolveWorkspacePath(request.relativePath)
+      return { locations: await lspDefinition(absolute, request.line, request.column) }
+    },
+
+    'lsp:references': async (request) => {
+      const absolute = await resolveWorkspacePath(request.relativePath)
+      return { locations: await lspReferences(absolute, request.line, request.column) }
+    },
+
+    'lsp:hover': async (request) => {
+      const absolute = await resolveWorkspacePath(request.relativePath)
+      return { contents: await lspHover(absolute, request.line, request.column) }
+    },
+
+    /* -------------------------------- debug (DAP) ------------------------------- */
+
+    'dap:adapters': () => ({ adapters: [...dapAdapters()] }),
+
+    'dap:setBreakpoints': async (request) => {
+      const absolute = await resolveWorkspacePath(request.relativePath)
+      return { breakpoints: await setDapBreakpoints(absolute, request.lines) }
+    },
+
+    'dap:start': async (request) => {
+      const absolute = await resolveWorkspacePath(request.relativePath)
+      return { session: await startDapSession(request.relativePath, absolute, request.languageId) }
+    },
+
+    'dap:continue': async () => {
+      await dapContinue()
+      return {}
+    },
+    'dap:stepOver': async () => {
+      await dapStepOver()
+      return {}
+    },
+    'dap:stepIn': async () => {
+      await dapStepIn()
+      return {}
+    },
+    'dap:stepOut': async () => {
+      await dapStepOut()
+      return {}
+    },
+    'dap:stepBack': async () => {
+      await dapStepBack()
+      return {}
+    },
+    'dap:pause': async () => {
+      await dapPause()
+      return {}
+    },
+    'dap:stop': async () => {
+      await stopDap()
+      return {}
+    },
+
+    'dap:threads': async () => ({ threads: [...(await dapThreads())] }),
+    'dap:stackTrace': async (request) => ({ frames: [...(await dapStackTrace(request.threadId))] }),
+    'dap:scopes': async (request) => ({ scopes: [...(await dapScopes(request.frameId))] }),
+    'dap:variables': async (request) => ({
+      variables: [...(await dapVariables(request.variablesReference))]
+    }),
+    'dap:evaluate': async (request) => ({
+      result: await dapEvaluate(request.expression, request.frameId)
+    }),
 
     /* -------------------------------- wasm -------------------------------- */
 

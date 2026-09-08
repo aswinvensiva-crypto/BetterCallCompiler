@@ -23,6 +23,14 @@ import {
   completionDetailResultSchema,
   completionsResultSchema,
   compilerStatusSchema,
+  dapAdapterStatusSchema,
+  dapBreakpointSchema,
+  dapOutputSchema,
+  dapScopeSchema,
+  dapSessionStatusSchema,
+  dapStackFrameSchema,
+  dapThreadSchema,
+  dapVariableSchema,
   definitionResultSchema,
   dependencyQuerySchema,
   diagnosticsBatchSchema,
@@ -31,6 +39,9 @@ import {
   fileDiagnosticsSchema,
   fileEditSchema,
   hoverResultSchema,
+  lspHoverResultSchema,
+  lspLocationsResultSchema,
+  lspServerStatusSchema,
   referencesResultSchema,
   signatureHelpResultSchema,
   renameResultSchema,
@@ -707,6 +718,131 @@ export const INVOKE_CHANNELS = {
   'wasm:read': {
     request: z.strictObject({ name: z.string().min(1) }),
     response: z.strictObject({ base64: z.string() })
+  },
+
+  /* -------------------------- external language servers ------------------------- */
+
+  'lsp:status': {
+    request: empty,
+    response: z.strictObject({ servers: z.array(lspServerStatusSchema) })
+  },
+  /**
+   * `languageId` rides along, unlike `compiler:openDocument` — main routes
+   * that one by file extension because it already knows `.ts` from `.bcc`, but
+   * a `.h` file is ambiguous between languages and Monaco's own language id is
+   * the only place that ambiguity is already resolved.
+   */
+  'lsp:openDocument': {
+    request: z.strictObject({
+      relativePath: z.string().min(1),
+      languageId: z.string().min(1),
+      content: z.string(),
+      version: z.number().int().nonnegative()
+    }),
+    response: z.strictObject({ accepted: z.literal(true) })
+  },
+  'lsp:changeDocument': {
+    request: z.strictObject({
+      relativePath: z.string().min(1),
+      content: z.string(),
+      version: z.number().int().nonnegative()
+    }),
+    response: z.strictObject({ accepted: z.literal(true) })
+  },
+  'lsp:closeDocument': {
+    request: z.strictObject({ relativePath: z.string().min(1) }),
+    response: z.strictObject({ closed: z.literal(true) })
+  },
+  /**
+   * Line and column rather than an offset: `lsp-service.ts`'s queries already
+   * take a position, because the client converts to LSP's zero-based scheme
+   * itself — an offset would have to be converted back to a position here for
+   * no benefit, since (unlike `compiler:*`) there is no daemon-side overlay to
+   * index into.
+   */
+  'lsp:definition': {
+    request: z.strictObject({
+      relativePath: z.string().min(1),
+      line: z.number().int().positive(),
+      column: z.number().int().positive()
+    }),
+    response: lspLocationsResultSchema
+  },
+  'lsp:references': {
+    request: z.strictObject({
+      relativePath: z.string().min(1),
+      line: z.number().int().positive(),
+      column: z.number().int().positive()
+    }),
+    response: lspLocationsResultSchema
+  },
+  'lsp:hover': {
+    request: z.strictObject({
+      relativePath: z.string().min(1),
+      line: z.number().int().positive(),
+      column: z.number().int().positive()
+    }),
+    response: lspHoverResultSchema
+  },
+
+  /* --------------------------------- debug (DAP) -------------------------------- */
+
+  'dap:adapters': {
+    request: empty,
+    response: z.strictObject({ adapters: z.array(dapAdapterStatusSchema) })
+  },
+  /**
+   * Independent of `dap:start` — breakpoints are workspace state the user sets
+   * before a session exists and toggles during one. Applied immediately when a
+   * session is active; otherwise recorded and replayed on the next `dap:start`.
+   */
+  'dap:setBreakpoints': {
+    request: z.strictObject({
+      relativePath: z.string().min(1),
+      lines: z.array(z.number().int().positive()).max(1_000)
+    }),
+    response: z.strictObject({ breakpoints: z.array(dapBreakpointSchema) })
+  },
+  'dap:start': {
+    request: z.strictObject({
+      relativePath: z.string().min(1),
+      languageId: z.string().min(1)
+    }),
+    response: z.strictObject({ session: dapSessionStatusSchema })
+  },
+  // Each targets the thread the session is currently stopped on — the client
+  // tracks it from the `stopped` event, so the renderer never has to.
+  'dap:continue': { request: empty, response: empty },
+  'dap:stepOver': { request: empty, response: empty },
+  'dap:stepIn': { request: empty, response: empty },
+  'dap:stepOut': { request: empty, response: empty },
+  /** Only meaningful when the active session's `supportsStepBack` is true. */
+  'dap:stepBack': { request: empty, response: empty },
+  'dap:pause': { request: empty, response: empty },
+  /** Ends the active session. A no-op when nothing is debugging. */
+  'dap:stop': { request: empty, response: empty },
+  'dap:threads': {
+    request: empty,
+    response: z.strictObject({ threads: z.array(dapThreadSchema) })
+  },
+  'dap:stackTrace': {
+    request: z.strictObject({ threadId: z.number().int() }),
+    response: z.strictObject({ frames: z.array(dapStackFrameSchema) })
+  },
+  'dap:scopes': {
+    request: z.strictObject({ frameId: z.number().int() }),
+    response: z.strictObject({ scopes: z.array(dapScopeSchema) })
+  },
+  'dap:variables': {
+    request: z.strictObject({ variablesReference: z.number().int() }),
+    response: z.strictObject({ variables: z.array(dapVariableSchema) })
+  },
+  'dap:evaluate': {
+    request: z.strictObject({
+      expression: z.string().min(1),
+      frameId: z.number().int().nullable()
+    }),
+    response: z.strictObject({ result: z.string().nullable() })
   }
 } as const satisfies Record<InvokeChannel, ChannelSpec>
 
@@ -756,7 +892,15 @@ export const EVENT_CHANNELS = {
   // Payload-free, like `git:changed`. An artifact carries its full text and its
   // comment thread; pushing that on every change would put a document on the
   // wire each time someone types a comment, to say only that something moved.
-  'artifact:changed': { payload: z.strictObject({}) }
+  'artifact:changed': { payload: z.strictObject({}) },
+
+  'lsp:notice': { payload: z.strictObject({ message: z.string() }) },
+
+  // `null` when nothing is debugging — the whole session, replacing itself
+  // each time, the same shape `compiler:statusChanged` uses for the daemon.
+  'dap:statusChanged': { payload: dapSessionStatusSchema.nullable() },
+  'dap:output': { payload: dapOutputSchema },
+  'dap:notice': { payload: z.strictObject({ message: z.string() }) }
 } as const satisfies Record<EventChannel, { readonly payload: z.ZodType }>
 
 export type InvokeChannels = typeof INVOKE_CHANNELS

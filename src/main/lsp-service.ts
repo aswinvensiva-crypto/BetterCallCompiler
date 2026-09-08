@@ -120,7 +120,17 @@ function lookUp(command: string): string | null {
   return (commandProbe ?? findOnPath)(command)
 }
 
-export function startLsp(root: string): void {
+/**
+ * Starts (or restarts) the supervisor against `root`.
+ *
+ * Stops whatever was running for the previous workspace first — `stopLsp`'s
+ * synchronous prefix clears `sessions` and `announced` immediately, before its
+ * `await`, so this never races the assignment below. Without it, closing one
+ * folder and opening another would leave the first workspace's language
+ * servers running and answering queries about files that are no longer open.
+ */
+export function startLsp(root: string | null): void {
+  void stopLsp()
   workspaceRoot = root
 }
 

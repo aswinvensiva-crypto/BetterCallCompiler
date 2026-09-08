@@ -4,6 +4,7 @@ import { languageForFile } from './language-id'
 import { loadMonaco, monacoRuntime } from './monaco-setup'
 import { flushPendingMarkers } from './markers'
 import { closeDocument as closeSyntaxDocument } from './syntax-tree'
+import { isServedByLsp } from '../../shared/lsp-registry'
 import type { FileNode } from '../../shared/types'
 
 /**
@@ -171,6 +172,30 @@ const overlayTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
 const OVERLAY_DEBOUNCE_MS = 300
 
+/**
+ * Files an external language server has been told about, so the first push
+ * for a file sends `textDocument/didOpen` and every push after it sends
+ * `textDocument/didChange` — the two are not interchangeable, and sending
+ * `didOpen` twice for one file is a protocol violation some servers reject
+ * outright rather than merely ignore.
+ */
+const lspOpened = new Set<string>()
+
+function pushLspOverlay(relativePath: string, model: monacoNs.editor.ITextModel): void {
+  const languageId = model.getLanguageId()
+  if (!isServedByLsp(languageId)) return
+
+  const content = model.getValue()
+  const version = model.getVersionId()
+
+  if (lspOpened.has(relativePath)) {
+    void window.betterCallCompiler.lsp.changeDocument({ relativePath, content, version })
+  } else {
+    lspOpened.add(relativePath)
+    void window.betterCallCompiler.lsp.openDocument({ relativePath, languageId, content, version })
+  }
+}
+
 function pushOverlay(relativePath: string, model: monacoNs.editor.ITextModel): void {
   const existing = overlayTimers.get(relativePath)
   if (existing !== undefined) clearTimeout(existing)
@@ -185,6 +210,7 @@ function pushOverlay(relativePath: string, model: monacoNs.editor.ITextModel): v
         content: model.getValue(),
         version: model.getVersionId()
       })
+      pushLspOverlay(relativePath, model)
     }, OVERLAY_DEBOUNCE_MS)
   )
 }
@@ -333,6 +359,10 @@ export function close(path: string): void {
   void window.betterCallCompiler.compiler.closeDocument({
     relativePath: doc.node.relativePath
   })
+
+  if (lspOpened.delete(doc.node.relativePath)) {
+    void window.betterCallCompiler.lsp.closeDocument({ relativePath: doc.node.relativePath })
+  }
 
   // Before dispose, and keyed on the URI rather than on `keyFor(path)`: the
   // syntax layer indexes documents by `model.uri.toString()`, which is what

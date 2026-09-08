@@ -975,6 +975,136 @@ export const signatureHelpResultSchema = z.strictObject({
 })
 export type SignatureHelpResult = z.infer<typeof signatureHelpResultSchema>
 
+/* ------------------------------ language servers --------------------------- */
+
+/**
+ * What an external language server (`lsp-registry.ts`) is doing right now.
+ *
+ * Mirrors `CompilerStatus.interactive` in spirit: the renderer needs to say
+ * "Pyright is not installed" rather than silently show no diagnostics, and
+ * this is the shape that answer travels in.
+ */
+export const lspServerStatusSchema = z.strictObject({
+  id: z.string(),
+  displayName: z.string(),
+  languageIds: z.array(z.string()),
+  /** Whether the command was found on PATH — or has run at least once. */
+  installed: z.boolean(),
+  /** Whether a process is running and past its handshake. */
+  ready: z.boolean(),
+  /** Why it is not usable, when it is not. */
+  detail: z.string().nullable()
+})
+export type LspServerStatusRecord = z.infer<typeof lspServerStatusSchema>
+
+/**
+ * Hover from an external language server. No range: unlike `hoverResultSchema`,
+ * the LSP boundary (`lsp-service.ts`'s `lspHover`) does not carry one back —
+ * Monaco is content with a hover that has none.
+ */
+export const lspHoverResultSchema = z.strictObject({
+  contents: z.string().nullable()
+})
+export type LspHoverResult = z.infer<typeof lspHoverResultSchema>
+
+/**
+ * Definition and references from an external language server share this shape:
+ * `LspLocationResult` in `lsp-service.ts` is already a `LanguageLocation`, so
+ * there is nothing to convert on the way across the boundary.
+ */
+export const lspLocationsResultSchema = z.strictObject({
+  locations: z.array(languageLocationSchema).max(MAX_REFERENCE_RESULTS)
+})
+export type LspLocationsResult = z.infer<typeof lspLocationsResultSchema>
+
+/* ---------------------------------- debug ----------------------------------- */
+
+/**
+ * The Debug Adapter Protocol nouns (`dap-protocol.ts`), reshaped for the IPC
+ * boundary.
+ *
+ * One active session at a time — the same simplification
+ * `visualizer:openFloating` makes for the floating window: a second concurrent
+ * debug session is a real DAP capability this editor does not need yet, and
+ * building the UI for it now would be speculative.
+ */
+
+export const dapAdapterStatusSchema = z.strictObject({
+  id: z.string(),
+  displayName: z.string(),
+  languageIds: z.array(z.string()),
+  installed: z.boolean(),
+  installHint: z.string()
+})
+export type DapAdapterStatusRecord = z.infer<typeof dapAdapterStatusSchema>
+
+export const dapThreadSchema = z.strictObject({
+  id: z.number().int(),
+  name: z.string()
+})
+export type DapThreadRecord = z.infer<typeof dapThreadSchema>
+
+export const dapStackFrameSchema = z.strictObject({
+  id: z.number().int(),
+  name: z.string(),
+  /** Absolute path, or null when the adapter named no source (a synthetic frame). */
+  path: z.string().nullable(),
+  line: z.number().int().nonnegative(),
+  column: z.number().int().nonnegative()
+})
+export type DapStackFrameRecord = z.infer<typeof dapStackFrameSchema>
+
+export const dapScopeSchema = z.strictObject({
+  name: z.string(),
+  variablesReference: z.number().int(),
+  expensive: z.boolean()
+})
+export type DapScopeRecord = z.infer<typeof dapScopeSchema>
+
+export const dapVariableSchema = z.strictObject({
+  name: z.string(),
+  value: z.string(),
+  type: z.string().nullable(),
+  /** Non-zero means this variable has children, fetched with another request. */
+  variablesReference: z.number().int()
+})
+export type DapVariableRecord = z.infer<typeof dapVariableSchema>
+
+export const dapBreakpointSchema = z.strictObject({
+  line: z.number().int().nullable(),
+  /**
+   * Whether the adapter accepted it. Defaulting this true would show a solid
+   * red dot for a breakpoint the adapter never actually set — see
+   * `dap-protocol.ts`'s own note on the same field.
+   */
+  verified: z.boolean(),
+  message: z.string().nullable()
+})
+export type DapBreakpointRecord = z.infer<typeof dapBreakpointSchema>
+
+export const dapSessionStateSchema = z.enum(['starting', 'running', 'stopped', 'terminated'])
+export type DapSessionState = z.infer<typeof dapSessionStateSchema>
+
+export const dapSessionStatusSchema = z.strictObject({
+  sessionId: z.string(),
+  adapterId: z.string(),
+  relativePath: z.string(),
+  state: dapSessionStateSchema,
+  /** Set only in `stopped` — why execution paused (`breakpoint`, `step`, `pause`…). */
+  stoppedReason: z.string().nullable(),
+  /** Set only in `stopped` — the thread the UI should fetch a stack trace for. */
+  threadId: z.number().int().nullable(),
+  supportsStepBack: z.boolean()
+})
+export type DapSessionStatusRecord = z.infer<typeof dapSessionStatusSchema>
+
+export const dapOutputSchema = z.strictObject({
+  sessionId: z.string(),
+  category: z.string(),
+  text: z.string()
+})
+export type DapOutputRecord = z.infer<typeof dapOutputSchema>
+
 /* -------------------------------- artifacts ------------------------------- */
 
 /**

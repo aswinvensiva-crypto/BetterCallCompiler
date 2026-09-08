@@ -12,6 +12,7 @@ import {
   registerInteractiveProviders,
   registerNavigationProviders
 } from './navigation-providers'
+import { registerLspProviders } from './lsp-providers'
 
 /**
  * Monaco worker wiring.
@@ -179,6 +180,10 @@ export function loadMonaco(): Promise<typeof monacoNs> {
     // an unknown language id binds to nothing and never fires again.
     registerNavigationProviders(ns)
     if (daemonAnswers) registerInteractiveProviders(ns)
+    // Independent of the daemon switch above: these answer for languages
+    // neither daemon touches at all, so there is no "until it is ready"
+    // window to gate — a server that never starts just never answers.
+    registerLspProviders(ns)
 
     runtime = ns
     return ns
@@ -394,6 +399,11 @@ export async function createEditor(
     fontSize: 13,
     lineHeight: 20,
     minimap: { enabled: true, renderCharacters: false },
+    // Explicit rather than relying on the default: this is where breakpoint
+    // dots and the current-execution-line marker are drawn — see
+    // `breakpoints.ts` — and a theme change that happened to flip the default
+    // must not silently take the gutter away from them.
+    glyphMargin: true,
     scrollBeyondLastLine: false,
     renderWhitespace: 'selection',
     smoothScrolling: true,

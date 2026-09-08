@@ -94,7 +94,45 @@ export const INVOKE_CHANNEL_NAMES = [
   'artifact:get',
   'artifact:create',
   'artifact:comment',
-  'wasm:read'
+  'wasm:read',
+
+  /**
+   * External language servers (pyright, clangd, gopls, rust-analyzer) — see
+   * `lsp-registry.ts`. Deliberately its own namespace rather than folded onto
+   * `compiler:`: those channels route between the BCC and TypeScript daemons,
+   * both of which already own the file; these route to a THIRD kind of
+   * language support that never touches `.ts` or `.bcc`, and merging the two
+   * would put that routing decision back in the renderer.
+   */
+  'lsp:status',
+  'lsp:openDocument',
+  'lsp:changeDocument',
+  'lsp:closeDocument',
+  'lsp:definition',
+  'lsp:references',
+  'lsp:hover',
+
+  /**
+   * A single active debug session — see `dap-service.ts`. `dap:setBreakpoints`
+   * is independent of `dap:start`: breakpoints are workspace state the user
+   * sets before a session exists and toggles during one, exactly like VS
+   * Code's gutter, so it earns its own channel rather than riding on start.
+   */
+  'dap:adapters',
+  'dap:setBreakpoints',
+  'dap:start',
+  'dap:continue',
+  'dap:stepOver',
+  'dap:stepIn',
+  'dap:stepOut',
+  'dap:stepBack',
+  'dap:pause',
+  'dap:stop',
+  'dap:threads',
+  'dap:stackTrace',
+  'dap:scopes',
+  'dap:variables',
+  'dap:evaluate'
 ] as const
 
 export type InvokeChannel = (typeof INVOKE_CHANNEL_NAMES)[number]
@@ -120,7 +158,18 @@ export const EVENT_CHANNEL_NAMES = [
   'compiler:passCompleted',
   // Payload-free, like `git:changed`: the view re-reads the list itself, so the
   // event cannot carry a snapshot that is already stale by the time it renders.
-  'artifact:changed'
+  'artifact:changed',
+
+  // A server that is not installed, exited too many times, or timed out on a
+  // request — the same "reported once" notice `lsp-service.ts` already builds
+  // for the console, now with somewhere in the UI to land.
+  'lsp:notice',
+
+  // The whole session, replacing itself each time — `null` when nothing is
+  // debugging. See `dapSessionStatusSchema`.
+  'dap:statusChanged',
+  'dap:output',
+  'dap:notice'
 ] as const
 
 export type EventChannel = (typeof EVENT_CHANNEL_NAMES)[number]

@@ -80,6 +80,7 @@ The twelve things that have to be true for M1 to be done.
 | `Ctrl+Shift+F` | Search the workspace |
 | `Ctrl+S` | Save |
 | `Ctrl+F5` | Save and run the active file |
+| `F5` | Save and start debugging the active file |
 | `` Ctrl+` `` | Toggle the terminal |
 | `Ctrl+K` | Ask the assistant to explain the selection |
 
@@ -160,19 +161,38 @@ commit it.
   renderer's origin, and a `srcdoc` iframe inherits its parent's policy. Script
   execution needs an out-of-process runtime.
 - **"Parity with VS Code" on debugging and IntelliSense means speaking the same
-  open protocols** — DAP and LSP — and that is a long tail across M2–M5. M1
-  IntelliSense is Monaco's word-based completion plus the bundled TS/JS worker.
+  open protocols** — DAP and LSP. Both have landed for a first set of
+  languages (below); the rest of that tail is still M3–M5.
+- **LSP and DAP both need the real tool on PATH.** Neither ships bundled: open
+  a `.py` file with no `pyright` installed and the Problems panel stays quiet
+  with a one-time notice rather than pretending to check it; press F5 with no
+  `debugpy` installed and Start Debugging fails with the same install hint.
 
 ---
 
-## What M1 is not
+## What is now built, that M1 said would wait
+
+- **External language servers** — pyright (Python), clangd (C/C++), gopls
+  (Go), rust-analyzer (Rust) — for diagnostics, go to definition, find
+  references and hover. TypeScript, JavaScript and `.bcc` keep the daemons
+  built for them in M1 rather than a second opinion over LSP.
+- **A debugger** — breakpoints, step in/over/out, call stack, variables and a
+  debug console, driven over DAP against debugpy (Python) and GDB's DAP mode
+  (C/C++, compiled with `-g -O0` first). Press F5, or use the Debug view in
+  the side bar.
+
+## What is still not built
 
 Not built, and deliberately not stubbed to look like they work:
 
-- **Debugger.** The output console is a streaming console, not a debug session.
-  DAP (`vscode-js-debug`, `debugpy`, gdb/lldb) is M2.
+- **Debugging JavaScript/TypeScript and Go.** `vscode-js-debug` is a
+  multi-session CDP-to-DAP bridge rather than a single stdio process, and
+  `dlv dap` listens on a TCP port rather than stdio — both a materially
+  different integration from the two adapters above, not merely a registry
+  entry away.
 - **REST/GraphQL client.** M3.
-- **Real language servers** (pyright, clangd, tsserver, terraform-ls). M4.
+- **Language servers for the rest of the M4 list** (tsserver over LSP,
+  terraform-ls). TypeScript already has its own daemon; Terraform has none yet.
 - **Bundled Python and C++ interpreters.** M4.
 - **Repo-wide embedding index** for cross-file semantic AI. Deferred.
 - **Auto-update, themes editor, keybindings UI, extension host.** M5.

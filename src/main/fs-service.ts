@@ -108,6 +108,19 @@ export async function confinePath(root: string, candidate: string): Promise<stri
   return resolved
 }
 
+/**
+ * A workspace-relative path, confined and made absolute, for the two
+ * boundaries that spawn a real OS process against a real file — the LSP and
+ * DAP supervisors — rather than handing a relative path to a worker thread
+ * that resolves it internally the way `lang-service` and `compiler-service`
+ * do. `confinePath` already resolves a relative candidate against `root`, so
+ * this is that call plus the "no workspace" guard every other entry point
+ * here already makes.
+ */
+export async function resolveWorkspacePath(relativePath: string): Promise<string> {
+  return await confinePath(requireRoot(), relativePath)
+}
+
 function requireRoot(): string {
   if (workspaceRoot === null) {
     throw new BetterCallCompilerServiceError('NO_WORKSPACE', 'no folder is open')
