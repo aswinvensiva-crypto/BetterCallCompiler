@@ -26,9 +26,11 @@ import { notifyError } from '../workbench/notifications'
  *
  * ## The buttons say what is possible
  *
- * Stepping is disabled with no session; Continue and the forward steps stay
- * live after the program ends only because backwards still works from there.
- * A control that looks pressable and does nothing is worse than a greyed one.
+ * Every control is disabled with no session, because a control that looks
+ * pressable and does nothing is worse than a greyed one. They ALL stay live
+ * after the program ends, though — the session is still there, stepping
+ * backwards out of the end is the point of it, and a forward step from the end
+ * honestly reports that it has ended rather than doing something surprising.
  */
 
 let bodyHost: HTMLElement | null = null
@@ -241,13 +243,25 @@ export async function startDebugging(): Promise<void> {
   lastState = null
   renderAll()
 
-  // The dots the user already placed. Sent after the session exists rather than
-  // with the start request, so the answer — which says where each one really
-  // landed — comes back on the same channel as every other state change.
-  const lines = breakpointsFor(relativePath)
-  if (lines.length > 0) {
-    await window.betterCallCompiler.debug.setBreakpoints({ runId, lines })
-  }
+  /*
+   * DAP's launch handshake, in the two steps it really has.
+   *
+   * The session starts PAUSED at the first instruction, because a session that
+   * began running would race the breakpoints that have not been sent yet — the
+   * `debug:start` invoke has to resolve before the renderer knows the runId to
+   * send them against. So: arm first, then release.
+   *
+   * The release is what makes F5 mean "start debugging" rather than "stop on
+   * line one". Every IDE runs to the first breakpoint, and a debugger that
+   * halted on entry every time would make the user press Continue before
+   * anything they set could be reached. `stopOnEntry` is a real DAP option; it
+   * is just not the default anywhere, and it is not one this panel offers.
+   */
+  await window.betterCallCompiler.debug.setBreakpoints({
+    runId,
+    lines: breakpointsFor(relativePath)
+  })
+  await window.betterCallCompiler.debug.command({ runId, command: 'continue' })
 }
 
 export async function stopDebugging(): Promise<void> {

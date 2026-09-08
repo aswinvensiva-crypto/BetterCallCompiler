@@ -3292,6 +3292,13 @@ body.workbench--resizing-y * {
   background: rgba(53, 116, 240, 0.18);
 }
 
+/* A BAR, not a second dot.
+   Monaco merges every glyph decoration on one line into a single widget and
+   puts all their class names on it, so a breakpoint you are stopped on gets
+   both of these classes. Two `background` rules would then fight and the later
+   one would simply erase the dot — the user would lose the breakpoint marker at
+   the exact moment it fired. A border and a background stack instead, so the
+   dot and the position indicator are both visible. */
 .bcc-debug-arrow {
-  background: radial-gradient(circle at center, var(--bcc-accent) 0 4px, transparent 4px);
+  border-left: 3px solid var(--bcc-accent);
 }
