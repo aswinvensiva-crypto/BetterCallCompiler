@@ -172,7 +172,26 @@ export function createVm(program: Program, options: VmOptions = {}): Vm {
     { fn: entry, pc: 0, slots: new Array<Value>(entry.slots).fill(0), stackBase: 0, returnSpan: entry.span }
   ]
   const outputs: OutputEntry[] = []
-  const history: UndoRecord[] = []
+
+  /*
+   * History as a RING, not an array with `shift`.
+   *
+   * The first version pushed and called `history.shift()` past the bound, which
+   * is O(n) per step on a 200k array — so a program printing 40,000 lines spent
+   * its life moving elements and never finished. The comment above promised the
+   * program "keeps running at full speed" past the horizon, and it demonstrably
+   * did not. The unit tests could not catch it: they use a small limit where
+   * `shift` is cheap. The worker harness, running a real program, caught it on
+   * its first run.
+   *
+   * A ring gives O(1) push and O(1) pop-from-the-end, which is exactly the
+   * access pattern — forward execution appends, stepping back takes the newest.
+   */
+  const capacity = Math.max(1, historyLimit)
+  const ring = new Array<UndoRecord | undefined>(capacity)
+  /** Index of the oldest record held. */
+  let head = 0
+  let held = 0
 
   let status: VmStatus = 'running'
   let failure: VmError | null = null
@@ -189,13 +208,29 @@ export function createVm(program: Program, options: VmOptions = {}): Vm {
   }
 
   function record(entryRecord: UndoRecord): void {
-    history.push(entryRecord)
-    if (history.length > historyLimit) {
-      // Drop the oldest, and say so. Silently keeping a partial history would
-      // let the UI offer a step back that lands somewhere wrong.
-      history.shift()
-      truncated = true
+    ring[(head + held) % capacity] = entryRecord
+
+    if (held < capacity) {
+      held++
+      return
     }
+
+    // Full: the write above overwrote the oldest. Advance past it and say so —
+    // silently keeping a partial history would let the UI offer a step back
+    // that lands somewhere wrong.
+    head = (head + 1) % capacity
+    truncated = true
+  }
+
+  /** The newest record, removed. Undefined when there is no history left. */
+  function takeLatest(): UndoRecord | undefined {
+    if (held === 0) return undefined
+    held--
+    const index = (head + held) % capacity
+    const latest = ring[index]
+    // Cleared so a finished run does not pin every frame it ever pushed.
+    ring[index] = undefined
+    return latest
   }
 
   /* -------------------------------- step -------------------------------- */
@@ -417,7 +452,7 @@ export function createVm(program: Program, options: VmOptions = {}): Vm {
   /* ------------------------------ step back ----------------------------- */
 
   function stepBack(): boolean {
-    const undo = history.pop()
+    const undo = takeLatest()
     if (undo === undefined) return false
 
     /*
@@ -473,7 +508,7 @@ export function createVm(program: Program, options: VmOptions = {}): Vm {
     outputText: () => outputs.map((out) => `${out.text}\n`).join(''),
     step,
     stepBack,
-    historyDepth: () => history.length,
+    historyDepth: () => held,
     historyTruncated: () => truncated,
     run() {
       while (step()) {

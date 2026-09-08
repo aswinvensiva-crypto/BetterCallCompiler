@@ -134,6 +134,14 @@ jobs:
       - name: BCC daemon proof
         run: npm run test:lang
 
+      # The VM in a real worker thread, which the unit tests deliberately skip:
+      # that the built worker exists where the runner looks for it, that output
+      # arrives in slices while a program is still running, and that a runaway
+      # program can actually be terminated. It found a quadratic history
+      # eviction on its first run that no unit test could have.
+      - name: BCC VM proof
+        run: npm run test:vm
+
       # Screenshots, traces and the error-context markdown Playwright writes for
       # a failure. Without these a red E2E run on a machine nobody can reach is
       # a stack trace and a guess.

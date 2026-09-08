@@ -317,12 +317,13 @@ export async function runFile(node: FileNode): Promise<void> {
   scheduleWrite(`\x1b[2m${run.relativePath}\x1b[0m\r\n`)
 
   /*
-   * A run with a COMMAND is one main is already spawning and streaming, whether
-   * it found the toolchain on PATH or fell back to the runtime bundled with the
-   * app. Keying on the mode instead would send a bundled Node run looking for a
-   * renderer pack that does not exist.
+   * `streamed` says main is producing the output events for this run — a
+   * spawned process, or the BCC VM in its worker. It is an explicit field
+   * rather than something inferred from `mode` or `command`, because both
+   * processes have to agree and two inference rules that must stay in step is
+   * one bug waiting for a third execution shape. BCC was that third shape.
    */
-  if (run.command !== null) {
+  if (run.streamed) {
     // Output arrives as events; the exit handler clears the busy state. Adopting
     // rather than assigning drains anything that beat this response back.
     adoptRun(run.runId)

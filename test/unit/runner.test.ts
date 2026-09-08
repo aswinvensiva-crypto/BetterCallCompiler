@@ -258,3 +258,34 @@ describe('the runtime bundled with the app', () => {
     }
   })
 })
+
+describe('BCC, which needs nothing installed', () => {
+  /*
+   * The first language here that is neither spawned nor rendered: the compiler
+   * and the VM are this repository, and `startRun` drives them on a worker.
+   */
+
+  it('plans a bundled run with no toolchain and no command', () => {
+    const plan = planRun('bcc', `${ROOT}\\fib.bcc`, ROOT, [])
+
+    expect(plan.mode).toBe('bundled')
+    expect(plan.pack).toBe('bcc')
+    expect(plan.command).toBeNull()
+    expect(plan.toolchainId).toBeNull()
+    expect(plan.reason).toContain('no toolchain required')
+  })
+
+  it('does not go looking for a toolchain it could never find', () => {
+    // Passing a broken `bcc` toolchain must change nothing: there is no such
+    // thing to install, so a probe result has no bearing on the answer.
+    const withStub = planRun('bcc', `${ROOT}\\fib.bcc`, ROOT, [
+      toolchain({ id: 'bcc', kind: 'unusable', guidance: 'nonsense' })
+    ])
+    expect(withStub.mode).toBe('bundled')
+    expect(withStub.reason).toContain('no toolchain required')
+  })
+
+  it('needs no compile step, because the pipeline runs in the worker', () => {
+    expect(planRun('bcc', `${ROOT}\\fib.bcc`, ROOT, []).compile).toBeNull()
+  })
+})

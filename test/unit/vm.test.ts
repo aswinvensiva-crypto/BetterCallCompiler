@@ -365,6 +365,36 @@ describe('the history bound', () => {
     expect(back).toBe(50)
   })
 
+  it('keeps a correct history when far more steps run than it can hold', () => {
+    /*
+     * Correctness at scale — 400x more steps than the log holds — which is
+     * where an eviction bug would corrupt what is retained.
+     *
+     * It does NOT catch the performance bug that prompted it, and saying so
+     * matters: the first version evicted with `history.shift()`, O(n) per step
+     * on a full log, and a program printing 40,000 lines never finished. At the
+     * small limit used here the quadratic term is invisible — reverting to the
+     * O(n) eviction still passes this in two seconds. What catches it is
+     * `npm run test:vm`, which runs a real program at the DEFAULT 200k limit,
+     * where the cost is 2.4e10 element moves. A unit test at that size would
+     * take half a minute, so the fast check lives in the harness and this one
+     * pins the behaviour the ring has to preserve.
+     */
+    const vm = vmFor('let i = 0;\nwhile i < 20000 { i = i + 1; }\nprint i;', { historyLimit: 500 })
+    vm.run()
+
+    expect(vm.status()).toBe('finished')
+    expect(vm.outputText()).toBe('20000\n')
+    expect(vm.stepCount()).toBeGreaterThan(100_000)
+    expect(vm.historyDepth()).toBe(500)
+    expect(vm.historyTruncated()).toBe(true)
+
+    // And the retained history is still correct, not merely present.
+    let back = 0
+    while (vm.stepBack()) back++
+    expect(back).toBe(500)
+  })
+
   it('does not claim truncation when nothing was dropped', () => {
     const vm = vmFor('print 1;', { historyLimit: 1_000 })
     vm.run()
