@@ -1,0 +1,15 @@
+// The smallest program with a phi node in it.
+//
+// `i` is assigned before the loop and again inside it, so the loop header is
+// where two definitions meet — which is exactly where Part 6 inserts a phi.
+// The IR tab shows it as `phi i [entry, 0], [body, %n]`.
+
+let i = 0;
+let total = 0;
+
+while i < 5 {
+  total = total + i;
+  i = i + 1;
+}
+
+print total;

@@ -450,7 +450,19 @@ export const runStartedSchema = z.strictObject({
   /** Bundled pack id for `bundled` runs, e.g. `web`. */
   pack: z.string().nullable(),
   /** Why this mode was chosen. Always set for `bundled` and `unsupported`. */
-  reason: z.string().nullable()
+  reason: z.string().nullable(),
+  /**
+   * Whether MAIN is producing output events for this run.
+   *
+   * Explicit rather than inferred. Both processes have to agree about who
+   * carries a plan out, and until now each worked it out from a different
+   * field — the renderer from `mode`, then from `command`, while main used
+   * `command` alone. Two inference rules that must stay in step is one bug
+   * waiting for a third execution shape to be added, and BCC is that third
+   * shape: no toolchain to spawn and no renderer pack either, because it runs
+   * on the VM in a worker.
+   */
+  streamed: z.boolean()
 })
 export type RunStarted = z.infer<typeof runStartedSchema>
 

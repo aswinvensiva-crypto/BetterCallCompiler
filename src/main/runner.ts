@@ -1,9 +1,11 @@
 import type { ChildProcess } from 'node:child_process'
 import { promises as fsp } from 'node:fs'
 import { basename, dirname, extname, join, relative, sep } from 'node:path'
+import { Worker } from 'node:worker_threads'
 import { BetterCallCompilerServiceError } from '../shared/ipc-contract'
 import { isRunnable, type RunExit, type RunOutput, type RunStarted, type Toolchain } from '../shared/types'
 import { confinePath, getWorkspace } from './fs-service'
+import type { VmWorkerMessage } from './lang-vm-worker'
 import { killProcessTree, listToolchains, spawnExecutable } from './toolchains'
 
 /**
@@ -126,6 +128,20 @@ const RECIPES: Readonly<Record<string, LanguageRecipe>> = {
     compiled: false,
     humanName: 'HTML',
     installHint: ''
+  },
+  /*
+   * BCC needs nothing installed, because the compiler and the VM are this
+   * repository. It is the first language here that is neither spawned nor
+   * rendered: `startRun` drives it on the VM worker and streams the output
+   * through the same events a real process uses.
+   */
+  bcc: {
+    toolchainId: 'bcc',
+    pack: 'bcc',
+    bundledProcess: false,
+    compiled: false,
+    humanName: 'BCC',
+    installHint: ''
   }
 }
 
@@ -171,6 +187,20 @@ export function planRun(
       args: [],
       pack: null,
       reason: `BetterCallCompiler cannot run .${extname(filePath).replace(/^\./, '') || 'this'} files yet.`,
+      compile: null,
+      env: null
+    }
+  }
+
+  // BCC's runtime IS this repository — there is no toolchain to look for.
+  if (recipe.toolchainId === 'bcc') {
+    return {
+      mode: 'bundled',
+      toolchainId: null,
+      command: null,
+      args: [],
+      pack: 'bcc',
+      reason: 'Compiled and run by BetterCallCompiler — no toolchain required.',
       compile: null,
       env: null
     }
@@ -289,6 +319,9 @@ interface ActiveRun {
 }
 
 const active = new Map<string, ActiveRun>()
+
+/** Workers driving BCC runs, so a cancel can terminate one. */
+const bccWorkers = new Map<string, Worker>()
 let sequence = 0
 
 let emitOutput: ((payload: RunOutput) => void) | null = null
@@ -392,6 +425,10 @@ export async function startRun(requestedPath: string, languageId: string): Promi
   const runId = `run-${++sequence}`
   const relativePath = relative(workspaceRoot, filePath).split(sep).join('/')
 
+  // Main streams whatever it carries out itself: a spawned process, or the
+  // BCC VM. Everything else belongs to a renderer pack.
+  const streamed = plan.command !== null || plan.pack === 'bcc'
+
   const started: RunStarted = {
     runId,
     mode: plan.mode,
@@ -402,7 +439,15 @@ export async function startRun(requestedPath: string, languageId: string): Promi
     args: [...plan.args],
     toolchainId: plan.toolchainId,
     pack: plan.pack,
-    reason: plan.reason
+    reason: plan.reason,
+    streamed
+  }
+
+  if (plan.pack === 'bcc') {
+    const run: ActiveRun = { runId, startedAt: Date.now(), child: null, cancelled: false, finished: false }
+    active.set(runId, run)
+    void runBcc(run, filePath, relativePath)
+    return started
   }
 
   /*
@@ -414,7 +459,7 @@ export async function startRun(requestedPath: string, languageId: string): Promi
    * packs and the unsupported case. Keying on the mode instead would send the
    * bundled Node run to a renderer pack that does not exist.
    */
-  if (plan.command === null) return started
+  if (!streamed || plan.command === null) return started
 
   // Pulled out of `plan` before the closure: TypeScript discards narrowing on a
   // property access once it is read inside a nested function.
@@ -457,16 +502,81 @@ export async function startRun(requestedPath: string, languageId: string): Promi
   return started
 }
 
+/* ------------------------------------------------------------------ *
+ * BCC
+ * ------------------------------------------------------------------ */
+
+/**
+ * A fresh worker per run, terminated when it ends.
+ *
+ * A long-lived worker would need a supervisor — restart budget, heartbeat, the
+ * shape `lang-service.ts` has — to guard against a VM run that wedges it. A run
+ * is short-lived and self-contained, so throwing the worker away afterwards
+ * gets the same guarantee for none of the machinery, and no run can inherit
+ * state from the one before it.
+ *
+ * Cancellation is the reason this is a worker rather than a loop here: the VM
+ * yields between slices, so `terminate` lands promptly and the window never
+ * stops painting even on a program that does not end.
+ */
+async function runBcc(run: ActiveRun, filePath: string, relativePath: string): Promise<void> {
+  let worker: Worker
+  try {
+    const source = await fsp.readFile(filePath, 'utf8')
+    worker = new Worker(join(__dirname, 'lang-vm-worker.js'))
+    bccWorkers.set(run.runId, worker)
+
+    worker.on('message', (message: VmWorkerMessage) => {
+      if (message.runId !== run.runId) return
+
+      if (message.type === 'output') {
+        write(run, message.stream, message.text)
+        return
+      }
+
+      void worker.terminate()
+      bccWorkers.delete(run.runId)
+      finish(run, message.code)
+    })
+
+    worker.on('error', (error: Error) => {
+      write(run, 'stderr', `${error.message}\r\n`)
+      bccWorkers.delete(run.runId)
+      finish(run, null)
+    })
+
+    worker.postMessage({ type: 'run', runId: run.runId, source, relativePath })
+  } catch (error) {
+    write(run, 'stderr', `${error instanceof Error ? error.message : 'could not start'}\r\n`)
+    finish(run, null)
+  }
+}
+
 /** Cancels a run and everything it spawned. Idempotent. */
 export function cancelRun(runId: string): boolean {
   const run = active.get(runId)
   if (run === undefined) return false
 
   run.cancelled = true
+
   const child = run.child
   if (child !== null && typeof child.pid === 'number') {
     killProcessTree(child.pid)
   }
+
+  const worker = bccWorkers.get(runId)
+  if (worker !== undefined) {
+    /*
+     * Terminated rather than asked politely. The VM yields between slices, so a
+     * cooperative cancel would also work — but a program that traps the worker
+     * in a slice would then be uncancellable, and Cancel has to mean it. The
+     * worker owns nothing on disk, so there is nothing to leave half-written.
+     */
+    bccWorkers.delete(runId)
+    void worker.terminate()
+    finish(run, 130)
+  }
+
   return true
 }
 

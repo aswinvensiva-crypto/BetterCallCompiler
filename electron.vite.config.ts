@@ -34,7 +34,8 @@ export default defineConfig({
           // completions and signature help. Separate from the checker because
           // reaching the checker means cancelling its check, and a check
           // cancelled on every keystroke never converges.
-          'interactive-worker': resolve(__dirname, 'src/main/interactive-worker.ts')
+          'interactive-worker': resolve(__dirname, 'src/main/interactive-worker.ts'),
+          'lang-vm-worker': resolve(__dirname, 'src/main/lang-vm-worker.ts')
         }
       }
     }

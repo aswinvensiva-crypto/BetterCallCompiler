@@ -21,6 +21,7 @@
     "test:query:nav": "node test/query/run-language-query-proof.mjs",
     "test:interactive": "node test/query/run-interactive-proof.mjs",
     "test:lang": "node test/lang/run-lang-proof.mjs",
+    "test:vm": "node test/lang/run-vm-proof.mjs",
     "test:gc": "node test/gc/run-gc-control.mjs",
     "rebuild": "electron-rebuild",
     "build:win": "npm run build && electron-builder --win --config electron-builder.yml",
