@@ -62,6 +62,15 @@ interface Session {
   readonly documents: Map<string, { languageId: string; text: string; version: number }>
   restarts: number[]
   failure: string | null
+  /**
+   * Whether a process was ever obtained for this server.
+   *
+   * A session exists as soon as a document names the server, which happens
+   * before anything is spawned — so the session's presence proves nothing about
+   * the binary. This does, and it is what lets `lspStatus` answer "installed"
+   * from what the service DID rather than from what is on PATH right now.
+   */
+  started: boolean
 }
 
 const sessions = new Map<string, Session>()
@@ -128,7 +137,15 @@ export interface LspServerStatus {
 export function lspStatus(): readonly LspServerStatus[] {
   return LSP_SERVERS.map((spec) => {
     const session = sessions.get(spec.id)
-    const installed = findOnPath(spec.command) !== null
+    /*
+     * What the service actually managed, before what is on PATH.
+     *
+     * `findOnPath` is the fallback rather than the authority: a server we have
+     * already run is installed whatever a later PATH lookup says, and the
+     * transport can be injected, in which case PATH is not the thing that
+     * decided anything.
+     */
+    const installed = session?.started === true || findOnPath(spec.command) !== null
 
     return {
       id: spec.id,
@@ -136,7 +153,16 @@ export function lspStatus(): readonly LspServerStatus[] {
       languageIds: spec.languageIds,
       installed,
       ready: session?.client?.ready() ?? false,
-      detail: !installed ? spec.installHint : (session?.failure ?? null)
+      /*
+       * A recorded failure OUTRANKS the install hint, and getting that
+       * backwards is what CI caught. "clangd exited three times and will not be
+       * restarted" is specific and actionable; "install clangd" is neither when
+       * clangd is what just died. The first version checked `installed` first,
+       * so on a machine without the binary on PATH the hint hid the real
+       * failure entirely — and it passed locally only because this sandbox
+       * happens to have pyright installed.
+       */
+      detail: session?.failure ?? (installed ? null : spec.installHint)
     }
   })
 }
@@ -185,7 +211,14 @@ function sessionFor(spec: LspServerSpec): Session {
   const existing = sessions.get(spec.id)
   if (existing !== undefined) return existing
 
-  const created: Session = { spec, client: null, documents: new Map(), restarts: [], failure: null }
+  const created: Session = {
+    spec,
+    client: null,
+    documents: new Map(),
+    restarts: [],
+    failure: null,
+    started: false
+  }
   sessions.set(spec.id, created)
   return created
 }
@@ -223,6 +256,7 @@ function ensureRunning(spec: LspServerSpec): LspClient | null {
   })
 
   session.client = client
+  session.started = true
   return client
 }
 

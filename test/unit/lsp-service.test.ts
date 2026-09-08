@@ -191,6 +191,31 @@ describe('status', () => {
     expect(status.every((server) => typeof server.installed === 'boolean')).toBe(true)
   })
 
+  it('reports the install hint for a server that never ran', () => {
+    /*
+     * The other direction of the precedence fix. clangd again, because it is on
+     * neither this sandbox nor CI — so "not installed" here is a fact about the
+     * code path rather than about the machine.
+     */
+    installEverything()
+    const clangd = lspStatus().find((server) => server.id === 'clangd')
+
+    expect(clangd?.installed).toBe(false)
+    expect(clangd?.detail).toContain('Install clangd')
+  })
+
+  it('counts a server it actually started as installed', async () => {
+    // The transport is injected, so PATH did not decide anything here. Status
+    // has to answer from what the service managed.
+    installEverything()
+    openLspDocument('/w/a.c', 'c', 'int main() {}', 1)
+    await lastSpawned().completeHandshake()
+
+    const clangd = lspStatus().find((server) => server.id === 'clangd')
+    expect(clangd?.installed).toBe(true)
+    expect(clangd?.detail).toBeNull()
+  })
+
   it('reports ready only after the handshake', async () => {
     installEverything()
     openLspDocument('/w/a.py', 'python', 'x = 1', 1)
@@ -300,12 +325,19 @@ describe('when a server dies', () => {
      * Retrying forever turns a broken install into a fork bomb that presents as
      * the editor being slow. And a stale squiggle from a server that will never
      * run again is worse than none, because nothing will ever remove it.
+     *
+     * Driven through CLANGD rather than pyright, deliberately. The transport is
+     * injected, so any server can be driven — but `lspStatus` also consults the
+     * real PATH, and this sandbox happens to have pyright installed while CI
+     * does not. Written against pyright this passed here and failed on CI, for
+     * a reason that had nothing to do with what it was testing. clangd is on
+     * neither machine, so the assertion below is about the code.
      */
     installEverything()
-    openLspDocument('/w/a.py', 'python', 'x = 1', 1)
+    openLspDocument('/w/a.c', 'c', 'int main() {}', 1)
     await lastSpawned().completeHandshake()
 
-    lastSpawned().publish('file:///w/a.py', [
+    lastSpawned().publish('file:///w/a.c', [
       { range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } }, message: 'bad' }
     ])
     expect(allDiagnostics()[0]?.diagnostics).toHaveLength(1)
@@ -319,7 +351,9 @@ describe('when a server dies', () => {
 
     expect(notices.join(' ')).toContain('will not be restarted')
     expect(allDiagnostics()[0]?.diagnostics).toEqual([])
-    expect(lspStatus().find((server) => server.id === 'pyright')?.detail).toContain(
+    // The recorded failure, not the install hint: we RAN this server and it
+    // died three times, which is the more specific and more useful fact.
+    expect(lspStatus().find((server) => server.id === 'clangd')?.detail).toContain(
       'will not be restarted'
     )
   })
