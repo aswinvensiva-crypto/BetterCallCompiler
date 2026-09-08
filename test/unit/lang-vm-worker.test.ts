@@ -54,6 +54,85 @@ describe('programs that run', () => {
   })
 })
 
+describe('line endings', () => {
+  it('runs the examples identically whatever git checked them out as', () => {
+    /*
+     * CI is Windows and these files are new, so git may hand them over with
+     * CRLF. `lexer.ts` says it counts `\r\n` as one line break; this checks it
+     * end to end rather than trusting the comment, because the failure would be
+     * platform-specific and would present as "the examples are broken on
+     * Windows" long after anyone was looking at the lexer.
+     *
+     * Verified before it could fail rather than after: two red CI runs earlier
+     * in this session came from assuming a platform fact measured on one
+     * platform.
+     */
+    const directory = join(process.cwd(), 'examples')
+
+    for (const name of readdirSync(directory).filter((file) => file.endsWith('.bcc'))) {
+      const lf = readFileSync(join(directory, name), 'utf8').replace(/\r\n/g, '\n')
+      const crlf = lf.replace(/\n/g, '\r\n')
+
+      const withLf = prepare(lf, name)
+      const withCrlf = prepare(crlf, name)
+      withLf.vm?.run()
+      withCrlf.vm?.run()
+
+      expect(withCrlf.errors, name).toEqual(withLf.errors)
+      expect(withCrlf.vm?.outputText(), name).toBe(withLf.vm?.outputText())
+    }
+  })
+
+  it('reports the same span for a trap either way', () => {
+    /*
+     * The trap is deliberately on a LATER line. On line 1 this passes even if
+     * `\r\n` is counted as two breaks, because nothing before it has been
+     * counted yet — so the version of this test that put it first proved less
+     * than it looked like it did.
+     *
+     * Columns matter too: a `\r` counted as content would shift them.
+     */
+    const source = [
+      '// a comment',
+      'let unused = 1;',
+      '',
+      'fn f(a: int) -> int { return 1 / a; }',
+      'print f(0);'
+    ].join('\n')
+
+    const withLf = prepare(source, 't.bcc')
+    const withCrlf = prepare(source.replace(/\n/g, '\r\n'), 't.bcc')
+    withLf.vm?.run()
+    withCrlf.vm?.run()
+
+    expect(withLf.vm?.error()?.span.startLine, 'the trap should be on line 4').toBe(4)
+
+    /*
+     * Line and column only. `offset` legitimately differs — CRLF adds a byte
+     * per line break, so the trap sits three characters later in a file with
+     * three line breaks before it. Asserting the whole span compared a
+     * coordinate that CANNOT be stable, and the first version of this test did
+     * exactly that and failed for the wrong reason.
+     *
+     * Line and column are the pair the editor shows and the pair a breakpoint
+     * is matched on, so they are what has to agree.
+     */
+    const humanCoordinates = (vm: typeof withLf.vm): unknown => {
+      const span = vm?.error()?.span
+      return span === undefined
+        ? null
+        : {
+            startLine: span.startLine,
+            startColumn: span.startColumn,
+            endLine: span.endLine,
+            endColumn: span.endColumn
+          }
+    }
+
+    expect(humanCoordinates(withCrlf.vm)).toEqual(humanCoordinates(withLf.vm))
+  })
+})
+
 describe('programs that cannot run', () => {
   it('reports a parse error with the file, line and column', () => {
     const { vm, errors } = prepare('print 1 +;', 'broken.bcc')
