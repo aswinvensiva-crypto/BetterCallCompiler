@@ -534,6 +534,12 @@ async function runBcc(run: ActiveRun, filePath: string, relativePath: string): P
         return
       }
 
+      // A plain run never asks for a debug session, so a `stopped` message here
+      // would mean the worker answered a request nobody made. Narrowing on
+      // `exit` rather than "not output" keeps that from silently ending the run
+      // with `undefined` as its exit code.
+      if (message.type !== 'exit') return
+
       void worker.terminate()
       bccWorkers.delete(run.runId)
       finish(run, message.code)

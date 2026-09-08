@@ -188,14 +188,35 @@ describe('the worker protocol', () => {
    * same reason it gets a test.
    */
 
-  it('accepts both requests', () => {
+  it('accepts every request the worker answers', () => {
     expect(isVmWorkerRequest({ type: 'run', runId: 'r1', source: '', relativePath: 'a.bcc' })).toBe(true)
     expect(isVmWorkerRequest({ type: 'cancel', runId: 'r1' })).toBe(true)
+    expect(isVmWorkerRequest({ type: 'debug', runId: 'r1', source: '', relativePath: 'a.bcc', breakpoints: [] })).toBe(true)
+    expect(isVmWorkerRequest({ type: 'command', runId: 'r1', command: 'stepBack' })).toBe(true)
+    expect(isVmWorkerRequest({ type: 'breakpoints', runId: 'r1', lines: [3] })).toBe(true)
+  })
+
+  it('accepts every member of the union, with nothing left behind', () => {
+    /*
+     * The guard's list is written by hand, so adding a request type and
+     * forgetting to widen it compiles fine and then silently drops the new
+     * message. This asserts the count rather than the members: a sixth request
+     * added without a line here fails, which is the failure the hand-written
+     * list needs.
+     *
+     * The literal is the number of members of `VmWorkerRequest` — run, cancel,
+     * debug, command, breakpoints.
+     */
+    const accepted = ['run', 'cancel', 'debug', 'command', 'breakpoints'].filter((type) =>
+      isVmWorkerRequest({ type, runId: 'r1' })
+    )
+    expect(accepted.length).toBe(5)
   })
 
   it('rejects near misses', () => {
     expect(isVmWorkerRequest({ type: 'Run', runId: 'r1' })).toBe(false)
     expect(isVmWorkerRequest({ type: 'run' })).toBe(false)
+    expect(isVmWorkerRequest({ type: 'step', runId: 'r1' })).toBe(false)
     expect(isVmWorkerRequest({ runId: 'r1' })).toBe(false)
     expect(isVmWorkerRequest(null)).toBe(false)
     expect(isVmWorkerRequest('run')).toBe(false)

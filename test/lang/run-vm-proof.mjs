@@ -75,6 +75,62 @@ function runProgram(source, relativePath, { cancelAfterMs } = {}) {
   })
 }
 
+/**
+ * Hold a worker open under debugger control and drive it command by command.
+ *
+ * `runProgram` above is fire-and-forget; a debug session is a conversation, so
+ * this keeps the worker alive and hands back a promise per exchange. Replies are
+ * queued rather than assumed to arrive after the request, because a `stopped`
+ * message posted while nobody was waiting would otherwise be lost and every
+ * later answer would be off by one.
+ */
+function openDebugSession(source, relativePath, breakpoints) {
+  const worker = new Worker(workerPath)
+  const waiting = []
+  const queued = []
+
+  worker.on('message', (message) => {
+    if (message.type !== 'stopped') return
+    const next = waiting.shift()
+    if (next === undefined) queued.push(message)
+    else next(message)
+  })
+
+  const receive = () =>
+    Promise.race([
+      new Promise((settle) => {
+        const ready = queued.shift()
+        if (ready === undefined) waiting.push(settle)
+        else settle(ready)
+      }),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('the worker did not answer within 30s')), 30_000).unref()
+      )
+    ])
+
+  const send = (message) => {
+    worker.postMessage(message)
+    return receive()
+  }
+
+  worker.postMessage({ type: 'debug', runId: 'dbg', source, relativePath, breakpoints })
+
+  return {
+    next: receive,
+    command: (command) => send({ type: 'command', runId: 'dbg', command }),
+    setBreakpoints: (lines) => send({ type: 'breakpoints', runId: 'dbg', lines }),
+    close: () => void worker.terminate()
+  }
+}
+
+/** A local's value in the innermost frame, or null when it is not there. */
+function local(stop, name) {
+  const innermost = stop.frames[0]
+  if (innermost === undefined) return null
+  const scope = stop.locals.find((entry) => entry.frameId === innermost.id)
+  return scope?.variables.find((variable) => variable.name === name)?.value ?? null
+}
+
 console.log('--- the worker exists where the runner looks for it ---')
 try {
   readFileSync(workerPath)
@@ -146,6 +202,92 @@ console.log('\n--- a runaway program can be cancelled ---')
   const runaway = await runProgram('while true { }', 'runaway.bcc', { cancelAfterMs: 200 })
   check('exit code says cancelled', runaway.code, 130)
   assert('it was stopped early', runaway.steps > 0, `${runaway.steps} steps`)
+}
+
+console.log('\n--- a debug session, over the real message channel ---')
+{
+  /*
+   * The whole Part 10 story end to end, through a structured clone. The unit
+   * tests drive `createDebugSession` directly, which is the right way to test
+   * the stepping rules — but it never sends a `DebugStop`, a `DapStackFrame` or
+   * a locals table across a thread boundary, and the debugger is useless if
+   * those do not survive the trip.
+   */
+  const session = openDebugSession(readFileSync(join(examples, 'loop.bcc'), 'utf8'), 'loop.bcc', [11])
+
+  const entry = await session.next()
+  check('a session starts paused at entry', entry.stop.reason, 'entry')
+  check('nothing has run yet', entry.output, '')
+  assert('the breakpoint was accepted', entry.breakpoints.some((bp) => bp.line === 11 && bp.verified),
+    JSON.stringify(entry.breakpoints))
+
+  const first = await session.command('continue')
+  check('continue stops at the breakpoint', first.stop.reason, 'breakpoint')
+  check('on the line it was set on', first.stop.line, 11)
+  check('the first time round, total is 0', local(first, 'total'), '0')
+  check('and i is 0', local(first, 'i'), '0')
+
+  const second = await session.command('continue')
+  check('the breakpoint fires again on the next iteration', second.stop.reason, 'breakpoint')
+  check('total has taken i', local(second, 'total'), '0')
+  check('i has advanced', local(second, 'i'), '1')
+
+  const third = await session.command('continue')
+  check('and again', local(third, 'i'), '2')
+  check('total accumulated', local(third, 'total'), '1')
+
+  /*
+   * The claim Part 9 was built for, measured rather than asserted vaguely:
+   * three steps back from the third breakpoint hit reaches the same line on the
+   * PREVIOUS iteration, with the locals restored to what they were then. Not
+   * a re-run — the same VM, undoing.
+   */
+  await session.command('stepBack')
+  await session.command('stepBack')
+  const back = await session.command('stepBack')
+  check('stepping back reaches the same line again', back.stop.line, 11)
+  check('on the previous iteration, i is one lower', local(back, 'i'), '1')
+  check('and total has un-accumulated', local(back, 'total'), '0')
+
+  const frames = first.frames
+  check('the stack is one frame of <main>', frames.map((frame) => frame.name), ['<main>'])
+  check('and it names the file', frames[0].source.path, 'loop.bcc')
+
+  const cleared = await session.setBreakpoints([])
+  check('clearing breakpoints leaves the machine where it was', cleared.stop.line, back.stop.line)
+  check('and reports none armed', cleared.breakpoints.length, 0)
+
+  const done = await session.command('continue')
+  check('with nothing armed, continue runs to the end', done.finished, true)
+  check('and the program printed its answer', done.output, '10\n')
+  check('a program that ended has no stack', done.frames, [])
+
+  const after = await session.command('stepBack')
+  check('and gets it back the moment it steps backwards', after.frames.length, 1)
+  check('with the answer still in scope', local(after, 'total'), '10')
+
+  session.close()
+}
+
+console.log('\n--- stepping out of a call, over the real message channel ---')
+{
+  /*
+   * `fib.bcc` recurses, so it is the one example where the stack has more than
+   * one frame — and the frame ids the UI hands back have to keep meaning the
+   * same frame across a step. Line 9 is `return n;` inside `fib`.
+   */
+  const session = openDebugSession(readFileSync(join(examples, 'fib.bcc'), 'utf8'), 'fib.bcc', [9])
+  await session.next()
+
+  const inside = await session.command('continue')
+  check('it stops inside the call', inside.stop.line, 9)
+  check('with the callee innermost', inside.frames.map((frame) => frame.name), ['fib', '<main>'])
+
+  const out = await session.command('stepOut')
+  check('stepping out leaves the callee', out.frames.map((frame) => frame.name), ['<main>'])
+  check('back at the call site', out.stop.line, 17)
+
+  session.close()
 }
 
 console.log('')

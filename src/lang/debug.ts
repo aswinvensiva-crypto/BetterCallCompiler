@@ -106,7 +106,9 @@ export interface DebugSession {
   finished(): boolean
 }
 
-export function createDebugSession(vm: Vm, program: Program, sourcePath: string): DebugSession {
+export function createDebugSession(vm: Vm, sourcePath: string): DebugSession {
+  const program: Program = vm.program()
+
   /**
    * Lines that have a breakpoint, and the instruction indices they resolve to.
    *
@@ -334,6 +336,19 @@ export function createDebugSession(vm: Vm, program: Program, sourcePath: string)
    * one step changed the stack. Depth is stable for as long as the frame is.
    */
   function stackFrames(): DapStackFrame[] {
+    /*
+     * A program that RETURNED has no stack. The VM keeps its outermost frame
+     * after `<main>` returns — it has nowhere to put it — and that frame's pc is
+     * then past the last instruction, so the line fallback below would report
+     * the function's own span. `<main>`'s span is the whole file, so the UI
+     * highlighted line 1, which in every example is a comment.
+     *
+     * Deliberately `finished` and not `!== 'running'`: a program that TRAPPED
+     * keeps its stack, because where it broke is the thing the user opened the
+     * debugger to see.
+     */
+    if (vm.status() === 'finished') return []
+
     return vm.frames().map((frame, index) => {
       const line = frame.fn.code[frame.pc]?.span.startLine ?? frame.fn.span.startLine
       return {
@@ -358,6 +373,11 @@ export function createDebugSession(vm: Vm, program: Program, sourcePath: string)
   }
 
   function variables(reference: number): DapVariable[] {
+    // Same rule as `stackFrames`, so a locals pane cannot outlive the frame it
+    // belongs to: the UI asks for both and would otherwise get an empty stack
+    // beside a full set of values.
+    if (vm.status() === 'finished') return []
+
     const frames = vm.frames()
     const frame = frames[frames.length - reference]
     if (frame === undefined) return []

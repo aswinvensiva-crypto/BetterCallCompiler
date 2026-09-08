@@ -32,7 +32,7 @@ function sessionFor(source: string, path = 'x.bcc'): DebugSession {
   expect(report.failure, report.failure?.message).toBeNull()
 
   const compiled = compileModule(report.module, TOP_LEVEL_FUNCTION)
-  return createDebugSession(createVm(compiled), compiled, path)
+  return createDebugSession(createVm(compiled), path)
 }
 
 const example = (name: string): string =>
@@ -347,6 +347,55 @@ describe('inspecting', () => {
   it('offers one scope, because BCC has no globals to put in a second', () => {
     const session = sessionFor(example('loop.bcc'))
     expect(session.scopes(1)).toEqual([{ name: 'Locals', variablesReference: 1, expensive: false }])
+  })
+})
+
+describe('a program that has ended', () => {
+  it('has no stack, rather than one frame parked on a comment', () => {
+    /*
+     * Found by driving the worker: after `loop.bcc` exited, the stop reported
+     * `line: null` — correct — while `stackFrames` still offered `<main>` at
+     * LINE 1, which is a comment. The VM keeps the outermost frame after the
+     * program returns, and the frame's pc is then past the last instruction, so
+     * `stackFrames` fell back to the function's own span — and `<main>`'s span
+     * is the whole file.
+     *
+     * The UI would have highlighted line 1 and shown a locals pane for a frame
+     * that is not executing. A finished program has no stack; that is what
+     * every debugger reports, and it is what is true here.
+     */
+    const session = sessionFor(example('loop.bcc'))
+    session.continue_()
+
+    expect(session.finished(), 'the fixture should have run to the end').toBe(true)
+    expect(session.stackFrames()).toEqual([])
+    expect(session.variables(1)).toEqual([])
+  })
+
+  it('gets its stack back the moment it steps backwards', () => {
+    // The pane clearing at exit is only acceptable because the state is one
+    // command away — which is the whole argument for a reversible VM.
+    const session = sessionFor(example('loop.bcc'))
+    session.continue_()
+    session.stepBack()
+
+    expect(session.stackFrames().length).toBe(1)
+    expect(local(session, 'total'), 'the answer it printed').toBe('10')
+  })
+
+  it('keeps the stack when it FAILED rather than finished', () => {
+    /*
+     * The guard is on `finished`, not on "not running". A trap is the one
+     * moment the stack matters most — it is where the program broke — and an
+     * exception stop that cleared the pane would throw away the answer the user
+     * opened the debugger for.
+     */
+    const session = sessionFor('fn f(a: int) -> int { return 1 / a; }\nprint f(0);')
+    expect(session.continue_().reason).toBe('exception')
+
+    const frames = session.stackFrames()
+    expect(frames.length).toBeGreaterThan(0)
+    expect(frames[0]?.name).toBe('f')
   })
 })
 
