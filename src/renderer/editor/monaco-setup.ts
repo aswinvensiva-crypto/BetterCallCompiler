@@ -394,6 +394,10 @@ export async function createEditor(
     fontSize: 13,
     lineHeight: 20,
     minimap: { enabled: true, renderCharacters: false },
+    // The strip breakpoints are clicked into. Off by default in Monaco, and
+    // there is nowhere else to put a dot that is beside the line rather than
+    // in it — see `breakpoints.ts`.
+    glyphMargin: true,
     scrollBeyondLastLine: false,
     renderWhitespace: 'selection',
     smoothScrolling: true,

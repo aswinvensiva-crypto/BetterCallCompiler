@@ -131,6 +131,15 @@ export interface VmOptions {
 }
 
 export interface Vm {
+  /**
+   * The program being run.
+   *
+   * Exposed because the debugger needs it and is handed a VM: which lines have
+   * code, and therefore which breakpoints can be set, is a property of the
+   * program, not of the machine's current state. Reading it off the VM rather
+   * than passing both means the two cannot disagree.
+   */
+  program(): Program
   status(): VmStatus
   error(): VmError | null
   /** Instructions executed, which keeps counting past the history horizon. */
@@ -499,6 +508,7 @@ export function createVm(program: Program, options: VmOptions = {}): Vm {
   }
 
   return {
+    program: () => program,
     status: () => status,
     error: () => failure,
     stepCount: () => steps,

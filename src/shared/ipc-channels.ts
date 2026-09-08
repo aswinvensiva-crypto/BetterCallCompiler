@@ -38,6 +38,14 @@ export const INVOKE_CHANNEL_NAMES = [
   'toolchain:rescan',
   'run:start',
   'run:cancel',
+  // The debugger. A separate namespace from `run:` because the two are
+  // different lifecycles: a run streams to completion and ends, a debug session
+  // is a conversation that outlives several commands — and outlives the program
+  // ending, because the end is where stepping backwards starts.
+  'debug:start',
+  'debug:command',
+  'debug:setBreakpoints',
+  'debug:stop',
   'git:status',
   'git:diff',
   'git:stage',
@@ -107,6 +115,10 @@ export const EVENT_CHANNEL_NAMES = [
   'run:stdout',
   'run:stderr',
   'run:exit',
+  // One event per command, carrying the whole state. See `debugStateSchema` for
+  // why it is a snapshot rather than a signal the panel then queries.
+  'debug:stopped',
+  'debug:exited',
   'git:changed',
   'ai:delta',
   'ai:done',
