@@ -97,7 +97,35 @@ test.beforeAll(async () => {
     const win = BrowserWindow.getAllWindows()[0]
     win?.setBounds({ x: 0, y: 0, width: 1024, height: 730 })
   })
+
+  /*
+   * Opening the file belongs HERE, not in the first test.
+   *
+   * Every test below starts with `placeCaret`, which clicks `.view-lines` — so
+   * they all depend on a file being open. While that open was itself a test,
+   * one failure became three, and the retry could never re-test the thing that
+   * failed: Playwright restarts the worker on a retry, so this hook re-ran with
+   * a fresh app while the test that opened the file did not, leaving every
+   * later `placeCaret` waiting 30s for an editor that was never going to
+   * appear.
+   *
+   * That is what turned one intermittent hover failure on CI into three red
+   * tests, twice — and it defeated the retry policy `playwright.config.ts`
+   * deliberately chose, which reports a test that only survived its retry as
+   * FLAKY rather than green. Establishing the precondition in the hook restores
+   * that policy: a genuine intermittent now retries and is reported as flaky,
+   * and a real regression still fails twice and stays red.
+   */
+  await openAppTs()
 })
+
+/** The precondition every test below shares: `src/app.ts` open in the editor. */
+async function openAppTs(): Promise<void> {
+  await row('src').click()
+  await row('app.ts').click()
+  await expect(window.locator('.tab', { hasText: 'app.ts' })).toHaveCount(1)
+  await expect(lines()).toContainText('const moved = translate', { timeout: DAEMON_TIMEOUT })
+}
 
 test.afterAll(async () => {
   await app?.close()
@@ -118,9 +146,9 @@ async function placeCaret(lineNumber: number, column: number): Promise<void> {
 }
 
 test('opens app.ts', async () => {
-  await row('src').click()
-  await row('app.ts').click()
-
+  // The open happens in `beforeAll`; this asserts it landed. Worth keeping as a
+  // named test — when the fixture or the explorer breaks, "opens app.ts" is a
+  // far more legible failure than four timeouts inside `placeCaret`.
   await expect(window.locator('.tab', { hasText: 'app.ts' })).toHaveCount(1)
   await expect(lines()).toContainText('const moved = translate', { timeout: DAEMON_TIMEOUT })
 })
@@ -141,6 +169,39 @@ test('opens app.ts', async () => {
  * `any`.
  */
 test('hover names a type inferred from another file, once', async () => {
+  /*
+   * Separates the two ways this can fail, which a bare 30s timeout could not.
+   *
+   * The handover is decided ONCE, when Monaco loads: if the daemon had not
+   * reported ready by then, `configureLanguageDefaults` leaves Monaco's own
+   * hover on and never registers ours, and no amount of waiting here will
+   * produce an answer. If the daemon IS up, a missing hover means it was asked
+   * and did not answer. Two very different bugs; the assertion below says which
+   * one, instead of leaving a red build that only says "0 elements".
+   *
+   * It gets its own budget rather than eating the hover's.
+   */
+  await expect
+    .poll(
+      () =>
+        window.evaluate(async () => {
+          const bridge = (globalThis as unknown as Record<string, unknown>)[
+            'betterCallCompiler'
+          ] as {
+            compiler: {
+              status: (r: Record<string, never>) => Promise<{
+                ok: boolean
+                value?: { status: { interactive: boolean } }
+              }>
+            }
+          }
+          const result = await bridge.compiler.status({})
+          return result.ok && result.value?.status.interactive === true
+        }),
+      { timeout: DAEMON_TIMEOUT, message: 'the interactive daemon never reported ready' }
+    )
+    .toBe(true)
+
   await placeCaret(5, 22)
   await window.keyboard.press('Control+k')
   await window.keyboard.press('Control+i')
