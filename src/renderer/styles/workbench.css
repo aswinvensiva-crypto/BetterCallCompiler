@@ -2916,10 +2916,24 @@ body.workbench--resizing-y * {
 
 .ci-tabs {
   display: flex;
+  align-items: center;
   gap: 2px;
   padding: 6px 8px 0;
   border-bottom: 1px solid var(--bcc-border);
   flex: 0 0 auto;
+}
+
+/* Part 12: which daemon's passes the tabs to its left are showing. Pushed to
+   the far edge of the strip so it reads as a filter over the tabs, not one. */
+.ci-language-filter {
+  margin-left: auto;
+  margin-bottom: 4px;
+  background: var(--bcc-bg-active);
+  color: var(--bcc-fg-muted);
+  border: 1px solid var(--bcc-border);
+  border-radius: 4px;
+  font-size: var(--bcc-font-size-sm);
+  padding: 2px 6px;
 }
 
 .ci-tabs__tab {
@@ -3204,6 +3218,15 @@ body.workbench--resizing-y * {
 .ci-tag--miss {
   background: color-mix(in srgb, var(--bcc-warning) 20%, transparent);
   color: var(--bcc-warning);
+}
+
+/* The History row's language badge, shown only when "All" mixes both daemons
+   together — a neutral pair, since neither language is the "good" outcome. */
+.ci-tag--typescript,
+.ci-tag--bcc {
+  background: var(--bcc-bg-active);
+  color: var(--bcc-fg-subtle);
+  border: 1px solid var(--bcc-border);
 }
 
 .ci-table__row,

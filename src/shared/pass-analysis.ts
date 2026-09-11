@@ -205,6 +205,15 @@ export function hotspotsOf(passes: readonly CompilerPass[], limit = 10): Hotspot
  */
 export interface WhyRecord {
   readonly passId: number
+  /**
+   * `id` is monotonic only WITHIN one daemon's lifetime — Part 12 merges
+   * TypeScript's and BCC's passes into one array, and each keeps counting
+   * from 1 on its own restart, so two passes from different daemons can
+   * legitimately share an id. Carrying `language` alongside `passId` is what
+   * lets a caller find the SAME pass back rather than whichever one merely
+   * has a matching number.
+   */
+  readonly language: CompilerPass['language']
   readonly reason: CompilerPass['reason']
   readonly trigger: readonly string[]
   readonly outcome: CompilerTraceEvent['outcome']
@@ -232,6 +241,7 @@ export function whyChecked(
 
     return {
       passId: pass.id,
+      language: pass.language,
       reason: pass.reason,
       trigger: pass.trigger,
       outcome: event.outcome,

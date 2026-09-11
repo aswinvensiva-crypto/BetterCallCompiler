@@ -988,7 +988,17 @@ function boot(root: string): void {
   for (const relativePath of files) refresh(root, relativePath)
 
   post({ type: 'indexed', fileCount: files.length })
-  check(files, 'cold', [])
+
+  // A workspace with no `.bcc` file at all — the common case, since this
+  // daemon boots alongside the TypeScript one regardless of what the
+  // workspace actually contains — has nothing to check and nothing worth a
+  // pass. Reporting one anyway used to be harmless when only this daemon's
+  // own view read its history; now that `ipc.ts` merges both daemons' passes
+  // into the ONE timeline the Compiler Intelligence panel shows, a trivial
+  // zero-file "cold" pass could land as "the latest pass" in a workspace whose
+  // real activity is entirely TypeScript's, and every number the Live tab
+  // shows would describe the wrong daemon.
+  if (files.length > 0) check(files, 'cold', [])
 }
 
 function handle(request: LangRequest): void {

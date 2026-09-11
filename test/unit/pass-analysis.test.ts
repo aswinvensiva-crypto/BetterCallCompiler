@@ -420,6 +420,7 @@ describe('whyChecked', () => {
 describe('describeWhy', () => {
   const record = (overrides: Partial<WhyRecord> = {}): WhyRecord => ({
     passId: 1,
+    language: 'typescript',
     reason: 'watch',
     trigger: ['src/lib.ts'],
     outcome: 'recomputed',

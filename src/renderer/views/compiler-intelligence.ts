@@ -47,6 +47,21 @@ const TABS: readonly { readonly id: TabId; readonly label: string }[] = [
 let bodyHost: HTMLElement | null = null
 let passes: CompilerPass[] = []
 let activeTab: TabId = 'live'
+
+/**
+ * Part 12: BCC posts the same `CompilerPass` shape TypeScript does, into the
+ * same history, so `passes` above already holds both. This is the only place
+ * that decides which of them the Live/Hotspots/History tabs are looking at —
+ * `renderWhy` and `showWhyForFile` deliberately search the WHOLE history
+ * regardless, because a file belongs to exactly one language and filtering
+ * would only ever hide the answer, never disambiguate it.
+ */
+type LanguageFilter = 'all' | 'typescript' | 'bcc'
+let languageFilter: LanguageFilter = 'all'
+
+function visiblePasses(): CompilerPass[] {
+  return languageFilter === 'all' ? passes : passes.filter((pass) => pass.language === languageFilter)
+}
 /**
  * The file the Why tab is answering about, and the chain back to the edit.
  *
@@ -78,6 +93,10 @@ function ms(value: number): string {
   return value >= 1000 ? `${(value / 1000).toFixed(1)}s` : `${Math.round(value)}ms`
 }
 
+function languageLabel(language: CompilerPass['language']): string {
+  return language === 'bcc' ? 'BCC' : 'TS'
+}
+
 /* -------------------------------- renderers ------------------------------- */
 
 function stat(label: string, value: string, tone?: 'good' | 'warn'): HTMLElement {
@@ -90,6 +109,9 @@ function stat(label: string, value: string, tone?: 'good' | 'warn'): HTMLElement
 
 function renderLive(): HTMLElement {
   const wrap = el('div', 'ci-section')
+  // Shadows the module-level history with whatever the language filter
+  // currently allows — every line below already reads the local `passes`.
+  const passes = visiblePasses()
   const latest = passes[passes.length - 1]
 
   if (latest === undefined) {
@@ -246,7 +268,13 @@ function renderWhyForFocus(relativePath: string, chain: readonly string[]): HTML
 
   wrap.append(el('div', 'ci-why__label', 'What the daemon did about it'))
   const list = el('div', 'ci-trace')
-  const pass = passes.find((candidate) => candidate.id === record.passId)
+  // `id` alone is not enough: it is monotonic only within one daemon's
+  // lifetime, and this array now merges two daemons' histories — matching
+  // `language` too is what stops a coincidentally-numbered BCC pass from
+  // answering for a TypeScript one.
+  const pass = passes.find(
+    (candidate) => candidate.id === record.passId && candidate.language === record.language
+  )
   for (const event of pass?.events ?? []) {
     if (event.key !== `sig:${relativePath}` && event.key !== `diag:${relativePath}`) continue
     list.append(renderTraceRow(event))
@@ -360,7 +388,7 @@ function renderTraceRow(event: CompilerTraceEvent): HTMLElement {
 
 function renderHotspots(): HTMLElement {
   const wrap = el('div', 'ci-section')
-  const hotspots = hotspotsOf(passes)
+  const hotspots = hotspotsOf(visiblePasses())
 
   if (hotspots.length === 0) {
     wrap.append(el('p', 'explorer__empty-text', 'No files checked yet.'))
@@ -387,6 +415,7 @@ function renderHotspots(): HTMLElement {
 
 function renderHistory(): HTMLElement {
   const wrap = el('div', 'ci-section')
+  const passes = visiblePasses()
 
   if (passes.length === 0) {
     wrap.append(el('p', 'explorer__empty-text', 'No passes yet.'))
@@ -397,6 +426,11 @@ function renderHistory(): HTMLElement {
   // Newest first: the thing that just happened is what a person is looking for.
   for (const pass of [...passes].reverse()) {
     const row = el('div', 'ci-history__row')
+    // Only worth a badge when the filter could show both — with one language
+    // selected every row already agrees, and the tag would say nothing new.
+    if (languageFilter === 'all') {
+      row.append(el('span', `ci-tag ci-tag--${pass.language}`, languageLabel(pass.language)))
+    }
     row.append(el('span', 'ci-history__id', `#${pass.id}`))
     row.append(el('span', 'ci-history__text', describePass(pass)))
     row.append(
@@ -421,6 +455,35 @@ const RENDERERS: Readonly<Record<TabId, () => HTMLElement>> = {
 
 /* --------------------------------- mounting ------------------------------- */
 
+const LANGUAGE_FILTERS: readonly { readonly id: LanguageFilter; readonly label: string }[] = [
+  { id: 'all', label: 'All' },
+  { id: 'typescript', label: 'TypeScript' },
+  { id: 'bcc', label: 'BCC' }
+]
+
+/**
+ * The one control this whole feature needed to add for Part 12: which
+ * daemon's passes the Live/Hotspots/History tabs are looking at. A `<select>`
+ * rather than a second tab strip, because it is a filter over the SAME three
+ * tabs rather than a fourth thing to look at.
+ */
+function renderLanguageFilter(): HTMLElement {
+  const select = el('select', 'ci-language-filter')
+  select.setAttribute('aria-label', 'Filter by language')
+  for (const option of LANGUAGE_FILTERS) {
+    const node = document.createElement('option')
+    node.value = option.id
+    node.textContent = option.label
+    node.selected = option.id === languageFilter
+    select.append(node)
+  }
+  select.addEventListener('change', () => {
+    languageFilter = select.value as LanguageFilter
+    render()
+  })
+  return select
+}
+
 function render(): void {
   if (bodyHost === null) return
 
@@ -438,6 +501,7 @@ function render(): void {
     })
     strip.append(button)
   }
+  strip.append(renderLanguageFilter())
   root.append(strip)
   root.append(RENDERERS[activeTab]())
 
