@@ -11,16 +11,19 @@ import {
   type LangQueryResult,
   type LangRequest
 } from '../shared/lang-protocol'
-import type {
-  DefinitionResult,
-  DiagnosticsBatch,
-  DocumentOverlay,
-  DocumentSymbolsResult,
-  FileDiagnostics,
-  FsWatchEvent,
-  HoverResult,
-  ReferencesResult,
-  RenameResult
+import {
+  unsupportedObservatorySnapshot,
+  type CompilerPass,
+  type DefinitionResult,
+  type DiagnosticsBatch,
+  type DocumentOverlay,
+  type DocumentSymbolsResult,
+  type FileDiagnostics,
+  type FsWatchEvent,
+  type HoverResult,
+  type ObservatorySnapshot,
+  type ReferencesResult,
+  type RenameResult
 } from '../shared/types'
 import { clearOwner, publishDiagnostics } from './diagnostic-store'
 
@@ -116,20 +119,52 @@ const pendingQueries = new Map<number, (result: LangQueryResult) => void>()
 /** How long an interactive query waits before answering empty. */
 const QUERY_TIMEOUT_MS = 5_000
 
+/**
+ * In-flight Observatory requests, keyed by request id — the same shape as
+ * `pendingQueries` and for the same three reasons: the worker can answer out
+ * of order, an answer can never arrive, and a restart must settle everything
+ * or a daemon crash mid-Observatory-request hangs the invoke until its
+ * timeout.
+ */
+const pendingObservatory = new Map<number, (snapshot: ObservatorySnapshot) => void>()
+
+/** How long an Observatory request waits before answering "unsupported". */
+const OBSERVATORY_TIMEOUT_MS = 5_000
+
+/**
+ * Part 12, surfaced: every `CompilerPass` this daemon has posted, bounded the
+ * same way `compiler-service.ts` bounds its own — a session left open for
+ * hours must not grow this without limit.
+ */
+const MAX_PASS_HISTORY = 50
+let passes: CompilerPass[] = []
+
 let emitDiagnostics: ((batch: DiagnosticsBatch) => void) | null = null
 let emitChanged: (() => void) | null = null
+let emitPass: ((pass: CompilerPass) => void) | null = null
 
 /**
  * `onChanged` fires after diagnostics are published, so the caller can re-emit
  * a status the store's counts feed. Without it a `.bcc` error would appear in
  * the Problems panel while the status bar kept reporting the old total.
+ *
+ * `onPass` is optional — most callers of this module (the unit tests included)
+ * have no Compiler Intelligence panel to feed and should not have to supply a
+ * no-op.
  */
 export function setLangEmitters(
   onDiagnostics: (batch: DiagnosticsBatch) => void,
-  onChanged: () => void
+  onChanged: () => void,
+  onPass?: (pass: CompilerPass) => void
 ): void {
   emitDiagnostics = onDiagnostics
   emitChanged = onChanged
+  emitPass = onPass ?? null
+}
+
+/** Every pass this daemon has posted this session, oldest first. */
+export function langPasses(): CompilerPass[] {
+  return passes
 }
 
 export function setLangWorkerFactory(factory: LangWorkerFactory | null): void {
@@ -293,6 +328,19 @@ function receive(message: LangMessage): void {
       return
     }
 
+    case 'observatoryResult': {
+      const settle = pendingObservatory.get(message.requestId)
+      pendingObservatory.delete(message.requestId)
+      settle?.(message.snapshot)
+      return
+    }
+
+    case 'pass':
+      passes.push(message.pass)
+      if (passes.length > MAX_PASS_HISTORY) passes = passes.slice(-MAX_PASS_HISTORY)
+      emitPass?.(message.pass)
+      return
+
     case 'failure':
       failure = message.detail
       return
@@ -372,6 +420,10 @@ function abandonQueries(): void {
   // be: `query` above discards a result whose kind does not match what it asked
   // for, so any of them collapses to that caller's own empty answer.
   for (const settle of settling) settle(emptyLangQueryResult('definition'))
+
+  const settlingObservatory = [...pendingObservatory.values()]
+  pendingObservatory.clear()
+  for (const settle of settlingObservatory) settle(unsupportedObservatorySnapshot('', ''))
 }
 
 /* -------------------------------- batching -------------------------------- */
@@ -532,6 +584,42 @@ export function langHover(
   return query('hover', relativePath, offset, overlay)
 }
 
+/**
+ * Every stage of one `.bcc` file, for the Observatory.
+ *
+ * A parallel to `query` above rather than a call to it: the answer here is not
+ * one of the five `LangQueryResult` shapes, so the discriminant-narrowing
+ * `withoutKind` has nothing to strip and `pendingObservatory` is its own map
+ * rather than a sixth `LangQueryKind`. Resolves to `unsupported` — never
+ * rejects — for the same reason `query` never rejects: a dead daemon or a slow
+ * answer must read as "nothing to show yet", not as a console error with
+ * nothing pointing at the cause.
+ */
+export function langObservatory(
+  relativePath: string,
+  overlay: DocumentOverlay | null
+): Promise<ObservatorySnapshot> {
+  const empty = unsupportedObservatorySnapshot(relativePath, relativePath)
+  if (worker === null) return Promise.resolve(empty)
+
+  return new Promise((settle) => {
+    const requestId = nextRequestId++
+
+    const timer = setTimeout(() => {
+      pendingObservatory.delete(requestId)
+      settle(empty)
+    }, OBSERVATORY_TIMEOUT_MS)
+    timer.unref?.()
+
+    pendingObservatory.set(requestId, (snapshot) => {
+      clearTimeout(timer)
+      settle(snapshot)
+    })
+
+    send({ type: 'observatory', requestId, relativePath, overlay })
+  })
+}
+
 /** Test seam: resets every module-level value between cases. */
 export function resetLangForTests(): void {
   stopLang()
@@ -539,8 +627,10 @@ export function resetLangForTests(): void {
   workspaceRoot = null
   emitDiagnostics = null
   emitChanged = null
+  emitPass = null
   restartTimestamps = []
   missedHeartbeats = 0
   heartbeatNonce = 0
   nextRequestId = 1
+  passes = []
 }

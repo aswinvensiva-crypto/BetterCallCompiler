@@ -305,13 +305,25 @@ export function describePass(pass: CompilerPass): string {
           ? 'Unsaved buffer'
           : pass.reason === 'idle'
             ? 'Deferred work drained in the background'
-            : 'File changed on disk'
+            : pass.reason === 'observatory'
+              ? 'Observatory opened'
+              : 'File changed on disk'
 
   // One file named, so name it. This is the sentence the History tab shows, and
   // it could not previously say WHICH file changed.
   const named = pass.trigger.length === 1 ? `${trigger} (${pass.trigger[0]})` : trigger
 
   if (pass.requested === 0) return `${named} — nothing to check`
+
+  // An observatory pass counts FUNCTIONS, not files, and asks the pipeline to
+  // lower and optimise rather than to type-check — the same two numbers, in
+  // words that describe what actually ran.
+  if (pass.reason === 'observatory') {
+    return (
+      `${named} — ${pass.requested} function${pass.requested === 1 ? '' : 's'} inspected, ` +
+      `${pass.recomputed} lowered, ${pass.reused} reused`
+    )
+  }
 
   return (
     `${named} — ${pass.requested} file${pass.requested === 1 ? '' : 's'} in the ` +

@@ -28,6 +28,7 @@ import {
   startCompiler
 } from './compiler-service'
 import { isBccPath } from '../shared/lang-diagnostics'
+import { unsupportedObservatorySnapshot } from '../shared/types'
 import {
   sendCommand,
   setBreakpoints as setDebugBreakpoints,
@@ -48,6 +49,8 @@ import {
   langDefinition,
   langDocumentSymbols,
   langHover,
+  langObservatory,
+  langPasses,
   langReferences,
   langRename,
   openLangDocument,
@@ -467,7 +470,14 @@ export function createHandlerMap(): HandlerMap {
       restartInteractive()
       return { restarted: true as const }
     },
-    'compiler:passes': () => ({ passes: compilerPasses() }),
+    // Merged and time-ordered rather than concatenated: `id` resets whenever
+    // EITHER daemon restarts and is only comparable within its own worker, so
+    // `at` — wall-clock `Date.now()` — is the only field that can order the two
+    // histories against each other. Each pass still carries `language`, so the
+    // panel that renders this can tell which one produced any given row.
+    'compiler:passes': () => ({
+      passes: [...compilerPasses(), ...langPasses()].sort((a, b) => a.at - b.at)
+    }),
 
     /* ----------------------------- navigation ----------------------------- */
 
@@ -522,6 +532,15 @@ export function createHandlerMap(): HandlerMap {
       isBccPath(request.relativePath)
         ? await langDocumentSymbols(request.relativePath, request.overlay)
         : { symbols: [] },
+
+    // The Observatory, BCC-only: TypeScript has no IR, no SSA and no bytecode
+    // anywhere in this codebase — `ts.LanguageService` is the whole engine —
+    // so a non-`.bcc` file gets the same `supported: false` answer the worker
+    // itself would give, without a round trip to learn that.
+    'compiler:observatory': async (request) =>
+      isBccPath(request.relativePath)
+        ? await langObservatory(request.relativePath, request.overlay)
+        : unsupportedObservatorySnapshot(request.relativePath, request.relativePath),
 
     // Hover for `.bcc` is the BCC daemon's; for TypeScript it is the
     // interactive daemon's, which resolves imports and so can describe a symbol

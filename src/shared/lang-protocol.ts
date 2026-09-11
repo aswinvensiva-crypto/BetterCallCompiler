@@ -1,9 +1,11 @@
 import type {
+  CompilerPass,
   DefinitionResult,
   DocumentOverlay,
   DocumentSymbolsResult,
   FileDiagnostics,
   HoverResult,
+  ObservatorySnapshot,
   ReferencesResult,
   RenameResult
 } from './types'
@@ -94,12 +96,31 @@ export interface LangQueryRequest {
   readonly overlay: DocumentOverlay | null
 }
 
+/**
+ * Part 11: every stage of one file, for the Observatory.
+ *
+ * A separate message from `LangQueryRequest` rather than a sixth `kind` on it.
+ * That union answers a question about ONE OFFSET and is engineered around
+ * that — `respond()` reads `parsed`/`resolution`/`types` for the file and
+ * narrows from there. This asks for the whole file's pipeline output, keeps no
+ * offset, and its answer is an order of magnitude bigger, so it does not belong
+ * on the keystroke-shaped path the query timeout and the interactive-worker
+ * split were built for.
+ */
+export interface LangObservatoryRequest {
+  readonly type: 'observatory'
+  readonly requestId: number
+  readonly relativePath: string
+  readonly overlay: DocumentOverlay | null
+}
+
 export type LangRequest =
   | LangBootRequest
   | LangFilesChangedRequest
   | LangOpenDocumentRequest
   | LangCloseDocumentRequest
   | LangQueryRequest
+  | LangObservatoryRequest
   | LangPingRequest
 
 /* ------------------------------ worker → main ----------------------------- */
@@ -162,12 +183,34 @@ export interface LangQueryResultMessage {
   readonly result: LangQueryResult
 }
 
+export interface LangObservatoryResultMessage {
+  readonly type: 'observatoryResult'
+  readonly requestId: number
+  readonly snapshot: ObservatorySnapshot
+}
+
+/**
+ * Part 12, made visible: the same `CompilerPass` shape the TypeScript daemon
+ * posts, so `compiler-service.ts` can fold both into one history without the
+ * renderer needing to know two compilers exist. Posted after every `check()`
+ * pass AND after every `observatory` request, since asking the Observatory for
+ * IR/SSA/passes is itself demand-driven work the engine can answer from memo —
+ * and a panel that only showed the check pipeline's reuse would be showing half
+ * the claim.
+ */
+export interface LangPassMessage {
+  readonly type: 'pass'
+  readonly pass: CompilerPass
+}
+
 export type LangMessage =
   | LangReadyMessage
   | LangDiagnosticsMessage
   | LangPongMessage
   | LangIndexedMessage
   | LangQueryResultMessage
+  | LangObservatoryResultMessage
+  | LangPassMessage
   | LangFailureMessage
 
 /**
@@ -212,6 +255,8 @@ export function isLangMessage(value: unknown): value is LangMessage {
     type === 'pong' ||
     type === 'indexed' ||
     type === 'queryResult' ||
+    type === 'observatoryResult' ||
+    type === 'pass' ||
     type === 'failure'
   )
 }
@@ -225,6 +270,7 @@ export function isLangRequest(value: unknown): value is LangRequest {
     type === 'openDocument' ||
     type === 'closeDocument' ||
     type === 'query' ||
+    type === 'observatory' ||
     type === 'ping'
   )
 }

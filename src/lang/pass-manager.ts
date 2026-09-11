@@ -76,14 +76,15 @@ export interface PassOutcome {
   readonly before: string
   readonly after: string
   /**
-   * The full IR text before and after, for the Observatory's Passes tab to
-   * show side by side. `before`/`after` above stay hashes rather than growing
-   * this same text a second time, because the golden tests and `changed`
-   * compare hashes and a duplicate text field would be one more place for the
-   * two to silently disagree.
+   * The actual IR before and after, for the Observatory's Passes tab to show
+   * side by side WITH working click-to-source — a plain text field could not
+   * carry the spans each line needs. `before`/`after` above stay content
+   * hashes rather than being derived from these on every comparison, because
+   * `changed` and the golden tests want a cheap, printed-text-shaped identity
+   * and have no use for a full object graph.
    */
-  readonly beforeText: string
-  readonly afterText: string
+  readonly beforeFn: IrFunction
+  readonly afterFn: IrFunction
   /**
    * Whether the IR actually moved.
    *
@@ -214,8 +215,8 @@ export function runPipeline(module: Module, passes: readonly Pass[]): PipelineRe
         fn: fn.name,
         before: contentHash(fn),
         after: contentHash(result.fn),
-        beforeText: printFunction(fn),
-        afterText: printFunction(result.fn),
+        beforeFn: fn,
+        afterFn: result.fn,
         changed: before !== after,
         notes: result.notes
       })

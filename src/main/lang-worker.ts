@@ -17,22 +17,58 @@ import {
 import { parse, type ParseResult } from '../lang/parser'
 import { resolve, type Resolution } from '../lang/symbols'
 import { typeCheck, type TypeInfo } from '../lang/type-check'
-import { BCC_EXTENSION, toDiagnosticMessages } from '../shared/lang-diagnostics'
+import {
+  canonicalLowerInput,
+  functionArgument,
+  functionsOf,
+  lowerInputFor,
+  splitFunctionArgument,
+  type LowerInput
+} from '../lang/incremental'
+import { lowerFunction, lowerTopLevel } from '../lang/lower'
+import { printFunction, type IrFunction } from '../lang/ir'
+import { toSsa } from '../lang/ssa'
+import { runPipeline, type PipelineReport } from '../lang/pass-manager'
+import { OPTIMISATION_PIPELINE } from '../lang/passes'
+import { compileFunction, BytecodeError } from '../lang/bytecode'
+import {
+  printAstLines,
+  printBytecodeLines,
+  printFunctionLines,
+  printScopeLines,
+  printTokenLines,
+  type CodeLine as PrintedLine
+} from '../lang/print'
+import { BCC_EXTENSION, isBccPath, toDiagnosticMessages } from '../shared/lang-diagnostics'
 import {
   emptyLangQueryResult,
   isLangRequest,
   type LangMessage,
+  type LangObservatoryRequest,
   type LangQueryRequest,
   type LangQueryResult,
   type LangRequest
 } from '../shared/lang-protocol'
-import { createEngine, queryKey, QueryCycleError } from '../shared/query-engine'
+import { isMemoReuse } from '../shared/pass-analysis'
 import {
+  createEngine,
+  queryKey,
+  QueryCycleError,
+  type Engine,
+  type QueryTrace
+} from '../shared/query-engine'
+import {
+  unsupportedObservatorySnapshot,
   MAX_REFERENCE_RESULTS,
+  type CodeLine,
+  type CompilerPass,
+  type CompilerTraceEvent,
   type DiagnosticMessage,
   type DocumentSymbolNode,
   type FileDiagnostics,
   type LanguageLocation,
+  type ObservatoryFunction,
+  type ObservatorySnapshot,
   type SourceRange,
   type TextEdit
 } from '../shared/types'
@@ -148,7 +184,80 @@ const Q_SYMBOLS = 'symbols'
 const Q_TYPES = 'types'
 const Q_DIAG = 'diag'
 
-const engine = createEngine()
+/**
+ * Part 12's four new namespaces, keyed `relativePath#functionName` rather than
+ * by file. `lowerInput` is the firewall described in `incremental.ts`:
+ * everything downstream depends on IT rather than on `ast`/`symbols`/`types`
+ * directly, which is what lets editing one function leave every other
+ * function's `ir`/`ssa`/`pass` memo untouched. See the equality functions
+ * below for how each layer decides "nothing changed" — none of them use the
+ * engine's default `Object.is`, because every one of these computations
+ * returns a freshly built object graph even when nothing about it moved.
+ */
+const Q_LOWER = 'lowerInput'
+const Q_IR = 'ir'
+const Q_SSA = 'ssa'
+const Q_PASSES = 'pass'
+
+/** What `Q_LOWER` hands to `Q_IR` — the real objects to lower with, alongside
+ * the narrow string the engine actually compares. */
+interface LowerFacts {
+  readonly input: LowerInput
+  readonly canonical: string
+}
+
+function sameCanonical(a: unknown, b: unknown): boolean {
+  return (a as LowerFacts).canonical === (b as LowerFacts).canonical
+}
+
+/**
+ * `printFunction` never prints a span, so two functions that are logically
+ * identical but sit at different lines — because an EARLIER function in the
+ * file grew or shrank — still compare equal here. That is deliberate: the
+ * freshly recomputed value (with its now-correct spans) is still what gets
+ * stored, so nothing downstream ever sees a stale position; this equality
+ * only decides whether SSA and the passes need to redo their own work.
+ */
+function sameIr(a: unknown, b: unknown): boolean {
+  const fa = a as IrFunction | null
+  const fb = b as IrFunction | null
+  if (fa === null || fb === null) return fa === fb
+  return printFunction(fa) === printFunction(fb)
+}
+
+/** Cheap and sufficient: `changed` and the content hashes are already computed
+ * per outcome, so two reports are the same exactly when both agree. */
+function samePipeline(a: unknown, b: unknown): boolean {
+  const ra = a as PipelineReport | null
+  const rb = b as PipelineReport | null
+  if (ra === null || rb === null) return ra === rb
+  if ((ra.failure === null) !== (rb.failure === null)) return false
+  if (ra.failure !== null && rb.failure !== null) {
+    if (ra.failure.pass !== rb.failure.pass || ra.failure.message !== rb.failure.message) {
+      return false
+    }
+  }
+  if (ra.outcomes.length !== rb.outcomes.length) return false
+  return ra.outcomes.every((outcome, index) => {
+    const other = rb.outcomes[index]
+    return (
+      other !== undefined &&
+      outcome.pass === other.pass &&
+      outcome.before === other.before &&
+      outcome.after === other.after &&
+      outcome.changed === other.changed
+    )
+  })
+}
+
+/** Trace lines for the pass currently in flight — see `reportPass`. */
+let passEvents: QueryTrace[] = []
+
+const engine = createEngine({
+  onTrace: (trace) => {
+    passEvents.push(trace)
+  }
+})
 
 engine.defineQuery(Q_TOKENS, (relativePath, ctx) => {
   const text = ctx.get<string | null>(queryKey(Q_TEXT, relativePath))
@@ -198,6 +307,82 @@ engine.defineQuery(Q_DIAG, (relativePath, ctx) => {
 
   return toDiagnosticMessages(relativePath, toAbsolute(root, relativePath), all)
 })
+
+/**
+ * `argument` is `relativePath#functionName`. Depends on the WHOLE file's
+ * `ast`/`symbols`/`types` — it has no choice, since `lowerFunction` needs the
+ * real, current `Resolution`/`TypeInfo` objects — but its own equality never
+ * lets that leak past this query: only `canonical` (this function's own
+ * subtree plus what it calls) decides whether `Q_IR` below has to redo
+ * anything. See `incremental.ts` for why that string is safe to trust.
+ */
+engine.defineQuery(
+  Q_LOWER,
+  (argument, ctx): LowerFacts => {
+    const { relativePath, name } = splitFunctionArgument(argument)
+    const parsed = ctx.get<ParseResult>(queryKey(Q_AST, relativePath))
+    const resolution = ctx.get<Resolution>(queryKey(Q_SYMBOLS, relativePath))
+    const typeInfo = ctx.get<TypeInfo>(queryKey(Q_TYPES, relativePath))
+    const input = lowerInputFor(parsed.program, resolution, typeInfo, name)
+    return { input, canonical: canonicalLowerInput(input) }
+  },
+  sameCanonical
+)
+
+/**
+ * Lowers exactly one function. Null when `argument` names a function that has
+ * been renamed or removed since the caller last asked — the Observatory and
+ * `respondObservatory` both have to expect that, not just the happy path.
+ */
+engine.defineQuery(
+  Q_IR,
+  (argument, ctx): IrFunction | null => {
+    const { input } = ctx.get<LowerFacts>(queryKey(Q_LOWER, argument))
+    if (input.declaration !== null) {
+      return lowerFunction(input.declaration, input.resolution, input.typeInfo, input.loweredNames)
+    }
+    if (input.topLevelStatements !== null) {
+      return lowerTopLevel(
+        input.topLevelStatements,
+        input.span,
+        input.resolution,
+        input.typeInfo,
+        input.loweredNames
+      )
+    }
+    return null
+  },
+  sameIr
+)
+
+engine.defineQuery(
+  Q_SSA,
+  (argument, ctx): IrFunction | null => {
+    const fn = ctx.get<IrFunction | null>(queryKey(Q_IR, argument))
+    return fn === null ? null : toSsa(fn)
+  },
+  sameIr
+)
+
+/**
+ * The four Part 8 passes, run over a single-function module.
+ *
+ * Whole-MODULE verification (a call whose arity no longer matches some OTHER
+ * function, say) is deliberately not this query's job — that is what the real
+ * VM run in `lang-vm-worker.ts` still does over the whole `Module` before
+ * anything executes. This one only proves the single-function invariants
+ * `verify.ts` checks, which is what the Observatory and the incrementality
+ * story need and no more.
+ */
+engine.defineQuery(
+  Q_PASSES,
+  (argument, ctx): PipelineReport | null => {
+    const fn = ctx.get<IrFunction | null>(queryKey(Q_SSA, argument))
+    if (fn === null) return null
+    return runPipeline({ functions: [fn] }, OPTIMISATION_PIPELINE)
+  },
+  samePipeline
+)
 
 /**
  * The current text of a file: the unsaved buffer if there is one, else disk.
@@ -279,9 +464,17 @@ function walk(root: string): string[] {
  * "now clean" rather than as an empty batch to skip, and this is where that
  * signal is produced.
  */
-function check(paths: readonly string[]): void {
+function check(
+  paths: readonly string[],
+  reason: CompilerPass['reason'] = 'watch',
+  trigger: readonly string[] = paths
+): void {
   const root = workspaceRoot
   if (root === null) return
+
+  passEvents = []
+  const startedAt = Date.now()
+  const before = engine.stats()
 
   const produced: FileDiagnostics[] = []
   const nowDirty = new Set<string>()
@@ -355,6 +548,81 @@ function check(paths: readonly string[]): void {
   previouslyDirty = nowDirty
 
   if (produced.length > 0) post({ type: 'diagnostics', files: produced, settled: true })
+
+  // Reported AFTER the diagnostics, for the same reason `compiler-worker.ts`
+  // reports its own pass last: "the pass is done" is a claim a consumer can
+  // act on, and it must not be true before the answers it describes are on
+  // the wire.
+  reportPass(reason, Q_DIAG, paths.length, startedAt, before, trigger)
+}
+
+let passCounter = 0
+
+function toTraceEvent(trace: QueryTrace): CompilerTraceEvent {
+  return {
+    key: trace.key,
+    outcome: trace.outcome,
+    durability: trace.durability,
+    ms: trace.ms,
+    depth: trace.depth,
+    depsWalked: trace.depsWalked
+  }
+}
+
+/**
+ * Posts one `CompilerPass`, the same shape `compiler-worker.ts` posts for
+ * TypeScript — Part 12's whole point. `topLevelNamespace` is what
+ * `recomputed`/`reused` are counted from: a `diag:` check pulls `text:`,
+ * `tokens:`, `ast:`, `symbols:` and `types:` as SUPPORTING queries, and
+ * counting those too would inflate the headline numbers by the length of the
+ * pipeline rather than the number of things actually asked about. Every layer
+ * still appears in `events`, for a reader who wants the whole trace.
+ */
+function reportPass(
+  reason: CompilerPass['reason'],
+  topLevelNamespace: string,
+  requested: number,
+  startedAt: number,
+  before: ReturnType<Engine['stats']>,
+  trigger: readonly string[]
+): void {
+  const prefix = `${topLevelNamespace}:`
+  let recomputed = 0
+  let reused = 0
+  for (const event of passEvents) {
+    if (!event.key.startsWith(prefix)) continue
+    if (isMemoReuse(event.outcome)) reused++
+    else recomputed++
+  }
+
+  const after = engine.stats()
+
+  post({
+    type: 'pass',
+    pass: {
+      id: ++passCounter,
+      language: 'bcc',
+      at: Date.now(),
+      reason,
+      trigger: [...trigger],
+      requested,
+      recomputed,
+      reused,
+      totalMs: Date.now() - startedAt,
+      events: passEvents.map(toTraceEvent),
+      stats: {
+        revision: after.revision,
+        memoCount: after.memoCount,
+        hits: after.hits - before.hits,
+        misses: after.misses - before.misses,
+        recomputes: after.recomputes - before.recomputes,
+        cutoffs: after.cutoffs - before.cutoffs,
+        durableSkips: after.durableSkips - before.durableSkips
+      }
+    }
+  })
+
+  passEvents = []
 }
 
 /* ------------------------------- answering -------------------------------- */
@@ -558,6 +826,153 @@ function respond(request: LangQueryRequest): void {
   post({ type: 'queryResult', requestId: request.requestId, result })
 }
 
+/* ----------------------------- the Observatory ----------------------------- */
+
+function toWireLines(lines: readonly PrintedLine[]): CodeLine[] {
+  return lines.map((entry) => ({
+    text: entry.text,
+    range: entry.span === null ? null : toRange(entry.span)
+  }))
+}
+
+/** One line per Part 8 pass, looked up once rather than per function. */
+const PASS_SUMMARIES = new Map(OPTIMISATION_PIPELINE.map((pass) => [pass.name, pass.summary]))
+
+/**
+ * Every stage's answer for one function.
+ *
+ * Never throws. A pass that halts the pipeline or a bytecode compile that
+ * refuses (mem2reg left a slot behind, which the verifier's own single-function
+ * scope cannot always catch — see `Q_PASSES`'s doc comment) is DATA the panel
+ * shows, in `failure`, not an exception that would take every other function in
+ * the file down with it.
+ */
+function functionSnapshot(
+  relativePath: string,
+  entry: { readonly name: string; readonly span: Span; readonly isSynthetic: boolean }
+): ObservatoryFunction {
+  const argument = functionArgument(relativePath, entry.name)
+
+  const irFn = engine.get<IrFunction | null>(queryKey(Q_IR, argument))
+  const ssaFn = engine.get<IrFunction | null>(queryKey(Q_SSA, argument))
+  const report = engine.get<PipelineReport | null>(queryKey(Q_PASSES, argument))
+
+  const passesOut: ObservatoryFunction['passes'] = []
+  let bytecode: CodeLine[] | null = null
+  let failure: ObservatoryFunction['failure'] = null
+
+  if (report !== null) {
+    for (const outcome of report.outcomes) {
+      passesOut.push({
+        name: outcome.pass,
+        summary: PASS_SUMMARIES.get(outcome.pass) ?? '',
+        changed: outcome.changed,
+        notes: [...outcome.notes],
+        before: toWireLines(printFunctionLines(outcome.beforeFn)),
+        after: toWireLines(printFunctionLines(outcome.afterFn))
+      })
+    }
+
+    if (report.failure !== null) {
+      failure = { pass: report.failure.pass, message: report.failure.message }
+    } else {
+      const [optimised] = report.module.functions
+      if (optimised !== undefined) {
+        try {
+          bytecode = toWireLines(printBytecodeLines(compileFunction(optimised)))
+        } catch (error) {
+          failure = {
+            pass: null,
+            message:
+              error instanceof BytecodeError ? error.message : 'could not compile to bytecode'
+          }
+        }
+      }
+    }
+  }
+
+  return {
+    name: entry.name,
+    isSynthetic: entry.isSynthetic,
+    range: toRange(entry.span),
+    ir: irFn === null ? [] : toWireLines(printFunctionLines(irFn)),
+    ssa: ssaFn === null ? [] : toWireLines(printFunctionLines(ssaFn)),
+    passes: passesOut,
+    bytecode,
+    failure
+  }
+}
+
+/**
+ * Every stage of one file — the Observatory's whole answer in one round trip,
+ * rather than eight. `known.has` is the same gate `frontEnd` uses for
+ * navigation: a file the walk never found and no overlay has named yet has
+ * nothing to show.
+ */
+function buildObservatorySnapshot(root: string, relativePath: string): ObservatorySnapshot {
+  if (!isBccPath(relativePath) || !known.has(relativePath)) {
+    return unsupportedObservatorySnapshot(relativePath, toAbsolute(root, relativePath))
+  }
+
+  passEvents = []
+  const startedAt = Date.now()
+  const before = engine.stats()
+
+  const source = currentText(root, relativePath) ?? ''
+  const tokens = engine.get<Token[]>(queryKey(Q_TOKENS, relativePath))
+  const parsed = engine.get<ParseResult>(queryKey(Q_AST, relativePath))
+  const resolution = engine.get<Resolution>(queryKey(Q_SYMBOLS, relativePath))
+  const diagnostics = engine.get<DiagnosticMessage[]>(queryKey(Q_DIAG, relativePath))
+
+  const entries = functionsOf(parsed.program)
+  const functions = entries.map((entry) => functionSnapshot(relativePath, entry))
+
+  // Reported last, exactly like `check`: the pass says work is done only once
+  // the snapshot describing that work is about to go out.
+  reportPass('observatory', Q_PASSES, entries.length, startedAt, before, [relativePath])
+
+  return {
+    supported: true,
+    relativePath,
+    path: toAbsolute(root, relativePath),
+    source,
+    tokens: toWireLines(printTokenLines(tokens)),
+    ast: toWireLines(printAstLines(parsed.program)),
+    symbols: toWireLines(printScopeLines(resolution.scope)),
+    diagnostics,
+    functions
+  }
+}
+
+/** Answers one Observatory request, and always answers — same reasoning as `respond`. */
+function respondObservatory(request: LangObservatoryRequest): void {
+  const root = workspaceRoot
+  let snapshot: ObservatorySnapshot
+
+  try {
+    if (root === null) {
+      snapshot = unsupportedObservatorySnapshot(request.relativePath, request.relativePath)
+    } else {
+      // Inside the try, deliberately — see `respond`'s identical note.
+      if (request.overlay !== null) syncOverlay(root, request.relativePath, request.overlay)
+      snapshot = buildObservatorySnapshot(root, request.relativePath)
+    }
+  } catch (error) {
+    if (!(error instanceof QueryCycleError)) {
+      post({
+        type: 'failure',
+        detail: error instanceof Error ? error.message : 'a BCC observatory request failed'
+      })
+    }
+    snapshot = unsupportedObservatorySnapshot(
+      request.relativePath,
+      root === null ? request.relativePath : toAbsolute(root, request.relativePath)
+    )
+  }
+
+  post({ type: 'observatoryResult', requestId: request.requestId, snapshot })
+}
+
 /* ------------------------------- messages --------------------------------- */
 
 function boot(root: string): void {
@@ -573,7 +988,7 @@ function boot(root: string): void {
   for (const relativePath of files) refresh(root, relativePath)
 
   post({ type: 'indexed', fileCount: files.length })
-  check(files)
+  check(files, 'cold', [])
 }
 
 function handle(request: LangRequest): void {
@@ -601,7 +1016,7 @@ function handle(request: LangRequest): void {
         if (refresh(root, relativePath)) touched.push(relativePath)
       }
 
-      if (touched.length > 0) check(touched)
+      if (touched.length > 0) check(touched, 'watch', touched)
       return
     }
 
@@ -622,7 +1037,9 @@ function handle(request: LangRequest): void {
       // and nothing has checked since. Without the second, an interactive query
       // between two pushes swallows the re-check entirely.
       const moved = refresh(root, request.relativePath)
-      if (moved || checkOwed.has(request.relativePath)) check([request.relativePath])
+      if (moved || checkOwed.has(request.relativePath)) {
+        check([request.relativePath], 'buffer', [request.relativePath])
+      }
       return
     }
 
@@ -634,7 +1051,7 @@ function handle(request: LangRequest): void {
       // just discarded — closing without saving must not leave the editor's
       // unsaved errors behind.
       refresh(root, request.relativePath)
-      check([request.relativePath])
+      check([request.relativePath], 'buffer', [request.relativePath])
       return
     }
 
@@ -643,6 +1060,10 @@ function handle(request: LangRequest): void {
     // one the 300ms debounce last got around to sending.
     case 'query':
       respond(request)
+      return
+
+    case 'observatory':
+      respondObservatory(request)
       return
 
     case 'ping':

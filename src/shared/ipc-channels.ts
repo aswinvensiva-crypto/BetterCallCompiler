@@ -93,6 +93,10 @@ export const INVOKE_CHANNEL_NAMES = [
   'compiler:references',
   'compiler:rename',
   'compiler:documentSymbols',
+  // Part 11: every stage of one `.bcc` file's compilation, for the Observatory.
+  // Same routing philosophy as the navigation channels above — one name, and
+  // main decides by extension whether there is anything to answer.
+  'compiler:observatory',
   'compiler:hover',
   'compiler:codeActions',
   // Keystroke-frequency, and served by the third worker — see

@@ -154,7 +154,11 @@ function createWindow(): BrowserWindow {
   // cannot tell which compiler produced a row, and none of them changed.
   setLangEmitters(
     (batch) => emitEvent(win, 'compiler:diagnosticsChanged', batch),
-    () => emitEvent(win, 'compiler:statusChanged', compilerStatus())
+    () => emitEvent(win, 'compiler:statusChanged', compilerStatus()),
+    // Same event as the TypeScript daemon's own passes, tagged `language: 'bcc'`
+    // rather than a name of its own — Part 12's whole point, so the Compiler
+    // Intelligence panel can show both without knowing two compilers exist.
+    (pass) => emitEvent(win, 'compiler:passCompleted', pass)
   )
   // The interactive daemon has no stream of its own — it publishes nothing and
   // is only ever asked. Its readiness still rides on the compiler's status, so

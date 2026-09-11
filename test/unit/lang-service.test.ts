@@ -32,7 +32,13 @@ import {
   type LangQueryRequest,
   type LangRequest
 } from '../../src/shared/lang-protocol'
-import type { DiagnosticsBatch, FileDiagnostics, FsWatchEvent } from '../../src/shared/types'
+import {
+  unsupportedObservatorySnapshot,
+  type CompilerPass,
+  type DiagnosticsBatch,
+  type FileDiagnostics,
+  type FsWatchEvent
+} from '../../src/shared/types'
 
 /**
  * The BCC supervisor and the store both compilers publish into.
@@ -597,7 +603,22 @@ describe('protocol guards', () => {
       newName: null,
       overlay: null
     },
-    ping: { type: 'ping', nonce: 1 }
+    ping: { type: 'ping', nonce: 1 },
+    observatory: { type: 'observatory', requestId: 1, relativePath: 'a.bcc', overlay: null }
+  }
+
+  const samplePass: CompilerPass = {
+    id: 1,
+    language: 'bcc',
+    at: 0,
+    reason: 'watch',
+    trigger: [],
+    requested: 1,
+    recomputed: 1,
+    reused: 0,
+    totalMs: 1,
+    events: [],
+    stats: { revision: 1, memoCount: 0, hits: 0, misses: 0, recomputes: 0, cutoffs: 0, durableSkips: 0 }
   }
 
   const messages: Record<LangMessage['type'], LangMessage> = {
@@ -610,6 +631,12 @@ describe('protocol guards', () => {
       requestId: 1,
       result: { kind: 'definition', locations: [] }
     },
+    observatoryResult: {
+      type: 'observatoryResult',
+      requestId: 1,
+      snapshot: unsupportedObservatorySnapshot('a.bcc', '/w/a.bcc')
+    },
+    pass: { type: 'pass', pass: samplePass },
     failure: { type: 'failure', detail: 'no' }
   }
 

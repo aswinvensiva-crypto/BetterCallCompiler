@@ -34,6 +34,7 @@ import {
   fileDiagnosticsSchema,
   fileEditSchema,
   hoverResultSchema,
+  observatorySnapshotSchema,
   referencesResultSchema,
   signatureHelpResultSchema,
   renameResultSchema,
@@ -673,6 +674,19 @@ export const INVOKE_CHANNELS = {
       overlay: documentOverlaySchema.nullable()
     }),
     response: documentSymbolsResultSchema
+  },
+  /**
+   * Part 11. No offset, like `documentSymbols` — the Observatory is about the
+   * whole file's pipeline, not a cursor. BCC-only: `unsupported: false` is the
+   * whole answer for a TypeScript file, since this codebase's TypeScript
+   * compilation has no IR, no SSA and no bytecode to show one.
+   */
+  'compiler:observatory': {
+    request: z.strictObject({
+      relativePath: z.string().min(1),
+      overlay: documentOverlaySchema.nullable()
+    }),
+    response: observatorySnapshotSchema
   },
   'compiler:hover': {
     request: z.strictObject({

@@ -1404,8 +1404,13 @@ export const compilerPassSchema = z.strictObject({
    * the type checker and costs seconds. Kept as separate members rather than
    * folded together because they are different events, and conflating them would
    * make the distinction unrecoverable.
+   *
+   * 'observatory' exists only on a `language: 'bcc'` pass: the user opened the
+   * Observatory (or switched its focused function), which pulls `ir`/`ssa`/
+   * `pass` queries that a `diag:` check never touches. Grouping it under
+   * 'buffer' would say an edit caused work that an on-demand read actually did.
    */
-  reason: z.enum(['index', 'cold', 'watch', 'buffer', 'idle']),
+  reason: z.enum(['index', 'cold', 'watch', 'buffer', 'idle', 'observatory']),
   /**
    * The paths reported changed or removed — the edit that caused this pass.
    *
@@ -1448,13 +1453,6 @@ export const codeLineSchema = z.strictObject({
   range: sourceRangeSchema.nullable()
 })
 export type CodeLine = z.infer<typeof codeLineSchema>
-
-export const observatoryTokenSchema = z.strictObject({
-  kind: z.string(),
-  text: z.string(),
-  range: sourceRangeSchema
-})
-export type ObservatoryToken = z.infer<typeof observatoryTokenSchema>
 
 /** One optimisation pass applied to one function, before and after side by side. */
 export const observatoryPassSchema = z.strictObject({
@@ -1503,7 +1501,7 @@ export const observatorySnapshotSchema = z.strictObject({
   relativePath: z.string(),
   path: z.string(),
   source: z.string(),
-  tokens: z.array(observatoryTokenSchema),
+  tokens: z.array(codeLineSchema),
   ast: z.array(codeLineSchema),
   symbols: z.array(codeLineSchema),
   diagnostics: z.array(diagnosticMessageSchema),
