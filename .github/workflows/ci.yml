@@ -134,6 +134,13 @@ jobs:
       - name: BCC daemon proof
         run: npm run test:lang
 
+      # Part 12's claim, checked against the real engine rather than trusted
+      # from the unit tests alone: editing one function re-lowers that function
+      # and no other, and a callee's signature change that actually reaches the
+      # caller's generated code is not missed by the cutoff meant to skip it.
+      - name: BCC incremental cutoff proof
+        run: npm run test:lang:cutoff
+
       # The VM in a real worker thread, which the unit tests deliberately skip:
       # that the built worker exists where the runner looks for it, that output
       # arrives in slices while a program is still running, and that a runaway
