@@ -1125,6 +1125,8 @@ function reportPass(
     type: 'pass',
     pass: {
       id: ++passCounter,
+      language: 'typescript',
+      at: Date.now(),
       reason,
       trigger: [...trigger],
       requested,

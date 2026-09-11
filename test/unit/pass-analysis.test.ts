@@ -32,6 +32,8 @@ function pass(overrides: Partial<CompilerPass> = {}): CompilerPass {
   return {
         trigger: [],
 id: 1,
+    language: 'typescript',
+    at: 0,
     reason: 'watch',
     requested: 1,
     recomputed: 1,

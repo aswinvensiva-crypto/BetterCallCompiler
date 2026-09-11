@@ -114,7 +114,14 @@ interface PendingBlock {
   terminator: Terminator | null
 }
 
-function lowerFunction(
+/**
+ * Exported for Part 12: `src/lang/incremental.ts` and `lang-worker.ts` call this
+ * directly on ONE function, so that editing another function in the same file
+ * never has to run it again. `lower()` above still calls it in a loop for the
+ * whole-module path the VM runs — the two callers agree because both are this
+ * same function.
+ */
+export function lowerFunction(
   declaration: FunctionDecl,
   resolution: Resolution,
   typeInfo: TypeInfo,
@@ -155,7 +162,8 @@ function lowerFunction(
   return builder.finish(params, returnType)
 }
 
-function lowerTopLevel(
+/** Exported for Part 12, alongside `lowerFunction` — see its comment. */
+export function lowerTopLevel(
   statements: readonly Stmt[],
   span: Span,
   resolution: Resolution,

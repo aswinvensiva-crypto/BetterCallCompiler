@@ -404,11 +404,11 @@ export function terminatorUses(terminator: Terminator): ValueId[] {
 /*  Printing                                                                   */
 /* -------------------------------------------------------------------------- */
 
-function printOperand(operand: Operand): string {
+export function printOperand(operand: Operand): string {
   return operand.kind === 'value' ? `%${operand.id}` : String(operand.value)
 }
 
-function printInstruction(instruction: Instruction, labelOf: (id: BlockId) => string): string {
+export function printInstruction(instruction: Instruction, labelOf: (id: BlockId) => string): string {
   switch (instruction.op) {
     case 'alloca':
       return `%${instruction.result} = alloca ${instruction.name}: ${describeType(instruction.type)}`
@@ -436,7 +436,7 @@ function printInstruction(instruction: Instruction, labelOf: (id: BlockId) => st
   }
 }
 
-function printTerminator(terminator: Terminator, labelOf: (id: BlockId) => string): string {
+export function printTerminator(terminator: Terminator, labelOf: (id: BlockId) => string): string {
   switch (terminator.op) {
     case 'jump':
       return `jump ${labelOf(terminator.target)}`

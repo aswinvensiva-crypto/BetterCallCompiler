@@ -1386,6 +1386,18 @@ export type QueryEngineStats = z.infer<typeof queryEngineStatsSchema>
 export const compilerPassSchema = z.strictObject({
   /** Monotonic within a daemon lifetime; resets on restart. */
   id: z.number().int().nonnegative(),
+  /**
+   * Which daemon produced this — Part 12's whole reason for adding the field.
+   * TypeScript and BCC each run their own worker with their own `id` sequence,
+   * so `id` alone cannot tell two passes apart; the Compiler Intelligence panel
+   * uses this to badge a row and to filter, not to reorder anything.
+   */
+  language: z.enum(['typescript', 'bcc']),
+  /** Wall-clock `Date.now()`, so passes from two different daemons can be merged
+   * into one timeline. `id` cannot do this — it resets whenever a daemon
+   * restarts and is not comparable across the two workers.
+   */
+  at: z.number().nonnegative(),
   /** What triggered it — a saved file, an unsaved buffer, or the initial index. */
   /**
    * 'index' is the walk. 'cold' is the FIRST check, which builds the program and
@@ -1417,3 +1429,101 @@ export const compilerPassSchema = z.strictObject({
   stats: queryEngineStatsSchema
 })
 export type CompilerPass = z.infer<typeof compilerPassSchema>
+
+/* -------------------------------------------------------------------------- */
+/*  Part 11 — the Observatory                                                 */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * One line of a BCC stage, as the Observatory renders it: text a person reads,
+ * and the source region a click on it reveals. `range: null` marks a line that
+ * names no single place in the source — a block label, a closing brace.
+ *
+ * Shared by every tab: tokens, the AST, symbols, IR, SSA and bytecode are all
+ * `readonly CodeLine[]` on the wire, so the renderer has exactly one component
+ * that draws a clickable listing rather than one per stage.
+ */
+export const codeLineSchema = z.strictObject({
+  text: z.string(),
+  range: sourceRangeSchema.nullable()
+})
+export type CodeLine = z.infer<typeof codeLineSchema>
+
+export const observatoryTokenSchema = z.strictObject({
+  kind: z.string(),
+  text: z.string(),
+  range: sourceRangeSchema
+})
+export type ObservatoryToken = z.infer<typeof observatoryTokenSchema>
+
+/** One optimisation pass applied to one function, before and after side by side. */
+export const observatoryPassSchema = z.strictObject({
+  name: z.string(),
+  summary: z.string(),
+  changed: z.boolean(),
+  notes: z.array(z.string()),
+  before: z.array(codeLineSchema),
+  after: z.array(codeLineSchema)
+})
+export type ObservatoryPass = z.infer<typeof observatoryPassSchema>
+
+export const observatoryFailureSchema = z.strictObject({
+  /** Null when the IR was already malformed before any pass ran. */
+  pass: z.string().nullable(),
+  message: z.string()
+})
+
+/** Every stage's answer for one function — named, or the synthetic `<main>`. */
+export const observatoryFunctionSchema = z.strictObject({
+  name: z.string(),
+  isSynthetic: z.boolean(),
+  range: sourceRangeSchema,
+  ir: z.array(codeLineSchema),
+  ssa: z.array(codeLineSchema),
+  passes: z.array(observatoryPassSchema),
+  /**
+   * Null when the function's IR failed the verifier — the pipeline halts
+   * rather than fabricate optimised IR or bytecode for something that never
+   * verified, so the panel has nothing well-formed left to compile.
+   */
+  bytecode: z.array(codeLineSchema).nullable(),
+  failure: observatoryFailureSchema.nullable()
+})
+export type ObservatoryFunction = z.infer<typeof observatoryFunctionSchema>
+
+/**
+ * Every stage of one `.bcc` file: source → tokens → AST → symbols → per-function
+ * IR → SSA → passes → bytecode. `supported: false` is the answer for anything
+ * that is not a `.bcc` file — TypeScript has no IR in this codebase, so the
+ * Observatory has nothing to show it, and says so rather than an empty panel
+ * with no explanation.
+ */
+export const observatorySnapshotSchema = z.strictObject({
+  supported: z.boolean(),
+  relativePath: z.string(),
+  path: z.string(),
+  source: z.string(),
+  tokens: z.array(observatoryTokenSchema),
+  ast: z.array(codeLineSchema),
+  symbols: z.array(codeLineSchema),
+  diagnostics: z.array(diagnosticMessageSchema),
+  functions: z.array(observatoryFunctionSchema)
+})
+export type ObservatorySnapshot = z.infer<typeof observatorySnapshotSchema>
+
+export function unsupportedObservatorySnapshot(
+  relativePath: string,
+  path: string
+): ObservatorySnapshot {
+  return {
+    supported: false,
+    relativePath,
+    path,
+    source: '',
+    tokens: [],
+    ast: [],
+    symbols: [],
+    diagnostics: [],
+    functions: []
+  }
+}
