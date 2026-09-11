@@ -60,6 +60,7 @@ import {
   onCompilerIntelligenceShown,
   setCompilerViewActivator
 } from './views/compiler-intelligence'
+import { mountObservatory, onObservatoryShown } from './views/observatory'
 import {
   listenForExplainRequests,
   mountArtifacts,
@@ -667,6 +668,11 @@ async function mountSideBarViews(): Promise<void> {
     id: 'compiler',
     mount: mountCompilerIntelligence,
     onShow: onCompilerIntelligenceShown
+  })
+  registerRightDockView({
+    id: 'observatory',
+    mount: mountObservatory,
+    onShow: onObservatoryShown
   })
 
   mountActivityBar(requireEl('activity-bar'), (id) => {

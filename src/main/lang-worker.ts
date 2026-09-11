@@ -27,9 +27,8 @@ import {
 } from '../lang/incremental'
 import { lowerFunction, lowerTopLevel } from '../lang/lower'
 import { printFunction, type IrFunction } from '../lang/ir'
-import { toSsa } from '../lang/ssa'
 import { runPipeline, type PipelineReport } from '../lang/pass-manager'
-import { OPTIMISATION_PIPELINE } from '../lang/passes'
+import { mem2reg, OPTIMISATION_PIPELINE } from '../lang/passes'
 import { compileFunction, BytecodeError } from '../lang/bytecode'
 import {
   printAstLines,
@@ -355,33 +354,53 @@ engine.defineQuery(
   sameIr
 )
 
-engine.defineQuery(
-  Q_SSA,
-  (argument, ctx): IrFunction | null => {
-    const fn = ctx.get<IrFunction | null>(queryKey(Q_IR, argument))
-    return fn === null ? null : toSsa(fn)
-  },
-  sameIr
-)
-
 /**
- * The four Part 8 passes, run over a single-function module.
+ * The four Part 8 passes, run over a single-function module — over the RAW
+ * lowered IR, exactly as `lang-vm-worker.ts` runs them before anything
+ * actually executes. `mem2reg` runs first in `OPTIMISATION_PIPELINE` for
+ * exactly the reason its own doc comment gives: everything downstream is
+ * blocked on it. An earlier version of this query pre-converted to SSA before
+ * calling `runPipeline`, which meant `mem2reg`'s own row always reported "no
+ * change" here — a fictional pipeline the Observatory was showing that did
+ * not match what a program actually runs through. `Q_SSA` below now reads the
+ * REAL mem2reg outcome back out of this result instead.
  *
  * Whole-MODULE verification (a call whose arity no longer matches some OTHER
  * function, say) is deliberately not this query's job — that is what the real
- * VM run in `lang-vm-worker.ts` still does over the whole `Module` before
- * anything executes. This one only proves the single-function invariants
- * `verify.ts` checks, which is what the Observatory and the incrementality
- * story need and no more.
+ * VM run still does over the whole `Module` before anything executes. This
+ * one only proves the single-function invariants `verify.ts` checks, which is
+ * what the Observatory and the incrementality story need and no more.
  */
 engine.defineQuery(
   Q_PASSES,
   (argument, ctx): PipelineReport | null => {
-    const fn = ctx.get<IrFunction | null>(queryKey(Q_SSA, argument))
+    const fn = ctx.get<IrFunction | null>(queryKey(Q_IR, argument))
     if (fn === null) return null
     return runPipeline({ functions: [fn] }, OPTIMISATION_PIPELINE)
   },
   samePipeline
+)
+
+/**
+ * The IR immediately after `mem2reg` — the point BCC actually calls SSA, and
+ * the tab that sits between IR and Passes in the Observatory precisely
+ * because it is a checkpoint INSIDE the same pipeline `Q_PASSES` runs, not a
+ * separate computation. When `mem2reg` finds nothing to promote (a function
+ * with no locals) its `afterFn` is identical to its `beforeFn`, which is the
+ * correct answer: nothing needed to become a phi.
+ */
+engine.defineQuery(
+  Q_SSA,
+  (argument, ctx): IrFunction | null => {
+    const report = ctx.get<PipelineReport | null>(queryKey(Q_PASSES, argument))
+    if (report === null) return null
+    const afterMem2Reg = report.outcomes.find((outcome) => outcome.pass === mem2reg.name)
+    // `mem2reg` runs first; if the pipeline halted before recording even that
+    // one outcome, the input IR was already malformed and there is no
+    // meaningful SSA form to show.
+    return afterMem2Reg?.afterFn ?? null
+  },
+  sameIr
 )
 
 /**
@@ -589,8 +608,18 @@ function reportPass(
   const prefix = `${topLevelNamespace}:`
   let recomputed = 0
   let reused = 0
+  // Deduplicated by key: `pass:` is both something `respondObservatory` asks
+  // for directly AND something `ssa:` depends on, so ONE function's pipeline
+  // can be resolved twice in the same snapshot — once as a nested dependency,
+  // once as a top-level ask. Both resolutions agree (the second is always a
+  // cache hit), so counting the key twice would inflate "reused" by however
+  // many other stages happen to depend on this one, which says nothing about
+  // how many functions were actually involved.
+  const countedKeys = new Set<string>()
   for (const event of passEvents) {
     if (!event.key.startsWith(prefix)) continue
+    if (countedKeys.has(event.key)) continue
+    countedKeys.add(event.key)
     if (isMemoReuse(event.outcome)) reused++
     else recomputed++
   }

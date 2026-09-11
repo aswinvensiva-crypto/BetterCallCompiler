@@ -3278,6 +3278,156 @@ body.workbench--resizing-y * {
   color: var(--bcc-warning);
 }
 
+/* ---------- observatory (Part 11) ---------- */
+
+.obs {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+/* Same shape as .ci-tabs on purpose — one tab-strip convention across both
+   right-dock panels this session added. */
+.obs-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 6px 8px 0;
+  border-bottom: 1px solid var(--bcc-border);
+  flex: 0 0 auto;
+  overflow-x: auto;
+}
+
+.obs-tabs__tab {
+  padding: 4px 10px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--bcc-fg-muted);
+  font-size: var(--bcc-font-size-sm);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.obs-tabs__tab:hover {
+  color: var(--bcc-fg);
+}
+
+.obs-tabs__tab[aria-selected='true'] {
+  color: var(--bcc-fg);
+  border-bottom-color: var(--bcc-accent);
+}
+
+.obs-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 10px 12px;
+}
+
+/* The function picker: a second, narrower strip above IR/SSA/Passes/Bytecode
+   only — those four are the ones Part 12 answers per function rather than
+   per file. */
+.obs-functions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.obs-functions__item {
+  padding: 2px 8px;
+  border: 1px solid var(--bcc-border);
+  border-radius: 10px;
+  background: var(--bcc-bg-active);
+  color: var(--bcc-fg-muted);
+  font-size: var(--bcc-font-size-sm);
+  font-family: var(--bcc-font-mono);
+  cursor: pointer;
+}
+
+.obs-functions__item[aria-selected='true'] {
+  color: var(--bcc-fg);
+  border-color: var(--bcc-accent);
+  background: color-mix(in srgb, var(--bcc-accent) 14%, var(--bcc-bg-active));
+}
+
+.obs-source {
+  margin: 0;
+  font-family: var(--bcc-font-mono);
+  font-size: var(--bcc-font-size-sm);
+  color: var(--bcc-fg);
+  white-space: pre;
+}
+
+/* Every stage but Source and Passes is a list of these — see `renderLines`. */
+.obs-lines {
+  font-family: var(--bcc-font-mono);
+  font-size: var(--bcc-font-size-sm);
+}
+
+.obs-line {
+  white-space: pre;
+  padding: 1px 4px;
+  border-radius: 3px;
+  color: var(--bcc-fg);
+}
+
+.obs-line--clickable {
+  cursor: pointer;
+}
+
+.obs-line--clickable:hover {
+  background: var(--bcc-bg-active);
+}
+
+.obs-failure {
+  padding: 8px 0;
+}
+
+.obs-passes {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.obs-pass {
+  border: 1px solid var(--bcc-border);
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+
+.obs-pass__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.obs-pass__name {
+  font-family: var(--bcc-font-mono);
+  font-size: var(--bcc-font-size-sm);
+  color: var(--bcc-fg);
+  font-weight: 600;
+}
+
+.obs-pass__summary {
+  margin: 0 0 4px;
+  font-size: var(--bcc-font-size-sm);
+  color: var(--bcc-fg-muted);
+}
+
+.obs-pass__notes {
+  margin: 0 0 6px;
+  padding-left: 18px;
+  font-size: var(--bcc-font-size-sm);
+  color: var(--bcc-fg-subtle);
+}
+
+.obs-pass__diff {
+  font-size: var(--bcc-font-size-sm);
+}
+
 /* ---------- debugger ---------- */
 
 /* Styled by class, never by `#panel-debug-view` — an id selector (1,0,0) beats

@@ -103,9 +103,21 @@ function ensureDiffEditor(
   return diffEditor
 }
 
-export async function showDiff(diff: GitFileDiff): Promise<void> {
-  // Awaited rather than given a synchronous no-op fallback: a diff that quietly
-  // fails to open is worse than one that takes a moment.
+/**
+ * The shared half of `showDiff` and `showTextDiff`: build the two models,
+ * hand them to the one diff editor instance, and reveal it.
+ *
+ * `language` is a parameter rather than derived from a path here, because
+ * `showTextDiff`'s callers have no file — IR, SSA and bytecode text are not a
+ * language Monaco or `languageForFile` knows about, and asking it to guess
+ * would be worse than saying plainly there is none.
+ */
+async function showModelDiff(
+  title: string,
+  original_: string,
+  modified_: string,
+  language: string
+): Promise<void> {
   const ns = await loadMonaco()
 
   const editor = ensureDiffEditor(ns)
@@ -113,20 +125,39 @@ export async function showDiff(diff: GitFileDiff): Promise<void> {
 
   disposeModels()
 
-  const language = languageForFile(diff.path)
   // Deliberately model-less URIs: `createModel` with an explicit URI would
   // collide with the editing model for the same file and Monaco throws.
-  original = ns.editor.createModel(diff.original, language)
-  modified = ns.editor.createModel(diff.modified, language)
+  original = ns.editor.createModel(original_, language)
+  modified = ns.editor.createModel(modified_, language)
 
   editor.setModel({ original, modified })
 
   if (titleEl !== null) {
-    titleEl.textContent = `${diff.path} — ${diff.originalLabel} ↔ ${diff.modifiedLabel}`
-    titleEl.title = titleEl.textContent
+    titleEl.textContent = title
+    titleEl.title = title
   }
 
   host.hidden = false
+}
+
+export async function showDiff(diff: GitFileDiff): Promise<void> {
+  // Awaited rather than given a synchronous no-op fallback: a diff that quietly
+  // fails to open is worse than one that takes a moment.
+  await showModelDiff(
+    `${diff.path} — ${diff.originalLabel} ↔ ${diff.modifiedLabel}`,
+    diff.original,
+    diff.modified,
+    languageForFile(diff.path)
+  )
+}
+
+/**
+ * The Observatory's pass diffing (Part 11): before and after text that names
+ * no file, reusing the exact same diff surface a Git diff opens in — one
+ * Monaco instance, one place either caller has to get right.
+ */
+export async function showTextDiff(title: string, before: string, after: string): Promise<void> {
+  await showModelDiff(title, before, after, 'plaintext')
 }
 
 export function hideDiff(): void {

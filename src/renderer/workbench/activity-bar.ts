@@ -123,6 +123,16 @@ export const ACTIVITY_ITEMS: readonly ActivityItem[] = [
     region: 'rightdock'
   },
   {
+    // The third right-dock item, and BCC's own: source, tokens, the AST, the
+    // scope tree, and per-function IR/SSA/passes/bytecode all need a wide
+    // pane to lay side by side, exactly as the Visualizer's graph does.
+    id: 'observatory',
+    label: 'Observatory',
+    icon: 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18zM12 3v18M3 12h18M6.3 6.3l11.4 11.4M17.7 6.3 6.3 17.7',
+    enabled: true,
+    region: 'rightdock'
+  },
+  {
     id: 'settings',
     label: 'Settings',
     icon:
