@@ -60,6 +60,7 @@ import {
   onCompilerIntelligenceShown,
   setCompilerViewActivator
 } from './views/compiler-intelligence'
+import { mountSubstrate, onSubstrateShown } from './views/substrate/substrate'
 import {
   listenForExplainRequests,
   mountArtifacts,
@@ -668,6 +669,9 @@ async function mountSideBarViews(): Promise<void> {
     mount: mountCompilerIntelligence,
     onShow: onCompilerIntelligenceShown
   })
+  // Substrate: the compiler's own seven stages as the interface, live off
+  // whichever .bcc file is open — see src/renderer/views/substrate/substrate.ts.
+  registerRightDockView({ id: 'substrate', mount: mountSubstrate, onShow: onSubstrateShown })
 
   mountActivityBar(requireEl('activity-bar'), (id) => {
     // Run and Problems open bottom-panel views rather than side-bar ones.

@@ -1,0 +1,514 @@
+/* ─────────────────────────────────────────────────────────────────────────
+   Substrate: the compiler-facing view.
+   Scoped entirely under .substrate, mounted into .right-dock__view. Every
+   color and metric below is a var() from theme.css — this file adds exactly
+   one thing theme.css did not need before it: --bcc-prov, the cross-stage
+   provenance beam.
+   ───────────────────────────────────────────────────────────────────────── */
+
+.substrate {
+  height: 100%;
+  display: grid;
+  /* One row track per direct child, in DOM order: verdict, spine, workbench,
+     trace, footer. Only the workbench (source + projection) should flex — it
+     is the one row with scrollable content — so it is the sole
+     minmax(0, 1fr) track; everything else is auto. A grid with fewer row
+     tracks than children silently hands a later child the flexible track
+     instead, which is what let the spine collapse under its own content. */
+  grid-template-rows: auto auto minmax(0, 1fr) auto auto;
+  /* An explicit, shrinkable column track rather than relying on the implicit
+     single-column default to stretch to the container width — a nested grid
+     child (the spine, the trace strip) can otherwise widen this row to its
+     own max-content and overflow the dock instead of wrapping inside it. */
+  grid-template-columns: minmax(0, 1fr);
+  background: var(--bcc-bg);
+  color: var(--bcc-fg);
+  font-family: var(--bcc-font-mono);
+  font-size: var(--bcc-font-size);
+}
+
+.substrate__empty {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  padding: 24px;
+  text-align: center;
+  color: var(--bcc-fg-subtle);
+  font-size: 11.5px;
+  line-height: 1.8;
+}
+.substrate__empty b {
+  display: block;
+  color: var(--bcc-fg-muted);
+  font-weight: 500;
+  margin-bottom: 5px;
+  font-size: 12px;
+}
+
+/* ── verdict strip ─────────────────────────────────────────────────────── */
+.substrate__verdict {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--bcc-bg-inset);
+  font-size: 11px;
+}
+.substrate__verdict .dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--bcc-fg-subtle);
+  flex: none;
+}
+.substrate__verdict[data-state='pass'] .dot {
+  background: var(--bcc-success);
+  box-shadow: 0 0 7px rgba(84, 145, 89, 0.7);
+}
+.substrate__verdict[data-state='pass'] {
+  color: #8fc493;
+}
+.substrate__verdict[data-state='fail'] .dot {
+  background: var(--bcc-danger);
+  box-shadow: 0 0 7px rgba(219, 92, 92, 0.7);
+}
+.substrate__verdict[data-state='fail'] {
+  color: #e89a9a;
+}
+.substrate__verdict-file {
+  margin-left: auto;
+  color: var(--bcc-fg-subtle);
+  font-size: 10.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── the spine: seven stages ──────────────────────────────────────────── */
+.substrate__spine {
+  display: grid;
+  min-width: 0;
+  /* Three wrapping columns rather than four or an auto-fit: four is cramped
+     at the dock's 460px default, and auto-fit expands past the container and
+     pushes the last stages off screen with no way to reach them. Three wraps
+     to three full rows (3+3+1) and stays inside the dock at any width the
+     splitter allows. */
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 3px;
+  background: var(--bcc-bg-elevated);
+  border-bottom: 1px solid var(--bcc-bg-inset);
+  padding: 6px 6px 7px;
+}
+.substrate__stage {
+  position: relative;
+  text-align: left;
+  cursor: pointer;
+  background: var(--bcc-bg-inset);
+  border: 1px solid var(--bcc-border);
+  border-radius: var(--bcc-radius, 3px);
+  padding: 5px 7px 6px;
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  overflow: hidden;
+  font-family: var(--bcc-font-mono);
+  color: var(--bcc-fg-muted);
+  transition:
+    background 0.12s,
+    border-color 0.12s,
+    color 0.12s;
+}
+.substrate__stage:hover {
+  background: var(--bcc-bg-hover);
+  border-color: var(--bcc-gray-6);
+}
+.substrate__stage[aria-selected='true'] {
+  background: var(--bcc-bg-active);
+  border-color: var(--bcc-accent);
+  color: var(--bcc-gray-13);
+}
+.substrate__stage[data-state='blocked'] {
+  opacity: 0.45;
+}
+.substrate__stage[data-state='blocked'] .substrate__stage-nm {
+  text-decoration: line-through;
+  text-decoration-color: var(--bcc-fg-subtle);
+}
+.substrate__stage[data-state='error'] {
+  border-color: rgba(219, 92, 92, 0.5);
+}
+.substrate__stage[data-state='error'] .substrate__stage-nm {
+  color: #e89a9a;
+}
+.substrate__stage[data-prov='true'] {
+  border-color: var(--bcc-prov-edge);
+}
+.substrate__stage[data-prov='true'] .substrate__stage-nm {
+  color: var(--bcc-prov);
+}
+.substrate__stage-idx {
+  font-size: 9px;
+  color: var(--bcc-fg-subtle);
+  letter-spacing: 0.1em;
+}
+.substrate__stage-nm {
+  font-size: 11px;
+  font-weight: 500;
+  color: inherit;
+}
+.substrate__stage-ct {
+  font-size: 9.5px;
+  color: var(--bcc-fg-subtle);
+  font-variant-numeric: tabular-nums;
+  display: flex;
+  justify-content: space-between;
+  gap: 4px;
+  min-width: 0;
+}
+.substrate__stage-ct span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+/* ── workbench: mirrored source + linked projection ──────────────────── */
+.substrate__workbench {
+  display: grid;
+  grid-template-rows: minmax(120px, 1fr) minmax(140px, 1.3fr);
+  gap: 1px;
+  background: var(--bcc-bg-inset);
+  min-height: 0;
+}
+.substrate__pane {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  background: var(--bcc-bg);
+  min-height: 0;
+}
+.substrate__pane-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 24px;
+  padding: 0 9px;
+  background: var(--bcc-bg-elevated);
+  border-bottom: 1px solid var(--bcc-bg-inset);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--bcc-fg-subtle);
+}
+.substrate__pane-head .substrate__hint {
+  margin-left: auto;
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 10px;
+  color: var(--bcc-fg-subtle);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.substrate__pane-body {
+  overflow: auto;
+  min-height: 0;
+  padding: 7px 0;
+}
+
+/* ── mirrored source (read-only; the tab's Monaco instance owns editing) ── */
+.substrate__source {
+  overflow: auto;
+  min-height: 0;
+  background: var(--bcc-editor-bg);
+}
+.substrate__source-inner {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  min-height: 100%;
+}
+.substrate__gutter {
+  padding: 8px 7px 8px 10px;
+  text-align: right;
+  user-select: none;
+  color: var(--bcc-editor-line-number);
+  background: var(--bcc-editor-gutter-bg);
+  border-right: 1px solid var(--bcc-bg-inset);
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+  line-height: 18px;
+}
+.substrate__gutter i {
+  display: block;
+  font-style: normal;
+}
+.substrate__gutter i[data-prov='true'] {
+  color: var(--bcc-prov);
+}
+.substrate__gutter i[data-diag='true'] {
+  color: var(--bcc-danger);
+}
+.substrate__code {
+  margin: 0;
+  padding: 8px 12px;
+  cursor: text;
+  white-space: pre;
+  font-size: 11px;
+  line-height: 18px;
+  color: var(--bcc-fg);
+}
+.substrate__code mark {
+  background: var(--bcc-prov-dim);
+  color: inherit;
+  box-shadow: inset 0 -1px 0 var(--bcc-prov);
+  border-radius: 1px;
+}
+.substrate-tk-kw {
+  color: #cf8e6d;
+}
+.substrate-tk-num {
+  color: #2aacb8;
+}
+.substrate-tk-bool {
+  color: #cf8e6d;
+}
+.substrate-tk-punct {
+  color: var(--bcc-gray-7);
+}
+.substrate-tk-err {
+  color: var(--bcc-danger);
+  text-decoration: underline wavy var(--bcc-danger);
+}
+.substrate-tk-id {
+  color: var(--bcc-fg);
+}
+
+/* ── projections ───────────────────────────────────────────────────────── */
+.substrate__rows {
+  font-size: 11px;
+  line-height: 1.7;
+}
+.substrate__row {
+  display: flex;
+  gap: 8px;
+  padding: 1px 10px;
+  border-left: 2px solid transparent;
+}
+.substrate__row--click {
+  cursor: pointer;
+}
+.substrate__row--click:hover {
+  background: var(--bcc-bg-hover);
+}
+.substrate__row[data-prov='true'] {
+  background: var(--bcc-prov-dim);
+  border-left-color: var(--bcc-prov);
+}
+.substrate__k {
+  color: var(--bcc-fg-subtle);
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+.substrate__v {
+  color: var(--bcc-fg);
+  white-space: pre;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.substrate__dim {
+  color: var(--bcc-fg-subtle);
+}
+.substrate__ty {
+  color: #2aacb8;
+}
+.substrate__op {
+  color: #cf8e6d;
+}
+.substrate__phi {
+  color: var(--bcc-prov);
+  font-weight: 500;
+}
+
+.substrate__blk {
+  margin: 0 0 8px;
+}
+.substrate__blk-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 2px 10px;
+  font-size: 10.5px;
+  color: var(--bcc-gray-13);
+  background: var(--bcc-bg-elevated);
+  border-top: 1px solid var(--bcc-bg-inset);
+  border-bottom: 1px solid var(--bcc-bg-inset);
+}
+.substrate__blk-head .substrate__lbl {
+  color: var(--bcc-accent);
+}
+.substrate__blk-head .substrate__succ {
+  margin-left: auto;
+  color: var(--bcc-fg-subtle);
+  font-size: 9.5px;
+}
+
+.substrate__fnhead {
+  padding: 6px 10px 4px;
+  font-size: 11px;
+  color: var(--bcc-gray-13);
+}
+.substrate__fnhead .substrate__sig {
+  color: var(--bcc-fg-muted);
+}
+
+.substrate__diag {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px 8px;
+  padding: 6px 10px;
+  border-left: 2px solid var(--bcc-danger);
+  background: rgba(219, 92, 92, 0.06);
+  margin: 0 0 1px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.substrate__diag:hover {
+  background: rgba(219, 92, 92, 0.11);
+}
+.substrate__diag .substrate__code {
+  color: var(--bcc-danger);
+  font-weight: 500;
+}
+.substrate__diag .substrate__where {
+  grid-column: 2;
+  color: var(--bcc-fg-subtle);
+  font-size: 10px;
+}
+.substrate__diag--viol {
+  border-left-color: var(--bcc-warning);
+  background: rgba(217, 163, 67, 0.07);
+}
+.substrate__diag--viol .substrate__code {
+  color: var(--bcc-warning);
+}
+
+.substrate__rulecard {
+  margin: 8px 10px;
+  padding: 9px 10px;
+  border: 1px solid var(--bcc-border);
+  border-radius: 3px;
+  background: var(--bcc-bg-inset);
+  font-size: 10.5px;
+  color: var(--bcc-fg-muted);
+  line-height: 1.7;
+}
+.substrate__rulecard b {
+  color: var(--bcc-success);
+  font-weight: 500;
+  display: block;
+  margin-bottom: 4px;
+  font-size: 11px;
+}
+
+/* ── the trace: one construct, all seven stages, at once ──────────────── */
+.substrate__trace {
+  background: var(--bcc-bg-elevated);
+  border-top: 1px solid var(--bcc-bg-inset);
+}
+.substrate__trace-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px 0;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--bcc-fg-subtle);
+}
+.substrate__trace-head .beam {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--bcc-prov);
+  box-shadow: 0 0 6px var(--bcc-prov);
+  flex: none;
+}
+.substrate__trace-what {
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--bcc-prov);
+  font-size: 10.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.substrate__trace-what em {
+  color: var(--bcc-fg-subtle);
+  font-style: normal;
+}
+.substrate__strip {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 3px;
+  padding: 6px 8px 8px;
+  max-height: 180px;
+  overflow: auto;
+}
+.substrate__cell {
+  background: var(--bcc-bg-inset);
+  border: 1px solid var(--bcc-border);
+  border-radius: 3px;
+  padding: 5px 7px;
+  min-height: 46px;
+  display: grid;
+  gap: 3px;
+  align-content: start;
+}
+.substrate__cell-name {
+  font-size: 8.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--bcc-fg-subtle);
+}
+.substrate__cell-val {
+  font-size: 10.5px;
+  color: var(--bcc-fg);
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.5;
+}
+.substrate__cell[data-on='true'] {
+  border-color: var(--bcc-prov-edge);
+  background: rgba(72, 201, 217, 0.05);
+}
+.substrate__cell[data-on='true'] .substrate__cell-name {
+  color: var(--bcc-prov);
+}
+
+/* ── footer ────────────────────────────────────────────────────────────── */
+.substrate__footer {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  height: 20px;
+  padding: 0 9px;
+  background: var(--bcc-bg-elevated);
+  border-top: 1px solid var(--bcc-bg-inset);
+  font-size: 9.5px;
+  color: var(--bcc-fg-subtle);
+}
+.substrate__footer .seg {
+  padding: 0 8px;
+  border-right: 1px solid var(--bcc-border);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.substrate__footer .seg:first-child {
+  padding-left: 0;
+}
+.substrate__footer .seg:last-child {
+  border-right: 0;
+  margin-left: auto;
+  padding-right: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

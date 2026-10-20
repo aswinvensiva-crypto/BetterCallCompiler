@@ -123,6 +123,16 @@ export const ACTIVITY_ITEMS: readonly ActivityItem[] = [
     region: 'rightdock'
   },
   {
+    // The third right-dock item. Where the two above show what the daemon did
+    // and why, this shows what the compiler's own seven stages turned the
+    // active file into, live — click a construct, see it at every stage.
+    id: 'substrate',
+    label: 'Substrate',
+    icon: 'M4 6h16M4 10h16M4 14h10M4 18h6M15 14l3 3-3 3',
+    enabled: true,
+    region: 'rightdock'
+  },
+  {
     id: 'settings',
     label: 'Settings',
     icon:

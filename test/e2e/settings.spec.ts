@@ -11,6 +11,7 @@ import { join } from 'node:path'
 
 const APP_ROOT = join(__dirname, '..', '..')
 const MAIN_ENTRY = join(APP_ROOT, 'out', 'main', 'index.js')
+const OS_KEYRING = join(__dirname, 'helpers', 'os-keyring.cjs')
 
 let userData = ''
 let app: ElectronApplication
@@ -26,7 +27,9 @@ test.beforeAll(async () => {
   userData = await mkdtemp(join(tmpdir(), 'bettercallcompiler-profile-'))
 
   app = await electron.launch({
-    args: [MAIN_ENTRY, `--user-data-dir=${userData}`],
+    // The key-storage specs need real encryption, which Playwright's launch
+    // switches off on Linux; see helpers/os-keyring.cjs.
+    args: ['-r', OS_KEYRING, MAIN_ENTRY, `--user-data-dir=${userData}`],
     cwd: APP_ROOT
   })
   window = await app.firstWindow()
