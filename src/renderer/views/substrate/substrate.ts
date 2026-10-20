@@ -66,6 +66,8 @@ const state: State = {
 }
 
 let debounceTimer: ReturnType<typeof setTimeout> | null = null
+/** The file the current tree was rendered for. Scroll positions carry only within one file. */
+let renderedPath: string | null = null
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, text?: string): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag)
@@ -114,7 +116,11 @@ function sync(): void {
   const path = doc?.node.relativePath ?? null
   const isBcc = path !== null && isBccFile(path)
 
-  state.relativePath = isBcc ? path : null
+  // An offset means nothing in another file: kept across a tab switch, it
+  // would trace whatever construct happens to sit at that position there.
+  const next = isBcc ? path : null
+  if (next !== state.relativePath) state.offset = 0
+  state.relativePath = next
   state.source = isBcc ? (doc?.model.getValue() ?? '') : ''
 
   if (!isBcc) {
@@ -276,6 +282,7 @@ function renderSpine(): HTMLElement {
 
 function renderSource(): HTMLElement {
   const pane = el('div', 'substrate__source')
+  pane.dataset['scrollKey'] = 'source'
   const inner = el('div', 'substrate__source-inner')
   const gutter = el('div', 'substrate__gutter')
   const code = el('pre', 'substrate__code')
@@ -580,6 +587,9 @@ function renderProjectionPane(): HTMLElement {
   head.append(el('span', undefined, stage.name), el('span', 'substrate__hint', [stat.n, stat.t].filter(Boolean).join(' · ')))
 
   const body = el('div', 'substrate__pane-body')
+  // Keyed by stage: another stage's projection is a different document, and
+  // should open at its top rather than at this one's scroll position.
+  body.dataset['scrollKey'] = `projection:${state.stage}`
   const errors = stageErrorsBlock(state.stage)
   if (errors) body.append(errors)
   body.append(PROJECTIONS[state.stage]())
@@ -593,6 +603,7 @@ function renderSourcePane(): HTMLElement {
   const head = el('div', 'substrate__pane-head')
   head.append(el('span', undefined, 'Source'), el('span', 'substrate__hint', 'click anything — the beam follows it downstream'))
   const body = el('div', 'substrate__pane-body')
+  body.dataset['scrollKey'] = 'source-pane'
   body.style.padding = '0'
   body.append(renderSource())
   pane.append(head, body)
@@ -609,6 +620,7 @@ function renderTrace(): HTMLElement {
   const beam = el('span', 'beam')
   const what = el('span', 'substrate__trace-what')
   const strip = el('div', 'substrate__strip')
+  strip.dataset['scrollKey'] = 'trace'
 
   const pv = state.prov
   const NONE = '<span class="substrate__dim">—</span>'
@@ -705,6 +717,7 @@ function render(): void {
     empty.innerHTML = '<b>No .bcc file open</b>Open a .bcc file in the editor — Substrate\nruns the real compiler on it live, stage by stage.'
     root.append(empty)
     bodyHost.replaceChildren(root)
+    renderedPath = null
     return
   }
 
@@ -718,7 +731,23 @@ function render(): void {
   root.append(renderTrace())
   root.append(renderFooter())
 
+  // Every render replaces the whole tree, which would put each scroller back at
+  // the top: clicking a construct below the fold would throw the reader up to
+  // line 1. Carry positions over by key while the same file is showing.
+  const kept = new Map<string, readonly [number, number]>()
+  if (renderedPath === state.relativePath) {
+    for (const n of bodyHost.querySelectorAll<HTMLElement>('[data-scroll-key]')) {
+      kept.set(n.dataset['scrollKey']!, [n.scrollTop, n.scrollLeft])
+    }
+  }
+
   bodyHost.replaceChildren(root)
+  renderedPath = state.relativePath
+
+  for (const n of root.querySelectorAll<HTMLElement>('[data-scroll-key]')) {
+    const pos = kept.get(n.dataset['scrollKey']!)
+    if (pos) [n.scrollTop, n.scrollLeft] = pos
+  }
 }
 
 /* --------------------------------- mounting --------------------------------- */

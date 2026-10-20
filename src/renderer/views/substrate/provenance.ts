@@ -62,14 +62,15 @@ export function provenanceAt(result: CompileResult, offset: number): Provenance 
   if (match) named = match[1] ?? null
   const ident = token && token.kind === 'identifier' ? token.text : named
 
+  // The resolver already decided which binding the construct names; matching
+  // on the name instead would hand a shadowing `let x` the outer `x`. The name
+  // is only a fallback for a construct the resolver recorded nothing for.
+  const binding = node?.binding ?? null
   let symbol: SymbolRecord | null = null
-  if (ident) {
-    for (const s of result.symbols) {
-      if (s.name === ident) {
-        symbol = s
-        break
-      }
-    }
+  if (binding) {
+    symbol = result.symbols.find((s) => s.span?.offset === binding.offset && s.span.length === binding.length) ?? null
+  } else if (ident) {
+    symbol = result.symbols.find((s) => s.name === ident) ?? null
   }
 
   // What did this source range become? Containment, not overlap — an

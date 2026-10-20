@@ -1,6 +1,7 @@
 import { tokenize } from '../../../lang/lexer'
 import { parseSource } from '../../../lang/parser'
-import { resolve } from '../../../lang/symbols'
+import { resolve, type Resolution } from '../../../lang/symbols'
+import type { Ident, Name } from '../../../lang/ast'
 import { typeCheck, describeType, type Type } from '../../../lang/type-check'
 import { lower } from '../../../lang/lower'
 import { toSsa } from '../../../lang/ssa'
@@ -68,6 +69,14 @@ export interface AstRecord {
   readonly kind: string
   readonly type: string | null
   readonly span: Span | null
+  /**
+   * Where the binding this node names was declared, as the resolver decided —
+   * a use, a store, a declaration, or a construct that introduces one. Null for
+   * nodes that name nothing, and for names the resolver could not resolve.
+   * Matching on this rather than the name is what keeps a shadowing `let x`
+   * apart from the outer `x`.
+   */
+  readonly binding: Span | null
 }
 
 export interface SymbolRecord {
@@ -246,8 +255,8 @@ const AST_CHILD_KEYS = [
   'operand',
   'value',
   'condition',
-  'then',
-  'otherwise',
+  'thenBranch',
+  'elseBranch',
   'callee',
   'target',
   'name',
@@ -257,8 +266,34 @@ const AST_CHILD_KEYS = [
   'expression'
 ] as const
 
+/** The declaration span of the binding `node` names, per the resolver. */
+function bindingOf(node: unknown, resolution: Resolution): Span | null {
+  if (!node || typeof node !== 'object' || !('kind' in node)) return null
+  const n = node as Record<string, unknown> & { kind: string }
+  switch (n.kind) {
+    case 'Name':
+      return resolution.uses.get(node as Name)?.declaration.span ?? null
+    case 'Ident':
+      return (resolution.declarations.get(node as Ident) ?? resolution.stores.get(node as Ident))?.declaration.span ?? null
+    case 'Let':
+    case 'Function':
+    case 'Param':
+      return bindingOf(n['name'], resolution)
+    case 'Assign':
+      return bindingOf(n['target'], resolution)
+    case 'Call':
+      return bindingOf(n['callee'], resolution)
+    default:
+      return null
+  }
+}
+
 /** Walks the AST into a flat list — a tree via `parent`/`depth`, easy to render as rows. */
-function astRecords(program: { statements: readonly unknown[]; span: Span }, types: ReadonlyMap<unknown, Type>): AstRecord[] {
+function astRecords(
+  program: { statements: readonly unknown[]; span: Span },
+  types: ReadonlyMap<unknown, Type>,
+  resolution: Resolution
+): AstRecord[] {
   const out: AstRecord[] = []
   let next = 0
 
@@ -287,7 +322,16 @@ function astRecords(program: { statements: readonly unknown[]; span: Span }, typ
       const target = n['target'] as { text?: string } | undefined
       label = `Assign ${target?.text ?? ''}`
     }
-    out.push({ id, parent, depth, label, kind: n.kind, type: type ? describeType(type) : null, span: n.span ?? null })
+    out.push({
+      id,
+      parent,
+      depth,
+      label,
+      kind: n.kind,
+      type: type ? describeType(type) : null,
+      span: n.span ?? null,
+      binding: bindingOf(node, resolution)
+    })
     for (const key of AST_CHILD_KEYS) {
       const child = n[key]
       if (Array.isArray(child)) for (const c of child) walk(c, id, depth + 1)
@@ -296,7 +340,7 @@ function astRecords(program: { statements: readonly unknown[]; span: Span }, typ
   }
 
   const rootId = next++
-  out.push({ id: rootId, parent: null, depth: 0, label: 'Program', kind: 'Program', type: null, span: program.span })
+  out.push({ id: rootId, parent: null, depth: 0, label: 'Program', kind: 'Program', type: null, span: program.span, binding: null })
   for (const s of program.statements) walk(s, rootId, 1)
   return out
 }
@@ -371,7 +415,7 @@ export function compile(source: string): CompileResult {
     timings,
     tokens: tokens.filter((tok) => !isTrivia(tok.kind)).map((tok) => ({ kind: tok.kind, text: tok.text, span: tok.span })),
     tokenCount: tokens.length,
-    ast: astRecords(parsed.program, typeInfo.types),
+    ast: astRecords(parsed.program, typeInfo.types, resolution),
     symbols,
     diagnostics,
     ir: ir ? ir.functions.map(functionRecord) : [],

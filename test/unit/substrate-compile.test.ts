@@ -71,6 +71,33 @@ describe('provenanceAt', () => {
     expect(provenance?.token?.text).toBe('total')
   })
 
+  it('descends into if and else branches, so a statement inside one is selectable', () => {
+    const source = 'if true {\n  print 1;\n} else {\n  print 2;\n}\n'
+    const result = compile(source)
+
+    expect(provenanceAt(result, source.indexOf('print 1'))?.node?.kind).toBe('Print')
+    expect(provenanceAt(result, source.indexOf('print 2'))?.node?.kind).toBe('Print')
+  })
+
+  describe('with a shadowed binding', () => {
+    const source = 'let x: int = 1;\nif true {\n  let x: bool = true;\n  print x;\n}\nprint x;\n'
+    const result = compile(source)
+    const inner = source.indexOf('let x: bool')
+
+    it('resolves a use inside the block to the inner binding', () => {
+      expect(provenanceAt(result, source.indexOf('print x;') + 'print '.length)?.symbol?.type).toBe('bool')
+    })
+
+    it('resolves the shadowing declaration to itself, not the outer one', () => {
+      expect(provenanceAt(result, inner)?.symbol?.type).toBe('bool')
+      expect(provenanceAt(result, inner + 'let '.length)?.symbol?.type).toBe('bool')
+    })
+
+    it('still resolves a use after the block to the outer binding', () => {
+      expect(provenanceAt(result, source.lastIndexOf('print x;') + 'print '.length)?.symbol?.type).toBe('int')
+    })
+  })
+
   it('ignores the end-of-file token, so resting at the end selects nothing', () => {
     const source = 'let total = 1;'
     const result = compile(source)
