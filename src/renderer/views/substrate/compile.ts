@@ -78,11 +78,46 @@ export interface SymbolRecord {
   readonly span: Span | null
 }
 
+export type FrontStage = 'tokens' | 'ast' | 'symbols' | 'types'
+
+/**
+ * The front-end stage each diagnostic belongs to, from its code's grouping.
+ *
+ * Total, like `DIAGNOSTIC_TITLES`: a new code without a stage is a compile error.
+ * The parser reports the lexical codes too — it is the one that reads the
+ * lexer's error tokens — but a bad character is a Tokens problem, so the code
+ * decides the stage here, not the function that happened to raise it.
+ */
+const STAGE_OF: Readonly<Record<DiagnosticCode, FrontStage>> = {
+  BCC0001: 'tokens',
+  BCC0002: 'tokens',
+  BCC0003: 'ast',
+  BCC0004: 'ast',
+  BCC0005: 'ast',
+  BCC0006: 'ast',
+  BCC0007: 'ast',
+  BCC0008: 'symbols',
+  BCC0009: 'symbols',
+  BCC0010: 'symbols',
+  BCC0018: 'symbols',
+  BCC0011: 'types',
+  BCC0012: 'types',
+  BCC0013: 'types',
+  BCC0014: 'types',
+  BCC0015: 'types',
+  BCC0016: 'types',
+  BCC0017: 'types',
+  BCC0019: 'types'
+}
+
+export const FRONT_STAGES: readonly FrontStage[] = ['tokens', 'ast', 'symbols', 'types']
+
 export interface DiagnosticRecord {
   readonly code: DiagnosticCode
   readonly severity: DiagnosticSeverity
   readonly message: string
   readonly title: string
+  readonly stage: FrontStage
   readonly span: Span
 }
 
@@ -287,6 +322,7 @@ export function compile(source: string): CompileResult {
       severity: d.severity,
       message: d.message,
       title: DIAGNOSTIC_TITLES[d.code],
+      stage: STAGE_OF[d.code],
       span: d.span
     })
   )

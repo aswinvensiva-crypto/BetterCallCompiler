@@ -1,6 +1,14 @@
 import { activeDocument, onDocumentsChanged } from '../../editor/models'
 import { activeRightDockView, isRightDockVisible } from '../../workbench/right-dock'
-import { compile, type CompileResult, type FunctionRecord, type InstructionRecord } from './compile'
+import {
+  FRONT_STAGES,
+  compile,
+  type CompileResult,
+  type DiagnosticRecord,
+  type FrontStage,
+  type FunctionRecord,
+  type InstructionRecord
+} from './compile'
 import { provenanceAt, type Provenance } from './provenance'
 
 /**
@@ -75,6 +83,25 @@ function dur(ms: number | undefined): string {
   return ms < 0.05 ? '<0.1ms' : `${ms.toFixed(1)}ms`
 }
 
+function isFrontStage(id: Stage['id']): id is FrontStage {
+  return (FRONT_STAGES as readonly string[]).includes(id)
+}
+
+function errorsIn(r: CompileResult, stage: FrontStage): DiagnosticRecord[] {
+  return r.diagnostics.filter((d) => d.stage === stage)
+}
+
+/** The first front-end stage that reported an error, or null when the front end is clean. */
+function haltedFront(r: CompileResult): FrontStage | null {
+  return FRONT_STAGES.find((stage) => errorsIn(r, stage).length > 0) ?? null
+}
+
+/** The stage the pipeline stopped at, for the header and the blocked notices. */
+function haltedAt(r: CompileResult): Stage {
+  const id = haltedFront(r) ?? 'types'
+  return STAGES.find((s) => s.id === id)!
+}
+
 /* --------------------------------- syncing --------------------------------- */
 
 function isBccFile(path: string): boolean {
@@ -124,22 +151,33 @@ function scheduleRecompile(): void {
 
 /* -------------------------------- provenance -------------------------------- */
 
+/**
+ * A front-end stage's card: its own error count when it has one, "not reached"
+ * when an earlier stage halted the pipeline (so a stage that never got its
+ * input cannot read as passing), otherwise what it produced.
+ */
+function frontStat(r: CompileResult, stage: FrontStage, count: string, timing: string): { n: string; t: string; badState: string } {
+  const errors = errorsIn(r, stage).length
+  if (errors) return { n: `${errors} err`, t: timing, badState: 'error' }
+  const halt = haltedFront(r)
+  if (halt !== null && FRONT_STAGES.indexOf(stage) > FRONT_STAGES.indexOf(halt)) {
+    return { n: 'not reached', t: '', badState: 'blocked' }
+  }
+  return { n: count, t: timing, badState: 'ok' }
+}
+
 function stageStat(stage: Stage['id']): { n: string; t: string; badState: string } {
   const r = state.result
   if (!r) return { n: '', t: '', badState: '' }
   switch (stage) {
     case 'tokens':
-      return { n: String(r.tokens.length), t: dur(r.timings['tokens']), badState: 'ok' }
+      return frontStat(r, 'tokens', String(r.tokens.length), dur(r.timings['tokens']))
     case 'ast':
-      return { n: String(r.ast.length), t: dur(r.timings['ast']), badState: 'ok' }
+      return frontStat(r, 'ast', String(r.ast.length), dur(r.timings['ast']))
     case 'symbols':
-      return { n: String(r.symbols.length), t: dur(r.timings['resolve']), badState: 'ok' }
+      return frontStat(r, 'symbols', String(r.symbols.length), dur(r.timings['resolve']))
     case 'types':
-      return {
-        n: r.diagnostics.length ? `${r.diagnostics.length} err` : 'clean',
-        t: dur(r.timings['types']),
-        badState: r.diagnostics.length ? 'error' : 'ok'
-      }
+      return frontStat(r, 'types', 'clean', dur(r.timings['types']))
     case 'ir':
     case 'ssa': {
       if (r.blocked) return { n: 'blocked', t: '', badState: 'blocked' }
@@ -188,7 +226,7 @@ function renderVerdict(): HTMLElement {
     text.textContent = 'no source'
   } else if (r.blocked) {
     bar.dataset['state'] = 'fail'
-    text.textContent = `${r.diagnostics.length} error${r.diagnostics.length === 1 ? '' : 's'} — pipeline halted at 04`
+    text.textContent = `${r.diagnostics.length} error${r.diagnostics.length === 1 ? '' : 's'} — pipeline halted at ${haltedAt(r).idx}`
   } else if (r.violations.length) {
     bar.dataset['state'] = 'fail'
     text.textContent = `${r.violations.length} IR violation${r.violations.length === 1 ? '' : 's'}`
@@ -342,9 +380,9 @@ function attachRowClicks(container: HTMLElement): void {
   })
 }
 
-function blockedNotice(name: string): HTMLElement {
+function blockedNotice(name: string, r: CompileResult): HTMLElement {
   const box = el('div', 'substrate__empty')
-  box.innerHTML = `<b>${esc(name)} not built</b>The program has errors, and lowering a broken program would mean\ninventing an IR that no source justifies. Fix the diagnostics in\nstage 04 and this stage rebuilds.`
+  box.innerHTML = `<b>${esc(name)} not built</b>The program has errors, and lowering a broken program would mean\ninventing an IR that no source justifies. Fix the errors in\nstage ${haltedAt(r).idx} and this stage rebuilds.`
   return box
 }
 
@@ -406,15 +444,6 @@ function renderSymbolsProjection(): HTMLElement {
 
 function renderTypesProjection(): HTMLElement {
   const r = state.result!
-  const parts: string[] = []
-  for (const d of r.diagnostics) {
-    parts.push(
-      `<div class="substrate__diag" data-off="${d.span.offset}">` +
-        `<span class="substrate__code">${esc(d.code)}</span>` +
-        `<span class="substrate__v">${esc(d.message)}</span>` +
-        `<span class="substrate__where">${esc(d.title)} · line ${d.span.startLine}, col ${d.span.startColumn}</span></div>`
-    )
-  }
   const pv = state.prov
   const typed: string[] = []
   for (const n of r.ast) {
@@ -426,20 +455,20 @@ function renderTypesProjection(): HTMLElement {
         `<span class="substrate__ty" style="margin-left:auto">${esc(n.type)}</span></div>`
     )
   }
-  if (!typed.length && !parts.length) {
+  if (!typed.length) {
     const box = el('div', 'substrate__empty')
     box.innerHTML = '<b>Nothing typed</b>No expressions to check.'
     return box
   }
   const wrap = el('div')
-  wrap.innerHTML = parts.join('') + (typed.length ? `<div class="substrate__rows">${typed.join('')}</div>` : '')
+  wrap.innerHTML = `<div class="substrate__rows">${typed.join('')}</div>`
   attachRowClicks(wrap)
   return wrap
 }
 
 function renderIrLikeProjection(which: 'ir' | 'ssa'): HTMLElement {
   const r = state.result!
-  if (r.blocked) return blockedNotice(which === 'ir' ? 'IR' : 'SSA')
+  if (r.blocked) return blockedNotice(which === 'ir' ? 'IR' : 'SSA', r)
   const fns: readonly FunctionRecord[] = which === 'ir' ? r.ir : r.ssa
   const hits: readonly InstructionRecord[] = which === 'ir' ? (state.prov?.ir ?? []) : (state.prov?.ssa ?? [])
   const parts: string[] = []
@@ -477,7 +506,7 @@ function renderIrLikeProjection(which: 'ir' | 'ssa'): HTMLElement {
 
 function renderVerifyProjection(): HTMLElement {
   const r = state.result!
-  if (r.blocked) return blockedNotice('Verification')
+  if (r.blocked) return blockedNotice('Verification', r)
   if (!r.violations.length) {
     let blocks = 0
     let instrs = 0
@@ -512,6 +541,27 @@ function renderVerifyProjection(): HTMLElement {
   return wrap
 }
 
+function diagRow(d: DiagnosticRecord): string {
+  return (
+    `<div class="substrate__diag" data-off="${d.span.offset}">` +
+    `<span class="substrate__code">${esc(d.code)}</span>` +
+    `<span class="substrate__v">${esc(d.message)}</span>` +
+    `<span class="substrate__where">${esc(d.title)} · line ${d.span.startLine}, col ${d.span.startColumn}</span></div>`
+  )
+}
+
+/** Only this stage's own errors, so a syntax error is never listed under Types. */
+function stageErrorsBlock(stage: Stage['id']): HTMLElement | null {
+  const r = state.result
+  if (!r || !isFrontStage(stage)) return null
+  const errors = errorsIn(r, stage)
+  if (errors.length === 0) return null
+  const wrap = el('div')
+  wrap.innerHTML = errors.map(diagRow).join('')
+  attachRowClicks(wrap)
+  return wrap
+}
+
 const PROJECTIONS: Record<Stage['id'], () => HTMLElement> = {
   tokens: renderTokensProjection,
   ast: renderAstProjection,
@@ -530,6 +580,8 @@ function renderProjectionPane(): HTMLElement {
   head.append(el('span', undefined, stage.name), el('span', 'substrate__hint', [stat.n, stat.t].filter(Boolean).join(' · ')))
 
   const body = el('div', 'substrate__pane-body')
+  const errors = stageErrorsBlock(state.stage)
+  if (errors) body.append(errors)
   body.append(PROJECTIONS[state.stage]())
 
   pane.append(head, body)
