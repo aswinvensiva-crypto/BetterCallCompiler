@@ -1,9 +1,11 @@
 import type { ChildProcess } from 'node:child_process'
 import { promises as fsp } from 'node:fs'
 import { basename, dirname, extname, join, relative, sep } from 'node:path'
+import { Worker } from 'node:worker_threads'
 import { BetterCallCompilerServiceError } from '../shared/ipc-contract'
 import { isRunnable, type RunExit, type RunOutput, type RunStarted, type Toolchain } from '../shared/types'
 import { confinePath, getWorkspace } from './fs-service'
+import type { VmWorkerMessage } from './lang-vm-worker'
 import { killProcessTree, listToolchains, spawnExecutable } from './toolchains'
 
 /**
@@ -38,13 +40,39 @@ export interface RunPlan {
   readonly reason: string | null
   /** Present for compiled languages; must succeed before `command` runs. */
   readonly compile: CompileStep | null
+  /**
+   * Extra environment for the spawn, or null for the inherited one.
+   *
+   * Exists for the bundled runtime below, which needs `ELECTRON_RUN_AS_NODE`
+   * to turn the app's own binary into a plain Node process.
+   */
+  readonly env: Readonly<Record<string, string>> | null
 }
 
 interface LanguageRecipe {
   /** Toolchain id this language wants, when it wants one. */
   readonly toolchainId: string
-  /** Bundled pack to fall back to, or null when none exists yet. */
+  /**
+   * Bundled pack to fall back to, or null when none exists yet.
+   *
+   * Two kinds share this field, told apart by whether the resulting plan has a
+   * `command`. A RENDERER pack (`web`) draws into the run panel and has none. A
+   * PROCESS pack (`node`) is spawned by main like any other run and has one.
+   * The distinction is what lets the renderer keep one branch: a plan with a
+   * command is something main is already streaming.
+   */
   readonly pack: string | null
+  /**
+   * Whether the bundled fallback runs out of process on the app's own Node.
+   *
+   * The renderer cannot execute workspace code — `script-src 'self'` forbids
+   * `eval` and `new Function`, and that invariant is what makes the preload
+   * boundary worth anything, so it is not negotiable. `web.ts` says as much and
+   * names an out-of-process runtime as the answer. This is it: Electron already
+   * bundles Node, so `ELECTRON_RUN_AS_NODE=1` on `process.execPath` is a real
+   * JavaScript runtime that ships with the app and needs nothing installed.
+   */
+  readonly bundledProcess: boolean
   /** Compiled languages produce an artefact first. */
   readonly compiled: boolean
   readonly humanName: string
@@ -55,14 +83,16 @@ interface LanguageRecipe {
 const RECIPES: Readonly<Record<string, LanguageRecipe>> = {
   javascript: {
     toolchainId: 'node',
-    pack: null,
+    pack: 'node',
+    bundledProcess: true,
     compiled: false,
     humanName: 'JavaScript',
     installHint: 'Install Node.js from nodejs.org to run JavaScript files.'
   },
   typescript: {
     toolchainId: 'node',
-    pack: null,
+    pack: 'node',
+    bundledProcess: true,
     compiled: false,
     humanName: 'TypeScript',
     installHint: 'Install Node.js 22.6 or newer from nodejs.org to run TypeScript files directly.'
@@ -70,6 +100,7 @@ const RECIPES: Readonly<Record<string, LanguageRecipe>> = {
   python: {
     toolchainId: 'python',
     pack: null,
+    bundledProcess: false,
     compiled: false,
     humanName: 'Python',
     installHint: 'Install Python from python.org to run Python files.'
@@ -77,6 +108,7 @@ const RECIPES: Readonly<Record<string, LanguageRecipe>> = {
   c: {
     toolchainId: 'gcc',
     pack: null,
+    bundledProcess: false,
     compiled: true,
     humanName: 'C',
     installHint: 'Install GCC (MSYS2, MinGW-w64 or Build Tools) to compile and run C files.'
@@ -84,6 +116,7 @@ const RECIPES: Readonly<Record<string, LanguageRecipe>> = {
   cpp: {
     toolchainId: 'g++',
     pack: null,
+    bundledProcess: false,
     compiled: true,
     humanName: 'C++',
     installHint: 'Install G++ (MSYS2, MinGW-w64 or Build Tools) to compile and run C++ files.'
@@ -91,8 +124,23 @@ const RECIPES: Readonly<Record<string, LanguageRecipe>> = {
   html: {
     toolchainId: 'html',
     pack: 'web',
+    bundledProcess: false,
     compiled: false,
     humanName: 'HTML',
+    installHint: ''
+  },
+  /*
+   * BCC needs nothing installed, because the compiler and the VM are this
+   * repository. It is the first language here that is neither spawned nor
+   * rendered: `startRun` drives it on the VM worker and streams the output
+   * through the same events a real process uses.
+   */
+  bcc: {
+    toolchainId: 'bcc',
+    pack: 'bcc',
+    bundledProcess: false,
+    compiled: false,
+    humanName: 'BCC',
     installHint: ''
   }
 }
@@ -118,7 +166,16 @@ export function planRun(
   languageId: string,
   filePath: string,
   workspaceRoot: string,
-  toolchains: readonly Toolchain[]
+  toolchains: readonly Toolchain[],
+  /**
+   * The app's own executable, which doubles as a Node runtime.
+   *
+   * Passed in rather than read from `process`, for the same reason the
+   * toolchain list is: this function stays pure and every branch — bundled
+   * available, bundled absent — is reachable from a test without touching the
+   * environment it happens to run in.
+   */
+  bundledNodePath: string | null = null
 ): RunPlan {
   const recipe = RECIPES[languageId]
 
@@ -130,7 +187,22 @@ export function planRun(
       args: [],
       pack: null,
       reason: `BetterCallCompiler cannot run .${extname(filePath).replace(/^\./, '') || 'this'} files yet.`,
-      compile: null
+      compile: null,
+      env: null
+    }
+  }
+
+  // BCC's runtime IS this repository — there is no toolchain to look for.
+  if (recipe.toolchainId === 'bcc') {
+    return {
+      mode: 'bundled',
+      toolchainId: null,
+      command: null,
+      args: [],
+      pack: 'bcc',
+      reason: 'Compiled and run by BetterCallCompiler — no toolchain required.',
+      compile: null,
+      env: null
     }
   }
 
@@ -143,7 +215,8 @@ export function planRun(
       args: [],
       pack: recipe.pack,
       reason: 'Rendered by the bundled web runtime — no toolchain required.',
-      compile: null
+      compile: null,
+      env: null
     }
   }
 
@@ -158,7 +231,8 @@ export function planRun(
         args: [filePath],
         pack: null,
         reason: null,
-        compile: null
+        compile: null,
+        env: null
       }
     }
 
@@ -171,7 +245,8 @@ export function planRun(
       pack: null,
       reason: null,
       // -g keeps the diagnostics and any crash addresses meaningful.
-      compile: { command: toolchain.path, args: ['-g', filePath, '-o', outputPath], outputPath }
+      compile: { command: toolchain.path, args: ['-g', filePath, '-o', outputPath], outputPath },
+      env: null
     }
   }
 
@@ -182,7 +257,31 @@ export function planRun(
       ? `${recipe.humanName} is not on your PATH.`
       : (toolchain.guidance ?? `${recipe.humanName} is installed but not usable.`)
 
-  if (recipe.pack !== null) {
+  /*
+   * The bundled runtime that is a real process.
+   *
+   * Electron ships a Node, and `ELECTRON_RUN_AS_NODE` turns the app's own
+   * binary into it — so this is genuinely zero-install rather than a second
+   * name for "find Node on PATH". It is preferred over a renderer pack because
+   * it actually EXECUTES the file, which is what the user asked for.
+   */
+  if (recipe.bundledProcess && bundledNodePath !== null) {
+    return {
+      mode: 'bundled',
+      toolchainId: null,
+      command: bundledNodePath,
+      args: [filePath],
+      pack: recipe.pack,
+      reason: `${why} Running on the ${recipe.humanName} runtime bundled with BetterCallCompiler.`,
+      compile: null,
+      // Without this the app re-launches itself as an editor instead of
+      // running the file — a spectacular failure that is obvious the first
+      // time and impossible to guess from the symptom.
+      env: { ELECTRON_RUN_AS_NODE: '1' }
+    }
+  }
+
+  if (recipe.pack !== null && !recipe.bundledProcess) {
     return {
       mode: 'bundled',
       toolchainId: null,
@@ -190,7 +289,8 @@ export function planRun(
       args: [],
       pack: recipe.pack,
       reason: `${why} Falling back to the bundled ${recipe.humanName} runtime.`,
-      compile: null
+      compile: null,
+      env: null
     }
   }
 
@@ -201,7 +301,8 @@ export function planRun(
     args: [],
     pack: null,
     reason: `${why} BetterCallCompiler has no bundled ${recipe.humanName} runtime yet — ${recipe.installHint}`,
-    compile: null
+    compile: null,
+    env: null
   }
 }
 
@@ -218,6 +319,9 @@ interface ActiveRun {
 }
 
 const active = new Map<string, ActiveRun>()
+
+/** Workers driving BCC runs, so a cancel can terminate one. */
+const bccWorkers = new Map<string, Worker>()
 let sequence = 0
 
 let emitOutput: ((payload: RunOutput) => void) | null = null
@@ -258,12 +362,18 @@ function runProcess(
   run: ActiveRun,
   command: string,
   args: readonly string[],
-  cwd: string
+  cwd: string,
+  extraEnv: Readonly<Record<string, string>> | null = null
 ): Promise<number | null> {
   return new Promise((resolve) => {
     let child: ChildProcess
     try {
-      child = spawnExecutable(command, args, { cwd })
+      child = spawnExecutable(command, args, {
+        cwd,
+        // Merged onto the inherited environment rather than replacing it: the
+        // debuggee still needs PATH, HOME and the rest to behave normally.
+        env: extraEnv === null ? undefined : { ...process.env, ...extraEnv }
+      })
     } catch (error) {
       write(run, 'stderr', `${error instanceof Error ? error.message : 'could not start'}\r\n`)
       resolve(null)
@@ -310,10 +420,14 @@ export async function startRun(requestedPath: string, languageId: string): Promi
 
   const filePath = await confinePath(workspaceRoot, requestedPath)
   const toolchains = await listToolchains()
-  const plan = planRun(languageId, filePath, workspaceRoot, toolchains)
+  const plan = planRun(languageId, filePath, workspaceRoot, toolchains, process.execPath)
 
   const runId = `run-${++sequence}`
   const relativePath = relative(workspaceRoot, filePath).split(sep).join('/')
+
+  // Main streams whatever it carries out itself: a spawned process, or the
+  // BCC VM. Everything else belongs to a renderer pack.
+  const streamed = plan.command !== null || plan.pack === 'bcc'
 
   const started: RunStarted = {
     runId,
@@ -325,17 +439,33 @@ export async function startRun(requestedPath: string, languageId: string): Promi
     args: [...plan.args],
     toolchainId: plan.toolchainId,
     pack: plan.pack,
-    reason: plan.reason
+    reason: plan.reason,
+    streamed
   }
 
-  // Bundled and unsupported runs have nothing to spawn. The renderer owns what
-  // happens next; main's job was the decision.
-  if (plan.mode !== 'real' || plan.command === null) return started
+  if (plan.pack === 'bcc') {
+    const run: ActiveRun = { runId, startedAt: Date.now(), child: null, cancelled: false, finished: false }
+    active.set(runId, run)
+    void runBcc(run, filePath, relativePath)
+    return started
+  }
+
+  /*
+   * Whether there is a COMMAND decides who carries the plan out, not the mode.
+   *
+   * A bundled runtime that is a real process — JavaScript on the Node inside
+   * this app — is spawned and streamed here exactly like a toolchain run. Only
+   * a plan with nothing to spawn goes to the renderer, which is the renderer
+   * packs and the unsupported case. Keying on the mode instead would send the
+   * bundled Node run to a renderer pack that does not exist.
+   */
+  if (!streamed || plan.command === null) return started
 
   // Pulled out of `plan` before the closure: TypeScript discards narrowing on a
   // property access once it is read inside a nested function.
   const command = plan.command
   const compile = plan.compile
+  const env = plan.env
 
   const run: ActiveRun = { runId, startedAt: Date.now(), child: null, cancelled: false, finished: false }
   active.set(runId, run)
@@ -361,7 +491,7 @@ export async function startRun(requestedPath: string, languageId: string): Promi
         }
       }
 
-      const code = await runProcess(run, command, plan.args, workspaceRoot)
+      const code = await runProcess(run, command, plan.args, workspaceRoot, env)
       finish(run, code)
     } catch (error) {
       write(run, 'stderr', `${error instanceof Error ? error.message : 'run failed'}\r\n`)
@@ -372,16 +502,87 @@ export async function startRun(requestedPath: string, languageId: string): Promi
   return started
 }
 
+/* ------------------------------------------------------------------ *
+ * BCC
+ * ------------------------------------------------------------------ */
+
+/**
+ * A fresh worker per run, terminated when it ends.
+ *
+ * A long-lived worker would need a supervisor — restart budget, heartbeat, the
+ * shape `lang-service.ts` has — to guard against a VM run that wedges it. A run
+ * is short-lived and self-contained, so throwing the worker away afterwards
+ * gets the same guarantee for none of the machinery, and no run can inherit
+ * state from the one before it.
+ *
+ * Cancellation is the reason this is a worker rather than a loop here: the VM
+ * yields between slices, so `terminate` lands promptly and the window never
+ * stops painting even on a program that does not end.
+ */
+async function runBcc(run: ActiveRun, filePath: string, relativePath: string): Promise<void> {
+  let worker: Worker
+  try {
+    const source = await fsp.readFile(filePath, 'utf8')
+    worker = new Worker(join(__dirname, 'lang-vm-worker.js'))
+    bccWorkers.set(run.runId, worker)
+
+    worker.on('message', (message: VmWorkerMessage) => {
+      if (message.runId !== run.runId) return
+
+      if (message.type === 'output') {
+        write(run, message.stream, message.text)
+        return
+      }
+
+      // A plain run never asks for a debug session, so a `stopped` message here
+      // would mean the worker answered a request nobody made. Narrowing on
+      // `exit` rather than "not output" keeps that from silently ending the run
+      // with `undefined` as its exit code.
+      if (message.type !== 'exit') return
+
+      void worker.terminate()
+      bccWorkers.delete(run.runId)
+      finish(run, message.code)
+    })
+
+    worker.on('error', (error: Error) => {
+      write(run, 'stderr', `${error.message}\r\n`)
+      bccWorkers.delete(run.runId)
+      finish(run, null)
+    })
+
+    worker.postMessage({ type: 'run', runId: run.runId, source, relativePath })
+  } catch (error) {
+    write(run, 'stderr', `${error instanceof Error ? error.message : 'could not start'}\r\n`)
+    finish(run, null)
+  }
+}
+
 /** Cancels a run and everything it spawned. Idempotent. */
 export function cancelRun(runId: string): boolean {
   const run = active.get(runId)
   if (run === undefined) return false
 
   run.cancelled = true
+
   const child = run.child
   if (child !== null && typeof child.pid === 'number') {
     killProcessTree(child.pid)
   }
+
+  const worker = bccWorkers.get(runId)
+  if (worker !== undefined) {
+    /*
+     * Terminated rather than asked politely. The VM yields between slices, so a
+     * cooperative cancel would also work — but a program that traps the worker
+     * in a slice would then be uncancellable, and Cancel has to mean it. The
+     * worker owns nothing on disk, so there is nothing to leave half-written.
+     */
+    bccWorkers.delete(runId)
+    void worker.terminate()
+    finish(run, 130)
+  }
+
   return true
 }
 

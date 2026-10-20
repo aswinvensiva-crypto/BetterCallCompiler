@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   closeLangDocument,
+  langDefinition,
+  langDocumentSymbols,
+  langHover,
+  langReferences,
+  langRename,
   langStatus,
   notifyLangWatchEvent,
   openLangDocument,
@@ -19,7 +24,14 @@ import {
   publishDiagnostics,
   resetDiagnosticStore
 } from '../../src/main/diagnostic-store'
-import type { LangMessage, LangRequest } from '../../src/shared/lang-protocol'
+import {
+  emptyLangQueryResult,
+  isLangMessage,
+  isLangRequest,
+  type LangMessage,
+  type LangQueryRequest,
+  type LangRequest
+} from '../../src/shared/lang-protocol'
 import type { DiagnosticsBatch, FileDiagnostics, FsWatchEvent } from '../../src/shared/types'
 
 /**
@@ -429,5 +441,213 @@ describe('lang service', () => {
     startLang('/w')
     const worker = newestWorker()
     expect(() => worker.emit({ type: 'nonsense' } as unknown as LangMessage)).not.toThrow()
+  })
+})
+
+/* -------------------------------------------------------------------------- */
+/*  Navigation queries                                                         */
+/* -------------------------------------------------------------------------- */
+
+/** Every `query` the worker was sent, in order. */
+function queriesSent(): LangQueryRequest[] {
+  return newestWorker().sent.filter(
+    (message): message is LangQueryRequest => message.type === 'query'
+  )
+}
+
+describe('navigation queries', () => {
+  it('carries the buffer, so an answer describes what the user can see', async () => {
+    // The whole point of the overlay riding on the request. `pushOverlay`
+    // debounces 300ms, so without this the daemon answers against text the user
+    // edited a third of a second ago — and a RENAME against stale text rewrites
+    // the wrong bytes.
+    startLang('/w')
+    const pending = langDefinition('a.bcc', 7, { content: 'let x = 1;', version: 4 })
+
+    const [sent] = queriesSent()
+    expect(sent?.kind).toBe('definition')
+    expect(sent?.offset).toBe(7)
+    expect(sent?.overlay).toEqual({ content: 'let x = 1;', version: 4 })
+
+    newestWorker().emit({
+      type: 'queryResult',
+      requestId: sent!.requestId,
+      result: { kind: 'definition', locations: [] }
+    })
+    await expect(pending).resolves.toEqual({ locations: [] })
+  })
+
+  it('correlates answers that come back out of order', async () => {
+    startLang('/w')
+    const first = langReferences('a.bcc', 1, null)
+    const second = langHover('b.bcc', 2, null)
+
+    const sent = queriesSent()
+    expect(sent).toHaveLength(2)
+    expect(sent[0]!.requestId).not.toBe(sent[1]!.requestId)
+
+    // Second answered first, which is exactly what a worker under load does.
+    newestWorker().emit({
+      type: 'queryResult',
+      requestId: sent[1]!.requestId,
+      result: { kind: 'hover', contents: 'int', range: null }
+    })
+    newestWorker().emit({
+      type: 'queryResult',
+      requestId: sent[0]!.requestId,
+      result: {
+        kind: 'references',
+        locations: [
+          { relativePath: 'a.bcc', path: '/w/a.bcc', range: { startLine: 1, startColumn: 1, endLine: 1, endColumn: 2 } }
+        ],
+        truncated: false
+      }
+    })
+
+    await expect(second).resolves.toEqual({ contents: 'int', range: null })
+    await expect((await first).locations).toHaveLength(1)
+  })
+
+  it('discards an answer of the wrong kind rather than handing it over', async () => {
+    // A worker whose switch answered the wrong question is a bug in the worker,
+    // and the caller must not read fields the shape does not have.
+    startLang('/w')
+    const pending = langHover('a.bcc', 0, null)
+    newestWorker().emit({
+      type: 'queryResult',
+      requestId: queriesSent()[0]!.requestId,
+      result: { kind: 'definition', locations: [] }
+    })
+    await expect(pending).resolves.toEqual({ contents: null, range: null })
+  })
+
+  it('resolves empty on timeout instead of rejecting', async () => {
+    // Monaco logs a rejected provider as a console error and shows the user
+    // nothing different, so a rejection buys a red line in the log and costs
+    // the ability to tell "no answer" from "broken". Same choice dependentsOf
+    // already makes.
+    startLang('/w')
+    const pending = langReferences('a.bcc', 0, null)
+    vi.advanceTimersByTime(6_000)
+    await expect(pending).resolves.toEqual({ locations: [], truncated: false })
+  })
+
+  it('resolves empty when there is no daemon at all', async () => {
+    await expect(langDocumentSymbols('a.bcc', null)).resolves.toEqual({ symbols: [] })
+  })
+
+  /**
+   * The leak the plan names by hand: `pendingQueries` must be cleared beside
+   * `clearOwner('bcc')`, or a crash during a Find All References hangs the
+   * invoke until its timeout and leaks the resolver until the process exits.
+   */
+  it('settles every in-flight query when the worker crashes', async () => {
+    startLang('/w')
+    const pending = langRename('a.bcc', 3, 'renamed', null)
+    newestWorker().crash()
+
+    await expect(pending).resolves.toEqual({
+      target: null,
+      placeholder: null,
+      files: [],
+      error: null
+    })
+  })
+
+  it('settles every in-flight query when the daemon is stopped', async () => {
+    startLang('/w')
+    const pending = langDefinition('a.bcc', 0, null)
+    stopLang()
+    await expect(pending).resolves.toEqual({ locations: [] })
+  })
+
+  it('sends null for newName when asking only where the symbol is', () => {
+    startLang('/w')
+    void langRename('a.bcc', 3, null, null)
+    expect(queriesSent()[0]?.newName).toBeNull()
+  })
+})
+
+/* -------------------------------------------------------------------------- */
+/*  Protocol guards                                                            */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The one thing TypeScript does not check for us.
+ *
+ * `isLangMessage` and `isLangRequest` enumerate their type strings by hand, so
+ * adding a member to either union compiles cleanly and is then silently dropped
+ * on the floor by the guard — a new message that never arrives, with nothing
+ * pointing at the cause. The `Record<Union['type'], Union>` below is what closes
+ * it: a new member makes this file fail to compile until a sample exists, and
+ * the assertion then makes the guard admit it.
+ */
+describe('protocol guards', () => {
+  const requests: Record<LangRequest['type'], LangRequest> = {
+    boot: { type: 'boot', workspaceRoot: '/w' },
+    filesChanged: { type: 'filesChanged', changed: [], removed: [] },
+    openDocument: { type: 'openDocument', relativePath: 'a.bcc', content: '', version: 1 },
+    closeDocument: { type: 'closeDocument', relativePath: 'a.bcc' },
+    query: {
+      type: 'query',
+      requestId: 1,
+      kind: 'definition',
+      relativePath: 'a.bcc',
+      offset: 0,
+      newName: null,
+      overlay: null
+    },
+    ping: { type: 'ping', nonce: 1 }
+  }
+
+  const messages: Record<LangMessage['type'], LangMessage> = {
+    ready: { type: 'ready' },
+    diagnostics: { type: 'diagnostics', files: [], settled: true },
+    pong: { type: 'pong', nonce: 1, heapUsedMb: 1 },
+    indexed: { type: 'indexed', fileCount: 0 },
+    queryResult: {
+      type: 'queryResult',
+      requestId: 1,
+      result: { kind: 'definition', locations: [] }
+    },
+    failure: { type: 'failure', detail: 'no' }
+  }
+
+  it('accepts every request the union declares', () => {
+    for (const [type, request] of Object.entries(requests)) {
+      expect(isLangRequest(request), type).toBe(true)
+    }
+  })
+
+  it('accepts every message the union declares', () => {
+    for (const [type, message] of Object.entries(messages)) {
+      expect(isLangMessage(message), type).toBe(true)
+    }
+  })
+
+  it('rejects near-misses', () => {
+    for (const value of [
+      null,
+      undefined,
+      'query',
+      42,
+      {},
+      { type: 'Query' },
+      { type: 'queryresult' },
+      { type: 'queries' },
+      { type: '' }
+    ]) {
+      expect(isLangRequest(value), JSON.stringify(value) ?? 'undefined').toBe(false)
+      expect(isLangMessage(value), JSON.stringify(value) ?? 'undefined').toBe(false)
+    }
+  })
+
+  it('has an empty answer for every query kind', () => {
+    // `emptyLangQueryResult` is what every "no answer" path returns — a daemon
+    // that is down, a timeout, a file the worker has never heard of. A kind
+    // missing from it would be an undefined reaching Monaco.
+    for (const kind of ['definition', 'references', 'rename', 'documentSymbols', 'hover'] as const) {
+      expect(emptyLangQueryResult(kind).kind).toBe(kind)
+    }
   })
 })

@@ -2,7 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   closeDocument,
   compilerStatus,
+  definitionAt,
   dependentsOf,
+  referencesAt,
   diagnosticsFor,
   notifyWatchEvent,
   openDocument,
@@ -146,7 +148,39 @@ describe('lifecycle', () => {
     startCompiler('C:/ws')
 
     expect(workers).toHaveLength(1)
-    expect(newestWorker().sent[0]).toEqual({ type: 'boot', workspaceRoot: 'C:/ws' })
+    expect(newestWorker().sent[0]).toMatchObject({ type: 'boot', workspaceRoot: 'C:/ws' })
+  })
+
+  /**
+   * The only channel that reaches a worker inside `getSemanticDiagnostics`.
+   *
+   * That call is synchronous and `port.on('message')` dispatches synchronously,
+   * so the worker's event loop is not running and no message can arrive. Shared
+   * memory the checker polls is the whole mechanism, and a boot that forgot to
+   * carry it would leave every check uncancellable with nothing to show for it.
+   */
+  it('hands the worker the shared cancellation slot', () => {
+    startCompiler('C:/ws')
+
+    const boot = newestWorker().sent[0] as { cancellation?: SharedArrayBuffer }
+    expect(boot.cancellation).toBeInstanceOf(SharedArrayBuffer)
+    expect(boot.cancellation?.byteLength).toBe(4)
+  })
+
+  it('raises the flag when an interactive query is sent, and lowers it on boot', () => {
+    startCompiler('C:/ws')
+    const boot = newestWorker().sent[0] as { cancellation?: SharedArrayBuffer }
+    const flag = new Int32Array(boot.cancellation as SharedArrayBuffer)
+    expect(Atomics.load(flag, 0)).toBe(0)
+
+    void definitionAt('a.ts', 0, null)
+    expect(Atomics.load(flag, 0)).toBe(1)
+
+    // A flag raised for a query a dead worker never answered must not cancel
+    // the fresh daemon's first check — the one pass it most needs to finish.
+    newestWorker().crash()
+    vi.advanceTimersByTime(1_000)
+    expect(Atomics.load(flag, 0)).toBe(0)
   })
 
   it('adopts the state the worker reports', () => {
@@ -469,6 +503,154 @@ describe('documents and queries', () => {
 
   it('resolves empty when there is no worker at all', async () => {
     await expect(dependentsOf('a.ts')).resolves.toEqual({
+      node: null,
+      dependents: [],
+      chain: [],
+      cycle: null
+    })
+  })
+})
+
+/* -------------------------------------------------------------------------- */
+/*  Navigation                                                                 */
+/* -------------------------------------------------------------------------- */
+
+function languageQueriesSent() {
+  return newestWorker().sent.filter((message) => message.type === 'languageQuery')
+}
+
+describe('navigation queries', () => {
+  it('carries the buffer, so an answer describes what the user can see', async () => {
+    // `pushOverlay` debounces 300ms, so without this the daemon answers against
+    // text the user edited a third of a second ago and the definition points at
+    // the wrong token.
+    startCompiler('C:/ws')
+    const pending = definitionAt('a.ts', 42, { content: 'export const x = 1', version: 7 })
+
+    const [sent] = languageQueriesSent()
+    expect(sent).toMatchObject({
+      kind: 'definition',
+      relativePath: 'a.ts',
+      offset: 42,
+      overlay: { content: 'export const x = 1', version: 7 }
+    })
+
+    newestWorker().emit({
+      type: 'languageQueryResult',
+      requestId: (sent as { requestId: number }).requestId,
+      result: {
+        kind: 'definition',
+        locations: [
+          {
+            relativePath: 'lib.ts',
+            path: 'C:/ws/lib.ts',
+            range: { startLine: 3, startColumn: 14, endLine: 3, endColumn: 20 }
+          }
+        ]
+      }
+    })
+
+    // The wire discriminant is stripped: every response schema is a
+    // strictObject, so a stray `kind` would come back as BAD_RESPONSE.
+    await expect(pending).resolves.toEqual({
+      locations: [
+        {
+          relativePath: 'lib.ts',
+          path: 'C:/ws/lib.ts',
+          range: { startLine: 3, startColumn: 14, endLine: 3, endColumn: 20 }
+        }
+      ]
+    })
+  })
+
+  it('correlates answers that come back out of order', async () => {
+    startCompiler('C:/ws')
+    const first = referencesAt('a.ts', 1, null)
+    const second = definitionAt('b.ts', 2, null)
+
+    const sent = languageQueriesSent()
+    expect(sent).toHaveLength(2)
+
+    newestWorker().emit({
+      type: 'languageQueryResult',
+      requestId: (sent[1] as { requestId: number }).requestId,
+      result: { kind: 'definition', locations: [] }
+    })
+    newestWorker().emit({
+      type: 'languageQueryResult',
+      requestId: (sent[0] as { requestId: number }).requestId,
+      result: { kind: 'references', locations: [], truncated: true }
+    })
+
+    await expect(second).resolves.toEqual({ locations: [] })
+    await expect(first).resolves.toEqual({ locations: [], truncated: true })
+  })
+
+  it('shares one id space with the dependents query', async () => {
+    // Two counters could collide, and an answer would then settle the wrong
+    // caller's promise from the wrong map.
+    startCompiler('C:/ws')
+    void dependentsOf('a.ts')
+    void definitionAt('a.ts', 0, null)
+
+    const worker = newestWorker()
+    const ids = worker.sent
+      .filter((m) => m.type === 'dependents' || m.type === 'languageQuery')
+      .map((m) => (m as { requestId: number }).requestId)
+
+    expect(new Set(ids).size).toBe(ids.length)
+  })
+
+  it('discards an answer of the wrong kind rather than handing it over', async () => {
+    startCompiler('C:/ws')
+    const pending = referencesAt('a.ts', 0, null)
+    newestWorker().emit({
+      type: 'languageQueryResult',
+      requestId: (languageQueriesSent()[0] as { requestId: number }).requestId,
+      result: { kind: 'definition', locations: [] }
+    })
+    await expect(pending).resolves.toEqual({ locations: [], truncated: false })
+  })
+
+  it('resolves empty on timeout instead of rejecting', async () => {
+    startCompiler('C:/ws')
+    const pending = definitionAt('a.ts', 0, null)
+    vi.advanceTimersByTime(6_000)
+    await expect(pending).resolves.toEqual({ locations: [] })
+  })
+
+  it('resolves empty when there is no daemon at all', async () => {
+    await expect(referencesAt('a.ts', 0, null)).resolves.toEqual({
+      locations: [],
+      truncated: false
+    })
+  })
+
+  /**
+   * The leak the plan names by hand: `pendingLanguageQueries` must be cleared
+   * beside `pendingDependents.clear()`, or a crash during a Find All References
+   * hangs the invoke until its timeout and leaks the resolver until exit.
+   */
+  it('settles every in-flight query when the worker crashes', async () => {
+    startCompiler('C:/ws')
+    const pending = referencesAt('a.ts', 0, null)
+    newestWorker().crash()
+    await expect(pending).resolves.toEqual({ locations: [], truncated: false })
+  })
+
+  /**
+   * The same hole, and it was already open before any of this.
+   *
+   * `scheduleRestart` cleared the diagnostics but not the resolver maps, so a
+   * crash left every in-flight `dependentsOf` to resolve five seconds later on
+   * its own timeout — the Why button opening blank after a daemon crash, with
+   * nothing saying why.
+   */
+  it('settles an in-flight dependents query when the worker crashes', async () => {
+    startCompiler('C:/ws')
+    const pending = dependentsOf('a.ts')
+    newestWorker().crash()
+    await expect(pending).resolves.toEqual({
       node: null,
       dependents: [],
       chain: [],

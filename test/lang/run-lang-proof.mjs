@@ -30,6 +30,15 @@ import { fileURLToPath } from 'node:url'
  *   5. Deleting a file that had errors clears its row.
  *   6. A type error reaches the editor exactly like a syntax error does, merged
  *      into position order, with no cascade from one mistake.
+ *   7. Navigation is answered by the same daemon: go-to-definition lands on the
+ *      declaration, references follow symbol identity across a shadowing
+ *      boundary, and a rename plans every occurrence and nothing else.
+ *   8. A query carrying an overlay changes what the NEXT query sees, and emits
+ *      no diagnostics pass while doing it. That separation is the fix for the
+ *      freshness hazard: `openDocument` conflates "this is the text now" with
+ *      "please re-check", which is why the renderer debounces it 300ms and
+ *      therefore why an interactive answer would otherwise be a third of a
+ *      second stale.
  */
 
 const WORKER = join(fileURLToPath(new URL('../../', import.meta.url)), 'out/main/lang-worker.js')
@@ -43,6 +52,28 @@ const TYPE_ERROR = 'fn add(a: int, b: int) -> int {\n  return a + true;\n}\n'
 const CASCADE = 'print nope + nope * nope;\n'
 /** A syntax error on line 1 and a type error on line 2, found by different stages. */
 const MIXED = 'let a = 1\nprint true + 1;\n'
+
+/**
+ * Two `count`s, one shadowing the other, and one function.
+ *
+ * Written on purpose so a text search gets the wrong answer: the inner `count`
+ * on lines 7-8 and the outer one on lines 1, 2 and 10 are spelled identically
+ * and are different symbols. Anything matching on the NAME reports six hits for
+ * either; matching on symbol identity reports four and two.
+ */
+const NAVIGABLE = [
+  'let count = 0;',            // 1
+  'count = count + 1;',        // 2
+  'fn bump(step: int) -> int {', // 3
+  '  return step + 1;',        // 4
+  '}',                         // 5
+  'if true {',                 // 6
+  '  let count = 99;',         // 7
+  '  print count;',            // 8
+  '}',                         // 9
+  'print bump(count);',        // 10
+  ''
+].join('\n')
 
 function makeWorkspace() {
   const root = mkdtempSync(join(tmpdir(), 'bcc-lang-'))
@@ -242,6 +273,173 @@ try {
     fileIn(mixed, 'examples/good.bcc').diagnostics.map((d) => `${d.startLine}:${d.code}`),
     ['1:BCC0003', '2:BCC0013']
   )
+
+  /* --- 7. navigation, answered by the daemon that has the resolution ------ */
+
+  writeFileSync(join(root, 'examples', 'nav.bcc'), NAVIGABLE, 'utf8')
+  worker.postMessage({ type: 'filesChanged', changed: ['examples/nav.bcc'], removed: [] })
+  await next(worker, 'diagnostics')
+
+  /** Offset of the `nth` occurrence of `needle` in NAVIGABLE, 0-based. */
+  const offsetOf = (needle, nth = 0) => {
+    let index = -1
+    for (let seen = 0; seen <= nth; seen++) {
+      index = NAVIGABLE.indexOf(needle, index + 1)
+      if (index < 0) throw new Error(`no occurrence ${nth} of ${needle}`)
+    }
+    return index
+  }
+
+  let queryId = 0
+  const ask = async (kind, offset, extra = {}) => {
+    const requestId = ++queryId
+    const answered = new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        worker.off('message', onMessage)
+        reject(new Error(`timed out waiting for query ${requestId}`))
+      }, 15_000)
+      const onMessage = (message) => {
+        if (message?.type !== 'queryResult' || message.requestId !== requestId) return
+        clearTimeout(timer)
+        worker.off('message', onMessage)
+        resolve(message.result)
+      }
+      worker.on('message', onMessage)
+    })
+    worker.postMessage({
+      type: 'query',
+      requestId,
+      kind,
+      relativePath: 'examples/nav.bcc',
+      offset,
+      newName: null,
+      overlay: null,
+      ...extra
+    })
+    return await answered
+  }
+
+  console.log('\n--- navigation ---')
+
+  const definition = await ask('definition', offsetOf('count', 2))
+  check(
+    'a read resolves to its declaration',
+    definition.locations.map((l) => `${l.range.startLine}:${l.range.startColumn}`),
+    ['1:5']
+  )
+
+  const callDefinition = await ask('definition', offsetOf('bump', 1))
+  check('a call resolves to the function', callDefinition.locations[0].range.startLine, 3)
+
+  const absent = await ask('definition', offsetOf('true'))
+  check('a keyword resolves to nothing', absent.locations.length, 0)
+
+  // The claim that makes this more correct than a text search. Six `count`s in
+  // the file; four belong to the outer symbol (its declaration, the store and
+  // the read on line 2, and the argument on line 10) and two to the inner one.
+  // No rule in the navigation code says so — the symbols simply are not the
+  // same object.
+  const outer = await ask('references', offsetOf('count'))
+  check(
+    'the outer count has four references',
+    outer.locations.map((l) => l.range.startLine),
+    [1, 2, 2, 10]
+  )
+  check('and the answer is complete', outer.truncated, false)
+
+  const inner = await ask('references', offsetOf('count', 3))
+  check(
+    'the shadowing count has its own two',
+    inner.locations.map((l) => l.range.startLine),
+    [7, 8]
+  )
+
+  const plan = await ask('rename', offsetOf('count', 3))
+  check('rename pre-fills the name under the cursor', plan.placeholder, 'count')
+  check('and nothing is rewritten until a name is given', plan.files.length, 0)
+
+  const renamed = await ask('rename', offsetOf('count', 3), { newName: 'inner' })
+  check(
+    'the rename touches only the shadowed occurrences',
+    renamed.files[0].edits.map((edit) => edit.range.startLine),
+    [8, 7]
+  )
+  check('descending, so applying in order cannot move the later ranges', renamed.files[0].edits.map((e) => e.range.startLine), [8, 7])
+
+  const rejected = await ask('rename', offsetOf('count', 3), { newName: 'while' })
+  check('a keyword is refused by the lexer, not by a regex', rejected.error !== null, true)
+  check('and no edits come back with it', rejected.files.length, 0)
+
+  const outline = await ask('documentSymbols', 0)
+  check(
+    'the outline lists the declarations a reader would expect',
+    outline.symbols.map((symbol) => `${symbol.kind} ${symbol.name}${symbol.detail}`),
+    ['variable count: int', 'function bump(step: int) -> int', 'variable count: int']
+  )
+
+  const hover = await ask('hover', offsetOf('step', 1))
+  check('hover names the parameter and its type', hover.contents, '```bcc\nparameter step: int\n```')
+
+  /* --- 8. a query's overlay is adopted without triggering a check --------- */
+
+  console.log('\n--- a query carrying the live buffer ---')
+
+  // The renderer debounces `openDocument` by 300ms because every push triggers
+  // a re-check. An interactive query cannot wait for that and must not pay for
+  // it, so it carries the buffer and the daemon adopts it WITHOUT checking.
+  const silence = nothingWithin(worker, 'diagnostics', 1_200)
+  const withOverlay = await ask('definition', 4, {
+    overlay: { content: 'let renamedInBuffer = 1;\nprint renamedInBuffer;\n', version: 50 },
+    offset: 'let renamedInBuffer = 1;\nprint renamedInBuffer;\n'.indexOf('renamedInBuffer', 25)
+  })
+  check('the answer describes the buffer, not the file on disk', withOverlay.locations[0].range.startColumn, 5)
+  check('and no diagnostics pass was emitted for it', await silence, null)
+
+  // The overlay persists, so the NEXT query — carrying nothing — still sees it.
+  const afterwards = await ask('documentSymbols', 0)
+  check(
+    'the buffer is what the daemon now holds',
+    afterwards.symbols.map((symbol) => symbol.name),
+    ['renamedInBuffer']
+  )
+
+  // And an out-of-order overlay is discarded rather than overwriting a newer one.
+  const stale = await ask('documentSymbols', 0, {
+    overlay: { content: 'let stale = 1;\n', version: 3 }
+  })
+  check('a lower version is ignored', stale.symbols.map((s) => s.name), ['renamedInBuffer'])
+
+  /* --- 9. a query must not swallow the check the push would have done ----- */
+
+  console.log('\n--- a query between two pushes ---')
+
+  // The regression an E2E found, and the reason a query cannot simply adopt an
+  // overlay and stop. `setInput` reports a change exactly ONCE, and
+  // `openDocument` decides whether to check from that answer — so a query
+  // carrying the new text, followed by the debounced push carrying the same
+  // text, leaves the push looking like a no-op. The buffer is current, the
+  // navigation answers are current, and the squiggles are from two edits ago.
+  const BROKEN_BUFFER = 'let oops = ;\n'
+
+  // The query moves the daemon's copy of the file, without checking.
+  const noPassForTheQuery = nothingWithin(worker, 'diagnostics', 800)
+  await ask('documentSymbols', 0, { overlay: { content: BROKEN_BUFFER, version: 60 } })
+  check('still no pass for the query itself', await noPassForTheQuery, null)
+
+  // The debounced push then arrives carrying the SAME text.
+  worker.postMessage({
+    type: 'openDocument',
+    relativePath: 'examples/nav.bcc',
+    content: BROKEN_BUFFER,
+    version: 60
+  })
+  const afterPush = await next(worker, 'diagnostics', 5_000)
+  check(
+    'the push still produces the check the query deferred',
+    fileIn(afterPush, 'examples/nav.bcc').diagnostics.map((d) => d.code),
+    ['BCC0004']
+  )
+
 } finally {
   await worker.terminate()
   rmSync(root, { recursive: true, force: true })

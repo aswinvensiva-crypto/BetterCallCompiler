@@ -2210,6 +2210,115 @@ body.workbench--resizing-y * {
   font-size: var(--bcc-font-size-sm);
 }
 
+/* ---------- agent (multi-file) ---------- */
+
+.agent-composer {
+  padding: 8px 12px;
+}
+
+.agent-files {
+  margin: 8px 0;
+}
+
+.agent-files__list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 160px;
+  overflow: auto;
+  border: 1px solid var(--bcc-border);
+  border-radius: var(--bcc-radius);
+  padding: 4px;
+}
+
+.agent-files__row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 4px;
+  cursor: pointer;
+  border-radius: var(--bcc-radius);
+}
+
+.agent-files__row:hover {
+  background: var(--bcc-bg-hover);
+}
+
+.agent-files__path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--bcc-font-mono);
+  font-size: var(--bcc-font-size-sm);
+  color: var(--bcc-fg-muted);
+}
+
+.agent-instruction {
+  width: 100%;
+  margin: 8px 0;
+  padding: 8px 9px;
+  border: 1px solid var(--bcc-border);
+  border-radius: var(--bcc-radius);
+  background: var(--bcc-bg-inset);
+  color: var(--bcc-fg);
+  font-family: inherit;
+  font-size: var(--bcc-font-size-sm);
+  resize: vertical;
+}
+
+.agent-plan {
+  margin: 10px 12px 0;
+}
+
+.agent-plan__summary {
+  margin: 0 0 10px;
+  font-size: var(--bcc-font-size-sm);
+  color: var(--bcc-fg-muted);
+  white-space: pre-wrap;
+}
+
+.agent-plan__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--bcc-border);
+}
+
+.agent-plan__path {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: var(--bcc-font-mono);
+  font-size: var(--bcc-font-size-sm);
+  color: var(--bcc-fg);
+}
+
+.agent-index {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--bcc-border);
+}
+
+.agent-index__status {
+  margin-bottom: 6px;
+}
+
+.agent-index__hint {
+  font-size: var(--bcc-font-size-sm);
+  color: var(--bcc-fg-subtle);
+}
+
+.agent-index__actions {
+  display: flex;
+  gap: 6px;
+}
+
+.agent-walkthrough {
+  margin-top: 8px;
+}
+
 /* ---------- quick pick (Ctrl+P, Ctrl+Shift+P) ---------- */
 
 .quick-pick-overlay {
@@ -3144,4 +3253,161 @@ body.workbench--resizing-y * {
 
 .ci-history__ms--over {
   color: var(--bcc-warning);
+}
+
+/* ---------- debugger ---------- */
+
+/* Styled by class, never by `#panel-debug-view` — an id selector (1,0,0) beats
+   `.panel__view[hidden]` (0,2,0), so a `display` on the id would win over the
+   hidden rule and the view would never hide. The output console learned that
+   the hard way; see the note above it. */
+.panel__view--debug {
+  overflow: auto;
+  padding: 6px 10px 10px;
+}
+
+.debug-action {
+  height: 22px;
+  padding: 0 10px;
+  font-size: var(--bcc-font-size-sm);
+}
+
+.debug-action[disabled] {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* Ending a session is interruptive, not destructive — the same reasoning the
+   run console's Cancel button follows. */
+.debug-action--stop {
+  border-color: transparent;
+  background: var(--bcc-warning);
+  color: var(--bcc-fg-inverse);
+}
+
+.debug-action--stop[disabled] {
+  background: var(--bcc-bg-hover);
+  color: var(--bcc-fg-muted);
+}
+
+.debug-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.debug-status {
+  font-size: var(--bcc-font-size-sm);
+  color: var(--bcc-fg-muted);
+  padding: 2px 0 8px;
+  font-variant-numeric: tabular-nums;
+}
+
+.debug-status[data-reason='breakpoint'],
+.debug-status[data-reason='exception'] {
+  color: var(--bcc-fg);
+}
+
+.debug-status[data-reason='error'] {
+  color: var(--bcc-danger);
+}
+
+.debug-panes {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.4fr);
+  gap: 10px;
+  align-items: start;
+}
+
+.debug-pane {
+  min-width: 0;
+  border: 1px solid var(--bcc-border-strong);
+  border-radius: 3px;
+  background: var(--bcc-bg-inset);
+  overflow: hidden;
+}
+
+.debug-pane__title {
+  padding: 4px 8px;
+  font-size: var(--bcc-font-size-sm);
+  color: var(--bcc-fg-subtle);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-bottom: 1px solid var(--bcc-border-strong);
+}
+
+.debug-pane__body {
+  max-height: 180px;
+  overflow: auto;
+  padding: 4px 0;
+}
+
+.debug-empty {
+  padding: 4px 8px;
+  font-size: var(--bcc-font-size-sm);
+  color: var(--bcc-fg-subtle);
+}
+
+.debug-frame,
+.debug-variable {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  padding: 2px 8px;
+  font-size: var(--bcc-font-size-sm);
+}
+
+.debug-frame__name,
+.debug-variable__name {
+  color: var(--bcc-fg);
+  flex: 0 0 auto;
+}
+
+.debug-frame__line,
+.debug-variable__value {
+  color: var(--bcc-fg-muted);
+  font-variant-numeric: tabular-nums;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.debug-output {
+  margin: 0;
+  max-height: 180px;
+  overflow: auto;
+  padding: 4px 8px;
+  font-family: 'JetBrains Mono', Consolas, monospace;
+  font-size: var(--bcc-font-size-sm);
+  color: var(--bcc-fg);
+  white-space: pre-wrap;
+}
+
+/* ---------- breakpoints, in the editor gutter ---------- */
+
+/* A filled dot, drawn with a radial gradient rather than a pseudo-element:
+   Monaco puts this class on a bare div it owns and sizes, and a `::before`
+   inside it would be positioned against a box whose dimensions are Monaco's to
+   change. */
+.bcc-breakpoint {
+  background: radial-gradient(circle at center, var(--bcc-danger) 0 4px, transparent 4px);
+}
+
+/* The line the debugger is stopped on. A background rather than a border: a
+   border would shift the text by a pixel every time execution moved. */
+.bcc-debug-line {
+  background: rgba(53, 116, 240, 0.18);
+}
+
+/* A BAR, not a second dot.
+   Monaco merges every glyph decoration on one line into a single widget and
+   puts all their class names on it, so a breakpoint you are stopped on gets
+   both of these classes. Two `background` rules would then fight and the later
+   one would simply erase the dot — the user would lose the breakpoint marker at
+   the exact moment it fired. A border and a background stack instead, so the
+   dot and the position indicator are both visible. */
+.bcc-debug-arrow {
+  border-left: 3px solid var(--bcc-accent);
 }

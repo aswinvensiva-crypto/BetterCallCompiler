@@ -29,7 +29,13 @@ export default defineConfig({
           // config: both are worker_thread targets with the same constraints,
           // and an entry that is missing from the build fails at spawn with a
           // message naming the file — see the existsSync guard in each service.
-          'lang-worker': resolve(__dirname, 'src/main/lang-worker.ts')
+          'lang-worker': resolve(__dirname, 'src/main/lang-worker.ts'),
+          // And the third: the read-only LanguageService that answers hover,
+          // completions and signature help. Separate from the checker because
+          // reaching the checker means cancelling its check, and a check
+          // cancelled on every keystroke never converges.
+          'interactive-worker': resolve(__dirname, 'src/main/interactive-worker.ts'),
+          'lang-vm-worker': resolve(__dirname, 'src/main/lang-vm-worker.ts')
         }
       }
     }

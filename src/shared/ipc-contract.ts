@@ -4,10 +4,13 @@ import { codeGraphSchema } from './code-graph'
 import {
   aiContextSchema,
   aiDoneSchema,
+  agentContextSchema,
+  agentFileEditSchema,
   aiLogEntrySchema,
   aiModeSchema,
   aiStartedSchema,
   aiStreamDeltaSchema,
+  aiUsageTotalsSchema,
   fileNodeSchema,
   fsWatchEventSchema,
   searchMatchSchema,
@@ -18,11 +21,22 @@ import {
   artifactKindSchema,
   artifactSchema,
   artifactSummarySchema,
+  codeActionsResultSchema,
   compilerPassSchema,
+  completionDetailResultSchema,
+  completionsResultSchema,
   compilerStatusSchema,
+  definitionResultSchema,
   dependencyQuerySchema,
   diagnosticsBatchSchema,
+  documentOverlaySchema,
+  documentSymbolsResultSchema,
   fileDiagnosticsSchema,
+  fileEditSchema,
+  hoverResultSchema,
+  referencesResultSchema,
+  signatureHelpResultSchema,
+  renameResultSchema,
   gitStatusSchema,
   languageBreakdownSchema,
   repositoryStatsSchema,
@@ -32,10 +46,17 @@ import {
   runExitSchema,
   runOutputSchema,
   runStartedSchema,
+  semanticIndexStatusSchema,
+  semanticMatchSchema,
+  debugCommandSchema,
+  debugExitSchema,
+  debugStartedSchema,
+  debugStateSchema,
   terminalDataSchema,
   terminalExitSchema,
   terminalSessionSchema,
   toolchainSchema,
+  walkthroughRequestSchema,
   workspaceSchema
 } from './types'
 
@@ -266,6 +287,38 @@ export const INVOKE_CHANNELS = {
     response: z.strictObject({ cancelled: z.boolean() })
   },
 
+  /*
+   * The debugger. Every one of these returns an acknowledgement, not state:
+   * the state arrives on `debug:stopped`, so there is exactly one path that
+   * paints the panel whether the stop came from a command the user pressed or
+   * from a breakpoint hit while it was running. Two paths would drift.
+   */
+  'debug:start': {
+    request: z.strictObject({ path: z.string().min(1) }),
+    response: z.strictObject({ session: debugStartedSchema })
+  },
+  'debug:command': {
+    request: z.strictObject({
+      runId: z.string().min(1),
+      command: debugCommandSchema
+    }),
+    // False when the session is gone — the window can race a program that
+    // ended, and silently dropping the command would leave the panel waiting
+    // for a `stopped` that is never coming.
+    response: z.strictObject({ accepted: z.boolean() })
+  },
+  'debug:setBreakpoints': {
+    request: z.strictObject({
+      runId: z.string().min(1),
+      lines: z.array(z.number().int().positive())
+    }),
+    response: z.strictObject({ accepted: z.boolean() })
+  },
+  'debug:stop': {
+    request: z.strictObject({ runId: z.string().min(1) }),
+    response: z.strictObject({ stopped: z.boolean() })
+  },
+
   'git:status': {
     request: empty,
     response: z.strictObject({ status: gitStatusSchema })
@@ -370,6 +423,98 @@ export const INVOKE_CHANNELS = {
     request: empty,
     response: z.strictObject({ entries: z.array(aiLogEntrySchema) })
   },
+  /** Cumulative token spend for this session, for the status bar. */
+  'ai:usage': {
+    request: empty,
+    response: z.strictObject({ totals: aiUsageTotalsSchema })
+  },
+  /**
+   * Ghost text: one suggestion for the text at the cursor, given what
+   * surrounds it. Capped at 8000 chars each side — enough context for a
+   * confident completion without turning every keystroke into a multi-KB
+   * payload.
+   */
+  'ai:ghostCompletion': {
+    request: z.strictObject({
+      languageId: z.string().min(1),
+      prefix: z.string().max(8000),
+      suffix: z.string().max(8000)
+    }),
+    response: z.strictObject({ text: z.string().nullable() })
+  },
+
+  /* --------------------------- multi-file agent -------------------------- */
+
+  /**
+   * Same transport as `ai:start` — deltas and completion ride `ai:delta` /
+   * `ai:done`, exactly like Explain, Find bugs and Improve — but a different
+   * context shape: several whole files and an instruction, rather than one
+   * selection.
+   */
+  'agent:start': {
+    request: z.strictObject({ context: agentContextSchema }),
+    response: z.strictObject({ started: aiStartedSchema })
+  },
+  /**
+   * Writes every file in the batch, tagging their log entries with the same
+   * `batchId` the renderer generated — a random-enough id it can also use
+   * client-side to group the diff review UI, before any entry naming it
+   * exists in the journal.
+   */
+  'agent:apply': {
+    request: z.strictObject({
+      batchId: z.string().min(1),
+      edits: z.array(agentFileEditSchema).min(1).max(20),
+      model: z.string().min(1),
+      promptHash: z.string().min(1)
+    }),
+    response: z.strictObject({ entries: z.array(aiLogEntrySchema) })
+  },
+  /** Reverts every entry in the batch as one action — the one-click rollback. */
+  'agent:revert': {
+    request: z.strictObject({ batchId: z.string().min(1) }),
+    response: z.strictObject({ entries: z.array(aiLogEntrySchema) })
+  },
+
+  /* ------------------------------ walkthrough ----------------------------- */
+
+  /**
+   * Same transport as `explain:start` and `agent:start` — deltas and
+   * completion ride the existing `ai:delta` / `ai:done` channels. The
+   * renderer stores the finished stream as a `kind: 'walkthrough'` artifact
+   * via the existing `artifact:create`, so this channel only has to start
+   * the stream, not know anything about durable storage.
+   */
+  'walkthrough:start': {
+    request: walkthroughRequestSchema,
+    response: z.strictObject({ started: aiStartedSchema })
+  },
+
+  /* ---------------------------- semantic index ----------------------------- */
+
+  /**
+   * Rebuilds the on-disk semantic index from the workspace's current files.
+   * On-demand rather than watched: a live-updating index would mean paying
+   * the chunk-and-embed cost on every keystroke that saves a file, for a
+   * feature (retrieval for a prompt) that is only ever consulted right
+   * before sending one.
+   */
+  'index:build': {
+    request: empty,
+    response: z.strictObject({ status: semanticIndexStatusSchema })
+  },
+  'index:status': {
+    request: empty,
+    response: z.strictObject({ status: semanticIndexStatusSchema })
+  },
+  /** Ranked candidate files/chunks for an instruction — see `semantic-scoring.ts`. */
+  'index:query': {
+    request: z.strictObject({
+      instruction: z.string().min(1),
+      limit: z.number().int().positive().max(50).default(8)
+    }),
+    response: z.strictObject({ matches: z.array(semanticMatchSchema) })
+  },
 
   /**
    * There is at most one floating Visualizer, so this is "show me the diagram
@@ -472,6 +617,151 @@ export const INVOKE_CHANNELS = {
     response: z.strictObject({ passes: z.array(compilerPassSchema) })
   },
 
+  /* ----------------------------- navigation ----------------------------- */
+
+  /**
+   * What every navigation request carries.
+   *
+   * The offset rather than a line and column, because that is what
+   * `ITextModel.getOffsetAt` produces and what both compilers index by — a
+   * position converted twice is a position that can disagree with itself.
+   *
+   * The overlay is the freshness fix and is the reason these are not answered
+   * from whatever the daemon last happened to be told. See
+   * `documentOverlaySchema`.
+   */
+  'compiler:definition': {
+    request: z.strictObject({
+      relativePath: z.string().min(1),
+      offset: z.number().int().nonnegative(),
+      overlay: documentOverlaySchema.nullable()
+    }),
+    response: definitionResultSchema
+  },
+  'compiler:references': {
+    request: z.strictObject({
+      relativePath: z.string().min(1),
+      offset: z.number().int().nonnegative(),
+      overlay: documentOverlaySchema.nullable()
+    }),
+    response: referencesResultSchema
+  },
+  /**
+   * Both halves of a rename. `newName: null` asks where the symbol is, for the
+   * inline box Monaco draws on F2; a name asks for the edits that carry it out.
+   */
+  'compiler:rename': {
+    request: z.strictObject({
+      relativePath: z.string().min(1),
+      offset: z.number().int().nonnegative(),
+      newName: z.string().nullable(),
+      overlay: documentOverlaySchema.nullable()
+    }),
+    response: renameResultSchema
+  },
+  /**
+   * No offset: an outline is about the whole file.
+   *
+   * Served by the daemon for `.bcc` because nothing else can be. For TypeScript
+   * this stays with Monaco's own worker — an outline is single-file and
+   * syntactic, so the tsconfig it lacks is irrelevant and its answer is instant
+   * and never queued behind a check.
+   */
+  'compiler:documentSymbols': {
+    request: z.strictObject({
+      relativePath: z.string().min(1),
+      overlay: documentOverlaySchema.nullable()
+    }),
+    response: documentSymbolsResultSchema
+  },
+  'compiler:hover': {
+    request: z.strictObject({
+      relativePath: z.string().min(1),
+      offset: z.number().int().nonnegative(),
+      overlay: documentOverlaySchema.nullable()
+    }),
+    response: hoverResultSchema
+  },
+  /**
+   * Quick fixes for the diagnostics under a selection.
+   *
+   * The codes come from the renderer because that is where the markers are, and
+   * `getCodeFixesAtPosition` needs them: a fix is a fix FOR something, so
+   * asking with an empty list returns nothing rather than everything.
+   */
+  'compiler:codeActions': {
+    request: z.strictObject({
+      relativePath: z.string().min(1),
+      offset: z.number().int().nonnegative(),
+      endOffset: z.number().int().nonnegative(),
+      /** Numeric TypeScript codes — `2551`, not `TS2551`. Capped like the trigger set. */
+      diagnosticCodes: z.array(z.number().int().nonnegative()).max(64),
+      overlay: documentOverlaySchema.nullable()
+    }),
+    response: codeActionsResultSchema
+  },
+  /**
+   * The three answers asked for at keystroke frequency.
+   *
+   * Served by the interactive daemon rather than the one that checks, because
+   * reaching the checker means cancelling its check — and a check cancelled on
+   * every character never converges, so the squiggles would stop appearing
+   * exactly while you type. Until that daemon is up, `CompilerStatus.interactive`
+   * is false and Monaco's own providers answer instead.
+   */
+  'compiler:completions': {
+    request: z.strictObject({
+      relativePath: z.string().min(1),
+      offset: z.number().int().nonnegative(),
+      overlay: documentOverlaySchema.nullable()
+    }),
+    response: completionsResultSchema
+  },
+  /**
+   * The second half of a completion, asked only for the item the user has
+   * highlighted.
+   *
+   * Fetching the signature and doc comment for every entry up front would mean
+   * several thousand of them crossing a structured clone on a keystroke; this
+   * is one, on demand, which is the same split every language server makes.
+   */
+  'compiler:completionDetail': {
+    request: z.strictObject({
+      relativePath: z.string().min(1),
+      offset: z.number().int().nonnegative(),
+      entryName: z.string().min(1),
+      /** Distinguishes two identically named auto-import candidates. */
+      entrySource: z.string().nullable(),
+      overlay: documentOverlaySchema.nullable()
+    }),
+    response: completionDetailResultSchema
+  },
+  'compiler:signatureHelp': {
+    request: z.strictObject({
+      relativePath: z.string().min(1),
+      offset: z.number().int().nonnegative(),
+      overlay: documentOverlaySchema.nullable()
+    }),
+    response: signatureHelpResultSchema
+  },
+  /**
+   * Writes edits to files that are NOT open, all of them or none.
+   *
+   * Every file is read and every edit applied in memory first; only when all of
+   * them succeed does anything reach the disk. A rename that rewrote four files
+   * and failed on the fifth would leave a program that compiles nowhere, with
+   * no undo — which is a worse outcome than a rename that refuses.
+   *
+   * Open files never come here. They are edited through their Monaco model so
+   * they stay dirty and stay in the undo stack, and because handing Monaco a
+   * bulk edit spanning closed files makes it create models with no lifecycle
+   * owner.
+   */
+  'compiler:applyWorkspaceEdit': {
+    request: z.strictObject({ files: z.array(fileEditSchema).max(1_000) }),
+    response: z.strictObject({ written: z.array(z.string()) })
+  },
+
   /* ------------------------------ artifacts ----------------------------- */
 
   /**
@@ -562,6 +852,11 @@ export const EVENT_CHANNELS = {
   'run:stdout': { payload: runOutputSchema },
   'run:stderr': { payload: runOutputSchema },
   'run:exit': { payload: runExitSchema },
+  // Carries the whole state, unlike `run:stdout` which carries a delta: a debug
+  // session can step BACKWARDS, which un-prints, and a delta channel cannot say
+  // that. See `debugStateSchema`.
+  'debug:stopped': { payload: debugStateSchema },
+  'debug:exited': { payload: debugExitSchema },
   // Payload-free: the view re-reads status itself, so the event cannot carry a
   // snapshot that is already stale by the time it is rendered.
   'git:changed': { payload: z.strictObject({}) },

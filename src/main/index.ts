@@ -15,6 +15,7 @@ import { getWorkspace, setWatchEmitter, setWorkspace, stopWatching } from './fs-
 import { createHandlerMap, emitEvent, registerIpcHandlers } from './ipc'
 import { disposeAllSessions, setTerminalEmitters } from './terminal'
 import { cancelAllRuns, setRunEmitters } from './runner'
+import { setDebugEmitters, stopAllDebugSessions } from './debug-service'
 import { setGitChangeEmitter, startGitWatch, stopGitWatch } from './git-service'
 import {
   compilerStatus,
@@ -23,6 +24,12 @@ import {
   startCompiler,
   stopCompiler
 } from './compiler-service'
+import {
+  notifyInteractiveWatchEvent,
+  setInteractiveReadyListener,
+  startInteractive,
+  stopInteractive
+} from './interactive-service'
 import {
   notifyLangWatchEvent,
   setLangEmitters,
@@ -132,6 +139,7 @@ function createWindow(): BrowserWindow {
     emitEvent(win, 'fs:watchEvent', event)
     notifyWatchEvent(event)
     notifyLangWatchEvent(event)
+    notifyInteractiveWatchEvent(event)
   })
   setCompilerEmitters(
     (batch) => emitEvent(win, 'compiler:diagnosticsChanged', batch),
@@ -148,8 +156,14 @@ function createWindow(): BrowserWindow {
     (batch) => emitEvent(win, 'compiler:diagnosticsChanged', batch),
     () => emitEvent(win, 'compiler:statusChanged', compilerStatus())
   )
+  // The interactive daemon has no stream of its own — it publishes nothing and
+  // is only ever asked. Its readiness still rides on the compiler's status, so
+  // anything watching the daemons sees it come and go; the renderer's choice of
+  // provider is made once at Monaco load and is deliberately NOT revisited.
+  setInteractiveReadyListener(() => emitEvent(win, 'compiler:statusChanged', compilerStatus()))
   startCompiler(getWorkspace().root)
   startLang(getWorkspace().root)
+  startInteractive(getWorkspace().root)
   setTerminalEmitters(
     (id, data) => emitEvent(win, 'terminal:data', { id, data }),
     (payload) => emitEvent(win, 'terminal:exit', payload)
@@ -158,6 +172,13 @@ function createWindow(): BrowserWindow {
     (payload) =>
       emitEvent(win, payload.stream === 'stdout' ? 'run:stdout' : 'run:stderr', payload),
     (payload) => emitEvent(win, 'run:exit', payload)
+  )
+  // The debugger's own pair. Not folded onto `setRunEmitters`: a debug session
+  // outlives the program ending, so its events cannot ride on a channel whose
+  // exit means the run is over.
+  setDebugEmitters(
+    (payload) => emitEvent(win, 'debug:stopped', payload),
+    (payload) => emitEvent(win, 'debug:exited', payload)
   )
   setGitChangeEmitter(() => emitEvent(win, 'git:changed', {}))
   setAiEmitters(
@@ -179,9 +200,11 @@ function createWindow(): BrowserWindow {
   win.on('closed', () => {
     disposeAllSessions()
     cancelAllRuns()
+    stopAllDebugSessions()
     cancelAllAiStreams()
     stopCompiler()
     stopLang()
+    stopInteractive()
   })
 
   const devUrl = devServerUrl()
@@ -384,9 +407,11 @@ if (!gotLock) {
   app.on('will-quit', () => {
     disposeAllSessions()
     cancelAllRuns()
+    stopAllDebugSessions()
     cancelAllAiStreams()
     stopCompiler()
     stopLang()
+    stopInteractive()
     void stopWatching()
     void stopGitWatch()
   })

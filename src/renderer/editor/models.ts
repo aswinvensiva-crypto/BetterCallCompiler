@@ -1,6 +1,7 @@
 import type * as monacoNs from 'monaco-editor'
+import { absolutePathFor, documentUri, relativePathFromUri, rememberAbsolutePath } from './document-uri'
 import { languageForFile } from './language-id'
-import { loadMonaco } from './monaco-setup'
+import { loadMonaco, monacoRuntime } from './monaco-setup'
 import { flushPendingMarkers } from './markers'
 import { closeDocument as closeSyntaxDocument } from './syntax-tree'
 import type { FileNode } from '../../shared/types'
@@ -62,6 +63,69 @@ function notify(): void {
 
 export function attachEditor(instance: monacoNs.editor.IStandaloneCodeEditor): void {
   editor = instance
+  registerEditorOpener()
+}
+
+/**
+ * Teaches Monaco how to open a file this app owns.
+ *
+ * Without this, go-to-definition across files silently does nothing. Monaco's
+ * standalone model service resolves a URI only to a model that already exists,
+ * so a definition in a file the user has never opened resolves to nothing and
+ * F12 appears broken — which is precisely the case the daemon exists to answer
+ * and the one Monaco's own worker cannot.
+ *
+ * Registered here rather than in `navigation-providers.ts` because opening a
+ * file is this module's job: it owns the model map, the tab order and the
+ * lifecycle. The provider module stays free of that, which is what keeps it
+ * free of an import cycle back through `monaco-setup`.
+ */
+let openerRegistered = false
+
+function registerEditorOpener(): void {
+  if (openerRegistered) return
+  const ns = monacoRuntime()
+  // `attachEditor` is called with an editor that `createEditor` already awaited
+  // `loadMonaco` for, so this is never null in practice — and returning without
+  // setting the flag means a later call still gets its chance.
+  if (ns === null) return
+  openerRegistered = true
+
+  ns.editor.registerEditorOpener({
+    openCodeEditor(_source, resource, selectionOrPosition) {
+      const relativePath = relativePathFromUri(resource)
+      if (relativePath === null) return false
+
+      const path = absolutePathFor(relativePath)
+      if (path === null) return false
+
+      const name = relativePath.slice(relativePath.lastIndexOf('/') + 1)
+      const node: FileNode = { name, path, relativePath, kind: 'file' }
+
+      // `lineNumber` is present on an IPosition and on an IRange's start under
+      // a different name, so the two are told apart by which field exists
+      // rather than by trusting the caller to send one shape.
+      const line =
+        selectionOrPosition === undefined
+          ? 1
+          : 'lineNumber' in selectionOrPosition
+            ? selectionOrPosition.lineNumber
+            : selectionOrPosition.startLineNumber
+      const column =
+        selectionOrPosition === undefined
+          ? 1
+          : 'column' in selectionOrPosition
+            ? selectionOrPosition.column
+            : selectionOrPosition.startColumn
+
+      // Returning true before the open resolves is what the interface asks for:
+      // it means "handled", not "finished". Reporting false after an await
+      // would let Monaco fall through to its own do-nothing default having
+      // already opened the file.
+      void revealLocation(node, line, column)
+      return true
+    }
+  })
 }
 
 export function openDocuments(): readonly OpenDocument[] {
@@ -80,9 +144,16 @@ export function anyDirty(): boolean {
   return openDocuments().some(isDirty)
 }
 
-/** Monaco keys models by URI; a stable per-file URI is what dedupes them. */
+/**
+ * Monaco keys models by URI; a stable per-file URI is what dedupes them.
+ *
+ * Built by `document-uri.ts` rather than inline, because the navigation
+ * providers have to run the same construction BACKWARDS to tell the daemon
+ * which file a model is. One encoder and one decoder, or the first path with a
+ * space in it makes go-to-definition ask about a file that does not exist.
+ */
 function uriFor(ns: typeof monacoNs, node: FileNode): monacoNs.Uri {
-  return ns.Uri.parse(`bettercallcompiler:///${encodeURI(node.relativePath)}`)
+  return documentUri(ns, node.relativePath)
 }
 
 /**
@@ -128,6 +199,9 @@ export async function openFile(node: FileNode): Promise<boolean> {
 
   const result = await window.betterCallCompiler.fs.readFile({ path: node.path })
   if (!result.ok) return false
+
+  // So the editor opener can find this file again by relative path alone.
+  rememberAbsolutePath(node.relativePath, node.path)
 
   // Awaited here rather than relying on boot order, which makes opening a file
   // self-sufficient: a click in the explorer during the Monaco load resolves once

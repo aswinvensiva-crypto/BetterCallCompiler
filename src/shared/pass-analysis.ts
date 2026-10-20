@@ -303,7 +303,9 @@ export function describePass(pass: CompilerPass): string {
         ? 'First check of this workspace'
         : pass.reason === 'buffer'
           ? 'Unsaved buffer'
-          : 'File changed on disk'
+          : pass.reason === 'idle'
+            ? 'Deferred work drained in the background'
+            : 'File changed on disk'
 
   // One file named, so name it. This is the sentence the History tab shows, and
   // it could not previously say WHICH file changed.

@@ -1,0 +1,19 @@
+// The plan's headline demo.
+//
+// Open the Observatory beside this file and watch it become tokens, an AST,
+// symbols, IR, SSA with its phi nodes, and then each optimisation pass
+// rewriting the code. Set a breakpoint, run it, step — and step backwards.
+
+fn fib(n: int) -> int {
+  if n < 2 {
+    return n;
+  } else {
+    return fib(n - 1) + fib(n - 2);
+  }
+}
+
+let i = 0;
+while i < 10 {
+  print fib(i);
+  i = i + 1;
+}

@@ -1,7 +1,16 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { createHash } from 'node:crypto'
 import { BetterCallCompilerServiceError } from '../shared/ipc-contract'
-import type { AiContext, AiDone, AiMode, AiStarted, AiStreamDelta } from '../shared/types'
+import type {
+  AgentContext,
+  AiContext,
+  AiDone,
+  AiMode,
+  AiStarted,
+  AiStreamDelta,
+  AiUsage,
+  AiUsageTotals
+} from '../shared/types'
 import { readSecret } from './secrets'
 import { loadSettings } from './settings'
 
@@ -46,6 +55,8 @@ export interface ProviderRequest {
 
 export interface ProviderResult {
   readonly stopReason: string | null
+  /** Null for a provider that cannot report usage — a local model, for one. */
+  readonly usage: { readonly inputTokens: number; readonly outputTokens: number } | null
 }
 
 /* ------------------------------------------------------------------ *
@@ -78,14 +89,34 @@ const SYSTEM_PROMPTS: Readonly<Record<AiMode, string>> = {
     'and its public interface. Reply with the rewritten block in a single ' +
     'fenced code block, followed by a short bulleted rationale listing what ' +
     'you changed and why. Do not include the surrounding code in the block — ' +
-    'it replaces the selection exactly.'
+    'it replaces the selection exactly.',
+
+  // The `### FILE:` format is parsed by `parseAgentPlan` in shared/agent-plan.ts
+  // — changing this shape without changing that parser breaks every plan
+  // silently, so the two are meant to be read together.
+  agent:
+    'You are a multi-file coding agent embedded in an IDE. You are given an ' +
+    'instruction and the full contents of one or more files. Propose the ' +
+    'edits needed to carry out the instruction across ALL the files it ' +
+    'touches, not just the first one. Reply with a short plan summary in ' +
+    'prose, then for EVERY file you change, a block in exactly this form:\n\n' +
+    '### FILE: <path exactly as given>\n' +
+    '```\n' +
+    '<the full new contents of that file>\n' +
+    '```\n\n' +
+    'Repeat the block for each file. Always output the WHOLE file, not a ' +
+    'diff or a partial excerpt — an omitted unchanged line is deleted, not ' +
+    'preserved. Only include files you are given; never invent a new file ' +
+    'path. If a file needs no change, omit its block entirely. Preserve each ' +
+    "file's existing style and formatting conventions."
 }
 
-/** Ceilings per mode. Improve returns code, so it needs the most room. */
+/** Ceilings per mode. Agent returns whole files across a batch, so it needs by far the most room. */
 const MAX_TOKENS: Readonly<Record<AiMode, number>> = {
   explain: 1500,
   'find-bugs': 2000,
-  improve: 4000
+  improve: 4000,
+  agent: 8000
 }
 
 /**
@@ -129,6 +160,27 @@ export function buildPrompt(mode: AiMode, context: AiContext): { system: string;
 }
 
 /**
+ * The multi-file equivalent of `renderContext`: the instruction, then every
+ * attached file in full, each fenced and labelled with the exact path the
+ * model must echo back in its `### FILE:` markers — the same path string in
+ * both directions is what lets `parseAgentPlan`'s output map cleanly onto
+ * `applyAgentBatch`'s `path` field with no renderer-side guessing.
+ */
+export function renderAgentContext(context: AgentContext): string {
+  const parts: string[] = [`Instruction: ${context.instruction}`, '']
+
+  for (const file of context.files) {
+    parts.push(`### FILE: ${file.path}`, '```', file.content, '```', '')
+  }
+
+  return parts.join('\n').trimEnd()
+}
+
+export function buildAgentPrompt(context: AgentContext): { system: string; user: string } {
+  return { system: SYSTEM_PROMPTS.agent, user: renderAgentContext(context) }
+}
+
+/**
  * Identifies a request without storing it.
  *
  * The provenance journal records what was asked without embedding the user's
@@ -137,6 +189,72 @@ export function buildPrompt(mode: AiMode, context: AiContext): { system: string;
  */
 export function hashPrompt(system: string, user: string): string {
   return createHash('sha256').update(system).update('\u0000').update(user).digest('hex').slice(0, 16)
+}
+
+/* ------------------------------------------------------------------ *
+ * Token & cost accounting
+ * ------------------------------------------------------------------ */
+
+/**
+ * Dollars per million tokens, input and output. Static rather than fetched:
+ * there is no authenticated "what does this cost" endpoint, and a number that
+ * is occasionally stale is a better product than a spend counter that goes
+ * blank whenever the network does.
+ *
+ * Keyed by prefix match against the model id (`claude-sonnet-5-...` matches
+ * `claude-sonnet-5`) so a dated snapshot id still prices correctly. Falls back
+ * to the cheapest known tier for an unrecognised id rather than refusing to
+ * estimate at all — an approximate number beats none in a cost counter.
+ */
+const PRICING_PER_MILLION: ReadonlyArray<{
+  readonly prefix: string
+  readonly inputUsd: number
+  readonly outputUsd: number
+}> = [
+  { prefix: 'claude-opus', inputUsd: 15, outputUsd: 75 },
+  { prefix: 'claude-sonnet', inputUsd: 3, outputUsd: 15 },
+  { prefix: 'claude-haiku', inputUsd: 0.8, outputUsd: 4 },
+  { prefix: 'claude-fable', inputUsd: 3, outputUsd: 15 }
+]
+const FALLBACK_PRICING = { inputUsd: 3, outputUsd: 15 }
+
+function pricingFor(model: string): { inputUsd: number; outputUsd: number } {
+  const entry = PRICING_PER_MILLION.find((row) => model.startsWith(row.prefix))
+  return entry ?? FALLBACK_PRICING
+}
+
+/** A local provider (Ollama) is free — no network spend to estimate. */
+export function estimateCostUsd(model: string, inputTokens: number, outputTokens: number): number {
+  if (model.startsWith('ollama:')) return 0
+  const rate = pricingFor(model)
+  return (inputTokens / 1_000_000) * rate.inputUsd + (outputTokens / 1_000_000) * rate.outputUsd
+}
+
+const totals: { requests: number; inputTokens: number; outputTokens: number; costUsd: number } = {
+  requests: 0,
+  inputTokens: 0,
+  outputTokens: 0,
+  costUsd: 0
+}
+
+function recordUsage(usage: AiUsage): void {
+  totals.requests += 1
+  totals.inputTokens += usage.inputTokens
+  totals.outputTokens += usage.outputTokens
+  totals.costUsd += usage.costUsd
+}
+
+/** Cumulative spend across every stream this process has run, for the status bar. */
+export function getAiUsageTotals(): AiUsageTotals {
+  return { ...totals }
+}
+
+/** Test hook: totals are session state, same shape as `resetAiLogForTests`. */
+export function resetAiUsageForTests(): void {
+  totals.requests = 0
+  totals.inputTokens = 0
+  totals.outputTokens = 0
+  totals.costUsd = 0
 }
 
 /* ------------------------------------------------------------------ *
@@ -205,22 +323,144 @@ const anthropicProvider: AiProvider = {
 
     try {
       const message = await stream.finalMessage()
-      return { stopReason: message.stop_reason ?? null }
+      return {
+        stopReason: message.stop_reason ?? null,
+        usage: {
+          inputTokens: message.usage.input_tokens,
+          outputTokens: message.usage.output_tokens
+        }
+      }
     } finally {
       request.signal.removeEventListener('abort', onAbort)
     }
   }
 }
 
-let provider: AiProvider = anthropicProvider
+/* ------------------------------------------------------------------ *
+ * The Ollama provider — local, private, free
+ * ------------------------------------------------------------------ */
 
-/** Swaps the backend. The seam a local model drops into, and a test hook. */
-export function setAiProvider(next: AiProvider): void {
-  provider = next
+/**
+ * A local model over Ollama's HTTP API.
+ *
+ * `request.model` here is the provider-qualified id (`ollama:llama3.1`, see
+ * `resolveProviderAndModel`) so the log and the "Context sent" panel can tell
+ * a local answer from a cloud one at a glance; the `ollama:` prefix is
+ * stripped before it reaches the server.
+ *
+ * Ollama's `/api/chat` streams newline-delimited JSON objects, not SSE — each
+ * line is a complete `JSON.parse`-able chunk, the last one carrying
+ * `done: true` and the eval counts this reads as token usage. No API key: a
+ * local server has nothing to authenticate.
+ */
+function ollamaProviderFor(host: string): AiProvider {
+  return {
+    id: 'ollama',
+    async stream(request: ProviderRequest): Promise<ProviderResult> {
+      const model = request.model.startsWith('ollama:') ? request.model.slice(7) : request.model
+
+      let response: Response
+      try {
+        response = await fetch(`${host.replace(/\/$/, '')}/api/chat`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          signal: request.signal,
+          body: JSON.stringify({
+            model,
+            stream: true,
+            messages: [
+              { role: 'system', content: request.system },
+              { role: 'user', content: request.user }
+            ]
+          })
+        })
+      } catch (error) {
+        if (request.signal.aborted) throw error
+        throw new BetterCallCompilerServiceError(
+          'HANDLER_FAILED',
+          `Could not reach Ollama at ${host}. Is it running (\`ollama serve\`)?`
+        )
+      }
+
+      if (!response.ok || response.body === null) {
+        throw new BetterCallCompilerServiceError(
+          'HANDLER_FAILED',
+          `Ollama returned ${response.status} for model "${model}". Is it pulled (\`ollama pull ${model}\`)?`
+        )
+      }
+
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      let promptEvalCount = 0
+      let evalCount = 0
+      let doneReason: string | null = null
+
+      // Chunks arrive on arbitrary byte boundaries, not line boundaries — the
+      // trailing partial line is held back in `buffer` until the next read
+      // completes it, the same shape as parsing any line-delimited stream.
+      for (;;) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+
+        const lines = buffer.split('\n')
+        buffer = lines.pop() ?? ''
+
+        for (const line of lines) {
+          if (line.trim() === '') continue
+          const chunk: unknown = JSON.parse(line)
+          const message = (chunk as { message?: { content?: string } }).message
+          if (typeof message?.content === 'string' && message.content !== '') {
+            request.onText(message.content)
+          }
+          const isDone = (chunk as { done?: boolean }).done
+          if (isDone === true) {
+            const stats = chunk as { prompt_eval_count?: number; eval_count?: number }
+            promptEvalCount = stats.prompt_eval_count ?? 0
+            evalCount = stats.eval_count ?? 0
+            doneReason = 'end_turn'
+          }
+        }
+      }
+
+      return {
+        stopReason: doneReason,
+        usage: { inputTokens: promptEvalCount, outputTokens: evalCount }
+      }
+    }
+  }
+}
+
+let overrideProvider: AiProvider | null = null
+
+/** Swaps the backend unconditionally. A test hook, and Ollama's escape hatch. */
+export function setAiProvider(next: AiProvider | null): void {
+  overrideProvider = next
+}
+
+/**
+ * Picks the provider for one request from settings, unless a test has forced
+ * one with `setAiProvider`. Returns the model id to send — for Ollama this is
+ * `ollama:<model>` so downstream code (the log, cost estimation, the "Context
+ * sent" panel) can see which backend actually answered without a second field
+ * threaded through every call site.
+ */
+function resolveProviderAndModel(settings: {
+  aiProvider: 'anthropic' | 'ollama'
+  aiModel: string
+  ollamaModel: string
+  ollamaHost: string
+}): { provider: AiProvider; model: string } {
+  if (overrideProvider !== null) return { provider: overrideProvider, model: settings.aiModel }
+  if (settings.aiProvider === 'ollama') {
+    return { provider: ollamaProviderFor(settings.ollamaHost), model: `ollama:${settings.ollamaModel}` }
+  }
+  return { provider: anthropicProvider, model: settings.aiModel }
 }
 
 export function activeProviderId(): string {
-  return provider.id
+  return overrideProvider?.id ?? 'settings-driven'
 }
 
 /* ------------------------------------------------------------------ *
@@ -268,6 +508,12 @@ export async function startAiStream(mode: AiMode, context: AiContext): Promise<A
   return startPromptStream(mode, system, user, MAX_TOKENS[mode])
 }
 
+/** The multi-file counterpart: same transport, `buildAgentPrompt` instead of `buildPrompt`. */
+export async function startAgentStream(context: AgentContext): Promise<AiStarted> {
+  const { system, user } = buildAgentPrompt(context)
+  return startPromptStream('agent', system, user, MAX_TOKENS.agent)
+}
+
 /**
  * Streams an arbitrary prompt through the same provider, transport and event
  * channels as the three built-in modes.
@@ -289,6 +535,7 @@ export async function startPromptStream(
 ): Promise<AiStarted> {
   const settings = await loadSettings()
   const promptHash = hashPrompt(system, user)
+  const { provider, model } = resolveProviderAndModel(settings)
 
   const streamId = `ai-${++sequence}`
   const controller = new AbortController()
@@ -298,7 +545,7 @@ export async function startPromptStream(
   const started: AiStarted = {
     streamId,
     mode,
-    model: settings.aiModel,
+    model,
     provider: provider.id,
     promptHash,
     systemPrompt: system,
@@ -308,7 +555,7 @@ export async function startPromptStream(
   void (async () => {
     try {
       const result = await provider.stream({
-        model: settings.aiModel,
+        model,
         system,
         user,
         maxTokens,
@@ -318,13 +565,22 @@ export async function startPromptStream(
           emitDelta?.({ streamId, text: delta })
         }
       })
-      finish(record, { stopReason: result.stopReason, error: null, cancelled: record.cancelled })
+      const usage: AiUsage | null =
+        result.usage == null
+          ? null
+          : {
+              inputTokens: result.usage.inputTokens,
+              outputTokens: result.usage.outputTokens,
+              costUsd: estimateCostUsd(model, result.usage.inputTokens, result.usage.outputTokens)
+            }
+      if (usage !== null) recordUsage(usage)
+      finish(record, { stopReason: result.stopReason, error: null, cancelled: record.cancelled, usage })
     } catch (error) {
       if (record.cancelled) {
-        finish(record, { stopReason: null, error: null, cancelled: true })
+        finish(record, { stopReason: null, error: null, cancelled: true, usage: null })
         return
       }
-      finish(record, { stopReason: null, error: describeAiError(error), cancelled: false })
+      finish(record, { stopReason: null, error: describeAiError(error), cancelled: false, usage: null })
     }
   })()
 
@@ -342,6 +598,86 @@ export function cancelAiStream(streamId: string): boolean {
 /** Every stream must die with the window. */
 export function cancelAllAiStreams(): void {
   for (const streamId of [...active.keys()]) cancelAiStream(streamId)
+}
+
+/* ------------------------------------------------------------------ *
+ * Ghost text — single-suggestion inline completion
+ * ------------------------------------------------------------------ */
+
+export interface GhostCompletionRequest {
+  readonly languageId: string
+  readonly prefix: string
+  readonly suffix: string
+}
+
+const GHOST_SYSTEM_PROMPT =
+  'You are an inline code completion engine embedded in an IDE, in the style ' +
+  'of GitHub Copilot. Given the code immediately before and after the cursor, ' +
+  'output ONLY the text that should be inserted at the cursor to continue it ' +
+  'naturally. Never repeat the prefix. Never use markdown or code fences. ' +
+  'Stop after a few lines or one complete statement — a short, confident ' +
+  'completion beats a long, likely-wrong one. If nothing sensible continues ' +
+  'the code, output nothing at all.'
+
+function buildGhostPrompt(request: GhostCompletionRequest): string {
+  return (
+    `Language: ${request.languageId}\n\n` +
+    `Code before the cursor:\n${request.prefix}\n\n` +
+    `Code after the cursor:\n${request.suffix}\n\n` +
+    'Completion:'
+  )
+}
+
+let ghostController: AbortController | null = null
+
+/**
+ * One suggestion, not a stream — ghost text needs the whole completion before
+ * there is anything useful to paint ahead of the cursor.
+ *
+ * Only one request is ever in flight. Starting a new one aborts whatever came
+ * before it: that is what "cancel immediately on any new keystroke" means at
+ * this layer, and it is why the caller never has to track its own token —
+ * an in-flight request that loses the race is simply never awaited to
+ * completion, its network call torn down rather than left to finish unread.
+ *
+ * Never throws. No key configured, a rate limit, a downed Ollama — every
+ * failure here is "no suggestion right now", not a dialog interrupting typing.
+ */
+export async function requestGhostCompletion(request: GhostCompletionRequest): Promise<string | null> {
+  ghostController?.abort()
+  const controller = new AbortController()
+  ghostController = controller
+
+  try {
+    const settings = await loadSettings()
+    // A later request may already have aborted `controller` during the await
+    // above — before `provider.stream` gets a chance to attach its own abort
+    // listener, which would otherwise never fire for an event that already
+    // happened. Bail out here rather than starting a network call for a
+    // suggestion nothing will ever read.
+    if (controller.signal.aborted) return null
+    const { provider, model } = resolveProviderAndModel(settings)
+
+    let text = ''
+    await provider.stream({
+      model,
+      system: GHOST_SYSTEM_PROMPT,
+      user: buildGhostPrompt(request),
+      maxTokens: 200,
+      signal: controller.signal,
+      onText: (delta) => {
+        text += delta
+      }
+    })
+
+    if (controller.signal.aborted) return null
+    const trimmed = text.trim()
+    return trimmed === '' ? null : trimmed
+  } catch {
+    return null
+  } finally {
+    if (ghostController === controller) ghostController = null
+  }
 }
 
 /* ------------------------------------------------------------------ *

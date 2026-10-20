@@ -2,8 +2,13 @@ import type {
   BuildGraphSummary,
   CompilerDaemonState,
   CompilerPass,
+  CodeActionsResult,
+  DefinitionResult,
   DependencyQuery,
-  FileDiagnostics
+  DocumentOverlay,
+  FileDiagnostics,
+  ReferencesResult,
+  RenameResult
 } from './types'
 
 /**
@@ -24,6 +29,22 @@ import type {
 export interface BootRequest {
   readonly type: 'boot'
   readonly workspaceRoot: string
+  /**
+   * One `Int32Array` slot both sides can see, which is how a check is stopped.
+   *
+   * `getSemanticDiagnostics` is synchronous and uninterruptible from the
+   * outside: `port.on('message')` calls the worker's handler synchronously, so
+   * nothing is delivered while a check is running and a priority queue inside
+   * the worker would reorder nothing. The only way in is memory the checker
+   * polls at its own checkpoints, which is exactly what tsserver does with a
+   * cancellation file — and what `getCancellationToken` on the LanguageService
+   * host is for.
+   *
+   * Main writes 1 when it sends an interactive query; the worker writes 0 the
+   * moment it starts answering one. Optional so a supervisor that never sets it
+   * — every unit test's fake worker — simply runs uncancellable checks.
+   */
+  readonly cancellation?: SharedArrayBuffer
 }
 
 export interface FilesChangedRequest {
@@ -61,12 +82,57 @@ export interface PingRequest {
   readonly nonce: number
 }
 
+/**
+ * Everything the editor asks about a cursor, on one message with a `kind`.
+ *
+ * One message rather than one per feature, and one pending map rather than
+ * several, because the correlation, the timeout and the settle-on-restart are
+ * identical for all of them — and three copies of a resolver map is three
+ * places to forget to clear one. Cloned from the BCC daemon's `query`, which is
+ * where the shape was proved.
+ *
+ * The daemon is worth asking because it has the real program: the real
+ * tsconfig, the whole workspace, resolved modules. Monaco's bundled worker has
+ * none of those, so what it can say about another file is wrong by
+ * construction — which is why `configureLanguageDefaults` switches its
+ * definition and reference providers off in the same change that turns these
+ * on.
+ *
+ * Unlike `openDocument`, this NEVER schedules a check. `overlay` sets the
+ * daemon's view of the buffer and stops there.
+ */
+export type LanguageQueryKind = 'definition' | 'references' | 'rename' | 'codeActions'
+
+export interface LanguageQueryRequest {
+  readonly type: 'languageQuery'
+  readonly requestId: number
+  readonly kind: LanguageQueryKind
+  readonly relativePath: string
+  /** A UTF-16 code-unit index, as `ITextModel.getOffsetAt` produces. */
+  readonly offset: number
+  /** Rename only: null asks where the symbol is, a name asks for the edits. */
+  readonly newName: string | null
+  /**
+   * Code actions only: the offset the selection ENDS at, and the numeric
+   * TypeScript codes of the diagnostics under it.
+   *
+   * The codes come from the renderer because that is where the markers are, and
+   * `getCodeFixesAtPosition` needs them: a fix is a fix FOR something, and
+   * asking without them returns nothing at all rather than everything.
+   */
+  readonly endOffset: number
+  readonly diagnosticCodes: readonly number[]
+  /** The live buffer, or null when the caller has none. */
+  readonly overlay: DocumentOverlay | null
+}
+
 export type WorkerRequest =
   | BootRequest
   | FilesChangedRequest
   | OpenDocumentRequest
   | CloseDocumentRequest
   | DependentsRequest
+  | LanguageQueryRequest
   | PingRequest
 
 /* ------------------------------ worker → main ----------------------------- */
@@ -127,14 +193,50 @@ export interface PassMessage {
   readonly pass: CompilerPass
 }
 
+/** Discriminated by the kind that was asked, so the supervisor narrows once. */
+export type LanguageQueryAnswer =
+  | ({ readonly kind: 'definition' } & DefinitionResult)
+  | ({ readonly kind: 'references' } & ReferencesResult)
+  | ({ readonly kind: 'rename' } & RenameResult)
+  | ({ readonly kind: 'codeActions' } & CodeActionsResult)
+
+export interface LanguageQueryResponse {
+  readonly type: 'languageQueryResult'
+  readonly requestId: number
+  readonly result: LanguageQueryAnswer
+}
+
 export type WorkerMessage =
   | ReadyMessage
   | StateMessage
   | DiagnosticsMessage
   | DependentsResponse
+  | LanguageQueryResponse
   | PongMessage
   | PassMessage
   | WorkerFailure
+
+/**
+ * The answer to give when there is none: a daemon that is not running, a query
+ * that timed out, a position the program knows nothing about.
+ *
+ * Total over `LanguageQueryKind` by construction — a new kind is a compile
+ * error here. Empty rather than a rejection because Monaco logs a rejected
+ * provider as an error and shows the user nothing different, so the two would
+ * be indistinguishable except in the console. Same choice `dependentsOf`
+ * already makes on timeout.
+ */
+export function emptyLanguageQueryAnswer<K extends LanguageQueryKind>(
+  kind: K
+): Extract<LanguageQueryAnswer, { kind: K }> {
+  const empty: { [P in LanguageQueryKind]: Extract<LanguageQueryAnswer, { kind: P }> } = {
+    definition: { kind: 'definition', locations: [] },
+    references: { kind: 'references', locations: [], truncated: false },
+    rename: { kind: 'rename', target: null, placeholder: null, files: [], error: null },
+    codeActions: { kind: 'codeActions', actions: [] }
+  }
+  return empty[kind]
+}
 
 /* -------------------------------- guards --------------------------------- */
 
@@ -155,6 +257,7 @@ export function isWorkerMessage(value: unknown): value is WorkerMessage {
     type === 'state' ||
     type === 'diagnostics' ||
     type === 'dependentsResult' ||
+    type === 'languageQueryResult' ||
     type === 'pong' ||
     type === 'pass' ||
     type === 'failure'
@@ -170,6 +273,7 @@ export function isWorkerRequest(value: unknown): value is WorkerRequest {
     type === 'openDocument' ||
     type === 'closeDocument' ||
     type === 'dependents' ||
+    type === 'languageQuery' ||
     type === 'ping'
   )
 }

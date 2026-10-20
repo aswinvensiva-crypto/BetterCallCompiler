@@ -21,6 +21,9 @@ let bodyHost: HTMLElement | null = null
  */
 let settings: Settings = {
   aiModel: 'claude-sonnet-5',
+  aiProvider: 'anthropic',
+  ollamaModel: 'llama3.1',
+  ollamaHost: 'http://localhost:11434',
   githubUser: '',
   telemetry: false,
   workbenchLayout: {
@@ -218,17 +221,82 @@ function render(): void {
     )
   )
 
-  bodyHost.append(
-    textField(
-      'Assistant model',
-      'Claude model used for Explain, Find bugs and Improve.',
-      settings.aiModel,
-      'claude-sonnet-5',
-      (next) => {
-        if (next !== '') void patchSettings({ aiModel: next })
-      }
+  bodyHost.append(providerField())
+
+  if (settings.aiProvider === 'anthropic') {
+    bodyHost.append(
+      textField(
+        'Assistant model',
+        'Claude model used for Explain, Find bugs and Improve.',
+        settings.aiModel,
+        'claude-sonnet-5',
+        (next) => {
+          if (next !== '') void patchSettings({ aiModel: next })
+        }
+      )
+    )
+  } else {
+    bodyHost.append(
+      textField(
+        'Ollama model',
+        'Must already be pulled — run `ollama pull <model>` first.',
+        settings.ollamaModel,
+        'llama3.1',
+        (next) => {
+          if (next !== '') void patchSettings({ ollamaModel: next })
+        }
+      )
+    )
+    bodyHost.append(
+      textField(
+        'Ollama host',
+        'Where the local server listens. Only change this for a remote or non-default Ollama.',
+        settings.ollamaHost,
+        'http://localhost:11434',
+        (next) => {
+          if (next !== '') void patchSettings({ ollamaHost: next })
+        }
+      )
+    )
+  }
+}
+
+/**
+ * Cloud vs. local, one control. Switching to Ollama needs no key — the
+ * Anthropic key field above stays untouched either way, so flipping back
+ * costs nothing.
+ */
+function providerField(): HTMLElement {
+  const wrap = el('div', 'settings-field')
+  wrap.append(el('label', 'settings-field__label', 'AI backend'))
+  wrap.append(
+    el(
+      'p',
+      'settings-field__hint',
+      'Anthropic streams over the network with your API key. Ollama runs a model ' +
+        'locally — private, offline and free, but only as good as the model you pull.'
     )
   )
+
+  const row = el('div', 'settings-field__row')
+  for (const [value, label] of [
+    ['anthropic', 'Anthropic (cloud)'],
+    ['ollama', 'Ollama (local)']
+  ] as const) {
+    const button = el(
+      'button',
+      `button${settings.aiProvider === value ? ' button--primary' : ''}`,
+      label
+    )
+    button.type = 'button'
+    button.addEventListener('click', () => {
+      if (settings.aiProvider === value) return
+      void patchSettings({ aiProvider: value }).then(render)
+    })
+    row.append(button)
+  }
+  wrap.append(row)
+  return wrap
 }
 
 /* --------------------------------- mount --------------------------------- */

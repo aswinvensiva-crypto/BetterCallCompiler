@@ -1,7 +1,7 @@
 {
   "name": "bettercallcompiler",
   "version": "0.1.0",
-  "description": "BetterCallCompiler — a native IDE with transparent AI and zero-install runtimes",
+  "description": "BetterCallCompiler \u2014 a native IDE with transparent AI and zero-install runtimes",
   "private": true,
   "license": "MIT",
   "author": "BetterCallCompiler",
@@ -18,8 +18,12 @@
     "test:e2e": "playwright test",
     "test:asar": "node test/asar/run-matrix.mjs",
     "test:query": "node test/query/run-cutoff-proof.mjs",
+    "test:query:nav": "node test/query/run-language-query-proof.mjs",
+    "test:interactive": "node test/query/run-interactive-proof.mjs",
     "test:lang": "node test/lang/run-lang-proof.mjs",
+    "test:vm": "node test/lang/run-vm-proof.mjs",
     "test:gc": "node test/gc/run-gc-control.mjs",
+    "test:eval": "node test/eval/run-agent-eval.mjs",
     "rebuild": "electron-rebuild",
     "build:win": "npm run build && electron-builder --win --config electron-builder.yml",
     "build:unpacked": "npm run build && electron-builder --win --dir --config electron-builder.yml"

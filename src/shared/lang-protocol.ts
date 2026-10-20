@@ -1,4 +1,12 @@
-import type { FileDiagnostics } from './types'
+import type {
+  DefinitionResult,
+  DocumentOverlay,
+  DocumentSymbolsResult,
+  FileDiagnostics,
+  HoverResult,
+  ReferencesResult,
+  RenameResult
+} from './types'
 
 /**
  * The BCC worker ↔ main message protocol.
@@ -52,11 +60,46 @@ export interface LangPingRequest {
   readonly nonce: number
 }
 
+/**
+ * Everything the editor asks about a cursor, on one message with a `kind`
+ * discriminant.
+ *
+ * One message rather than five, and one pending map rather than five, because
+ * the correlation, the timeout and the cleanup-on-restart are identical for all
+ * of them and three copies of a resolver map is three places to forget to clear
+ * one. The `kind` is what the answer's shape is keyed on.
+ *
+ * Unlike `openDocument`, this NEVER schedules a check. `overlay` sets the
+ * daemon's copy of the buffer and stops there — see `documentOverlaySchema` for
+ * why an interactive request cannot trust the 300ms-debounced overlay.
+ */
+export type LangQueryKind =
+  | 'definition'
+  | 'references'
+  | 'rename'
+  | 'documentSymbols'
+  | 'hover'
+
+export interface LangQueryRequest {
+  readonly type: 'query'
+  /** Correlates the answer. Monotonic in the service, never reused. */
+  readonly requestId: number
+  readonly kind: LangQueryKind
+  readonly relativePath: string
+  /** A UTF-16 code-unit index, as `ITextModel.getOffsetAt` produces. */
+  readonly offset: number
+  /** Rename only: null asks where the symbol is, a name asks for the edits. */
+  readonly newName: string | null
+  /** The live buffer, or null when the caller has none (a closed file). */
+  readonly overlay: DocumentOverlay | null
+}
+
 export type LangRequest =
   | LangBootRequest
   | LangFilesChangedRequest
   | LangOpenDocumentRequest
   | LangCloseDocumentRequest
+  | LangQueryRequest
   | LangPingRequest
 
 /* ------------------------------ worker → main ----------------------------- */
@@ -99,12 +142,56 @@ export interface LangFailureMessage {
   readonly detail: string
 }
 
+/**
+ * The answer to a `query`, discriminated by the kind that was asked.
+ *
+ * A union rather than a bag of optional fields, so the supervisor can narrow to
+ * exactly one shape and a handler that asked for a hover cannot accidentally
+ * read `locations`. The narrowing happens once, in `lang-service.ts`.
+ */
+export type LangQueryResult =
+  | ({ readonly kind: 'definition' } & DefinitionResult)
+  | ({ readonly kind: 'references' } & ReferencesResult)
+  | ({ readonly kind: 'rename' } & RenameResult)
+  | ({ readonly kind: 'documentSymbols' } & DocumentSymbolsResult)
+  | ({ readonly kind: 'hover' } & HoverResult)
+
+export interface LangQueryResultMessage {
+  readonly type: 'queryResult'
+  readonly requestId: number
+  readonly result: LangQueryResult
+}
+
 export type LangMessage =
   | LangReadyMessage
   | LangDiagnosticsMessage
   | LangPongMessage
   | LangIndexedMessage
+  | LangQueryResultMessage
   | LangFailureMessage
+
+/**
+ * The answer to give when there is none: a daemon that is not running, a query
+ * that timed out, a file the worker has never heard of.
+ *
+ * Total over `LangQueryKind` by construction — a new kind is a compile error
+ * here, which is the point. Empty rather than a rejection because Monaco logs a
+ * rejected provider as an error in the console and shows the user nothing
+ * different, so "no answer" and "failed" would be indistinguishable except in
+ * the log. Same choice `dependentsOf` already makes on timeout.
+ */
+export function emptyLangQueryResult<K extends LangQueryKind>(
+  kind: K
+): Extract<LangQueryResult, { kind: K }> {
+  const empty: { [P in LangQueryKind]: Extract<LangQueryResult, { kind: P }> } = {
+    definition: { kind: 'definition', locations: [] },
+    references: { kind: 'references', locations: [], truncated: false },
+    rename: { kind: 'rename', target: null, placeholder: null, files: [], error: null },
+    documentSymbols: { kind: 'documentSymbols', symbols: [] },
+    hover: { kind: 'hover', contents: null, range: null }
+  }
+  return empty[kind]
+}
 
 /* -------------------------------- guards --------------------------------- */
 
@@ -124,6 +211,7 @@ export function isLangMessage(value: unknown): value is LangMessage {
     type === 'diagnostics' ||
     type === 'pong' ||
     type === 'indexed' ||
+    type === 'queryResult' ||
     type === 'failure'
   )
 }
@@ -136,6 +224,7 @@ export function isLangRequest(value: unknown): value is LangRequest {
     type === 'filesChanged' ||
     type === 'openDocument' ||
     type === 'closeDocument' ||
+    type === 'query' ||
     type === 'ping'
   )
 }

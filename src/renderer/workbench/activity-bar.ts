@@ -77,6 +77,15 @@ export const ACTIVITY_ITEMS: readonly ActivityItem[] = [
     region: 'sidebar'
   },
   {
+    // Multi-file: several rewritten files rather than one selected block —
+    // a stack of pages, distinct from the Assistant's single spark.
+    id: 'agent',
+    label: 'Agent',
+    icon: 'M4 4h11l5 5v11H4zM15 4v5h5M8 13h8M8 17h5',
+    enabled: true,
+    region: 'sidebar'
+  },
+  {
     // "Assist" is the local static-analysis panel; "Assistant" above is the AI
     // one. Distinct names, distinct icons, and no shared code between them.
     id: 'assist',

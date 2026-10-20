@@ -38,6 +38,14 @@ export const INVOKE_CHANNEL_NAMES = [
   'toolchain:rescan',
   'run:start',
   'run:cancel',
+  // The debugger. A separate namespace from `run:` because the two are
+  // different lifecycles: a run streams to completion and ends, a debug session
+  // is a conversation that outlives several commands — and outlives the program
+  // ending, because the end is where stepping backwards starts.
+  'debug:start',
+  'debug:command',
+  'debug:setBreakpoints',
+  'debug:stop',
   'git:status',
   'git:diff',
   'git:stage',
@@ -57,6 +65,15 @@ export const INVOKE_CHANNEL_NAMES = [
   'ai:apply',
   'ai:revert',
   'ai:log',
+  'ai:usage',
+  'ai:ghostCompletion',
+  'agent:start',
+  'agent:apply',
+  'agent:revert',
+  'walkthrough:start',
+  'index:build',
+  'index:status',
+  'index:query',
   'visualizer:openFloating',
   'visualizer:closeFloating',
   'visualizer:pushState',
@@ -68,6 +85,27 @@ export const INVOKE_CHANNEL_NAMES = [
   'compiler:closeDocument',
   'compiler:restart',
   'compiler:passes',
+  // Navigation. Deliberately on the `compiler:` namespace rather than a new
+  // one: the renderer asks the same question of a `.ts` and a `.bcc` file and
+  // main routes by extension, exactly as `compiler:openDocument` already does.
+  // A second namespace would put the choice of compiler back in the renderer.
+  'compiler:definition',
+  'compiler:references',
+  'compiler:rename',
+  'compiler:documentSymbols',
+  'compiler:hover',
+  'compiler:codeActions',
+  // Keystroke-frequency, and served by the third worker — see
+  // `interactive-protocol.ts` for why it is not the one that checks.
+  'compiler:completions',
+  'compiler:completionDetail',
+  'compiler:signatureHelp',
+  // The write half of a rename or a quick fix, for the files that have no
+  // buffer. Open files are edited through their model so they stay dirty and
+  // undoable; a bulk edit spanning CLOSED files would have Monaco create models
+  // with no lifecycle owner — exactly the leak `closeSyntaxDocument` exists to
+  // prevent — so those cross to main instead.
+  'compiler:applyWorkspaceEdit',
   'explain:start',
   'artifact:list',
   'artifact:get',
@@ -86,6 +124,10 @@ export const EVENT_CHANNEL_NAMES = [
   'run:stdout',
   'run:stderr',
   'run:exit',
+  // One event per command, carrying the whole state. See `debugStateSchema` for
+  // why it is a snapshot rather than a signal the panel then queries.
+  'debug:stopped',
+  'debug:exited',
   'git:changed',
   'ai:delta',
   'ai:done',

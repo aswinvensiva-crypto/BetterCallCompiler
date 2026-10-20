@@ -3,7 +3,10 @@ import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import {
   coalesceBatches,
+  emptyLanguageQueryAnswer,
   isWorkerMessage,
+  type LanguageQueryAnswer,
+  type LanguageQueryKind,
   type WorkerMessage,
   type WorkerRequest
 } from '../shared/compiler-protocol'
@@ -17,13 +20,22 @@ import {
 import type {
   CompilerDaemonState,
   CompilerPass,
+  CodeActionsResult,
   CompilerStatus,
+  DefinitionResult,
   DependencyQuery,
   DiagnosticsBatch,
+  DocumentOverlay,
   FileDiagnostics,
-  FsWatchEvent
+  FsWatchEvent,
+  ReferencesResult,
+  RenameResult
 } from '../shared/types'
 import { stoppedCompilerStatus } from '../shared/types'
+// One bit, read on every status: whether the interactive daemon is up. The
+// dependency runs this way round because status is what the renderer already
+// receives — the reverse would mean a fourth channel carrying one boolean.
+import { isInteractiveEnabled } from './interactive-service'
 
 /**
  * Supervises the compiler daemon and batches what it produces.
@@ -129,6 +141,46 @@ let workerBusySince: number | null = null
 let nextRequestId = 1
 const pendingDependents = new Map<number, (query: DependencyQuery) => void>()
 
+/**
+ * In-flight navigation queries, keyed by request id.
+ *
+ * Shares `nextRequestId` with `pendingDependents` on purpose: two counters
+ * could collide, and one monotonic id across every correlated request makes an
+ * answer unambiguous whichever map it belongs to.
+ *
+ * Every resolver here must be settled beside `pendingDependents.clear()` on
+ * restart, or a daemon crash during a Find All References hangs the invoke
+ * until its timeout and leaks the resolver until the process exits.
+ */
+const pendingLanguageQueries = new Map<number, (result: LanguageQueryAnswer) => void>()
+
+/** How long an interactive query waits before answering empty. */
+const LANGUAGE_QUERY_TIMEOUT_MS = 5_000
+
+/**
+ * The one slot that stops a running check.
+ *
+ * Created once per process and handed to every worker this supervisor spawns,
+ * so a restart does not need a new one and nothing has to be re-plumbed. A
+ * `SharedArrayBuffer` rather than a message because a message cannot arrive
+ * while the worker is inside `getSemanticDiagnostics` — that call is
+ * synchronous, and `port.on('message')` dispatches synchronously, so the
+ * worker's event loop is not running. Shared memory the checker polls is the
+ * only channel that reaches it, which is exactly why tsserver uses a
+ * cancellation file for the same job.
+ *
+ * Guarded because `SharedArrayBuffer` can be absent under a hardened runtime;
+ * without it checks simply run to completion, which is what happened before.
+ */
+const cancellationBuffer =
+  typeof SharedArrayBuffer === 'function' ? new SharedArrayBuffer(4) : null
+const cancellationFlag = cancellationBuffer === null ? null : new Int32Array(cancellationBuffer)
+
+/** Asks the worker to stop the check it is running and get to this query. */
+function requestCancellation(): void {
+  if (cancellationFlag !== null) Atomics.store(cancellationFlag, 0, 1)
+}
+
 let emitDiagnostics: ((batch: DiagnosticsBatch) => void) | null = null
 let emitStatus: ((status: CompilerStatus) => void) | null = null
 let emitPass: ((pass: CompilerPass) => void) | null = null
@@ -159,7 +211,17 @@ export function compilerStatus(): CompilerStatus {
     checkedFileCount,
     heapUsedMb,
     restarts,
-    detail
+    detail,
+    // Reported here rather than on a channel of its own: the interactive daemon
+    // publishes nothing and the renderer needs exactly one bit from it — which
+    // providers answer hover and completions. A fourth channel to carry one
+    // boolean would be a channel to keep in sync for no difference the renderer
+    // could observe.
+    //
+    // "Enabled", not "ready": Monaco reads its mode configuration once and the
+    // renderer therefore has to choose before the daemon can possibly have
+    // finished indexing. See `isInteractiveEnabled`.
+    interactive: isInteractiveEnabled()
   }
 }
 
@@ -214,7 +276,12 @@ function spawn(): void {
   startHeartbeat()
 
   if (workspaceRoot !== null) {
-    send({ type: 'boot', workspaceRoot })
+    // Stood down before the new worker sees it. A flag raised for a query the
+    // dead worker never answered would otherwise cancel the fresh daemon's
+    // first check, on a workspace with no diagnostics yet — the one pass it
+    // most needs to finish.
+    if (cancellationFlag !== null) Atomics.store(cancellationFlag, 0, 0)
+    send({ type: 'boot', workspaceRoot, ...(cancellationBuffer === null ? {} : { cancellation: cancellationBuffer }) })
     // Replay open buffers so a restarted daemon sees what the user is looking
     // at, not the last thing written to disk.
     for (const [relativePath, doc] of openDocuments) {
@@ -241,6 +308,7 @@ function scheduleRestart(reason: string): void {
   // Diagnostics from a dead worker are not trustworthy, and leaving them would
   // strand markers for state nobody is maintaining any more.
   clearOwner('typescript')
+  abandonPendingRequests()
   flushNow(true)
 
   const now = Date.now()
@@ -336,6 +404,13 @@ function receive(message: WorkerMessage): void {
       const resolve = pendingDependents.get(message.requestId)
       pendingDependents.delete(message.requestId)
       resolve?.(message.query)
+      return
+    }
+
+    case 'languageQueryResult': {
+      const settle = pendingLanguageQueries.get(message.requestId)
+      pendingLanguageQueries.delete(message.requestId)
+      settle?.(message.result)
       return
     }
 
@@ -436,7 +511,7 @@ export function stopCompiler(): void {
   pendingDiagnostics = []
   pendingChanged = new Set()
   pendingRemoved = new Set()
-  pendingDependents.clear()
+  abandonPendingRequests()
   graphSummary = stoppedCompilerStatus().graph
   checkedFileCount = 0
   heapUsedMb = 0
@@ -482,6 +557,162 @@ export function openDocument(relativePath: string, content: string, version: num
 export function closeDocument(relativePath: string): void {
   openDocuments.delete(relativePath)
   send({ type: 'closeDocument', relativePath })
+}
+
+/* ------------------------------- navigation ------------------------------- */
+
+type AnswerFor<K extends LanguageQueryKind> = Omit<
+  Extract<LanguageQueryAnswer, { kind: K }>,
+  'kind'
+>
+
+/**
+ * Drops the discriminant.
+ *
+ * It exists to correlate the answer with the question ON THE WIRE and has no
+ * business past this boundary — `definitionResultSchema` and its sibling are
+ * `strictObject`, so a stray `kind` comes back as a BAD_RESPONSE and the user
+ * sees nothing with no clue why.
+ */
+function withoutKind<K extends LanguageQueryKind>(
+  result: Extract<LanguageQueryAnswer, { kind: K }>
+): AnswerFor<K> {
+  const { kind: _discriminant, ...answer } = result
+  return answer as AnswerFor<K>
+}
+
+/**
+ * Asks the daemon one question about one offset.
+ *
+ * Resolves empty rather than rejecting when the daemon is down or slow, for the
+ * reason `dependentsOf` does the same: Monaco logs a rejected provider as a
+ * console error and shows the user nothing different.
+ *
+ * These answers QUEUE BEHIND A CHECK. `port.on('message')` calls the worker's
+ * handler synchronously, so nothing is delivered while `getSemanticDiagnostics`
+ * is running and no priority queue inside the worker could reorder them. That
+ * is the cost being accepted here and the thing A4's cancellation flag removes;
+ * the query harness measures the number rather than assuming it is small.
+ */
+interface QueryExtras {
+  readonly newName?: string | null
+  readonly endOffset?: number
+  readonly diagnosticCodes?: readonly number[]
+}
+
+function languageQuery<K extends LanguageQueryKind>(
+  kind: K,
+  relativePath: string,
+  offset: number,
+  overlay: DocumentOverlay | null,
+  extras: QueryExtras = {}
+): Promise<AnswerFor<K>> {
+  const empty = withoutKind(emptyLanguageQueryAnswer(kind))
+  if (worker === null) return Promise.resolve(empty)
+
+  return new Promise((settle) => {
+    const requestId = nextRequestId++
+
+    const timer = setTimeout(() => {
+      pendingLanguageQueries.delete(requestId)
+      settle(empty)
+    }, LANGUAGE_QUERY_TIMEOUT_MS)
+    timer.unref?.()
+
+    pendingLanguageQueries.set(requestId, (result) => {
+      clearTimeout(timer)
+      // A worker that answered the wrong question is a bug in its switch, and
+      // the caller must not read fields the shape it asked for does not have.
+      settle(
+        result.kind === kind
+          ? withoutKind(result as Extract<LanguageQueryAnswer, { kind: K }>)
+          : empty
+      )
+    })
+
+    // Raised before the send, so a check already running sees it at its next
+    // checkpoint rather than after this message has been sitting in a queue
+    // nothing is draining. The worker stands it down the moment it starts
+    // answering.
+    requestCancellation()
+    send({
+      type: 'languageQuery',
+      requestId,
+      kind,
+      relativePath,
+      offset,
+      overlay,
+      newName: extras.newName ?? null,
+      // Defaults that mean "the caret, and nothing under it": a definition or a
+      // reference query carries neither, and a worker reading them for those
+      // kinds would be reading fields that were never about it.
+      endOffset: extras.endOffset ?? offset,
+      diagnosticCodes: extras.diagnosticCodes ?? []
+    })
+  })
+}
+
+/**
+ * Settles every correlated request, so a dead worker never leaves one hanging.
+ *
+ * Called from BOTH `stopCompiler` and `scheduleRestart`. Only the first had it
+ * before, which meant a crash — the case that actually happens — left every
+ * in-flight `dependentsOf` resolving five seconds later on its timeout, and
+ * would have done the same to every navigation query. The Why button opening
+ * blank after a daemon crash was that, and nothing said so.
+ *
+ * The language kind is unrecoverable from the resolver alone, and does not need
+ * to be: `languageQuery` discards a result whose kind does not match what it
+ * asked for, so any of them collapses to that caller's own empty answer.
+ */
+function abandonPendingRequests(): void {
+  const dependents = [...pendingDependents.values()]
+  pendingDependents.clear()
+  for (const resolve of dependents) {
+    resolve({ node: null, dependents: [], chain: [], cycle: null })
+  }
+
+  const queries = [...pendingLanguageQueries.values()]
+  pendingLanguageQueries.clear()
+  for (const settle of queries) settle(emptyLanguageQueryAnswer('definition'))
+}
+
+export function definitionAt(
+  relativePath: string,
+  offset: number,
+  overlay: DocumentOverlay | null
+): Promise<DefinitionResult> {
+  return languageQuery('definition', relativePath, offset, overlay)
+}
+
+export function referencesAt(
+  relativePath: string,
+  offset: number,
+  overlay: DocumentOverlay | null
+): Promise<ReferencesResult> {
+  return languageQuery('references', relativePath, offset, overlay)
+}
+
+export function renameAt(
+  relativePath: string,
+  offset: number,
+  newName: string | null,
+  overlay: DocumentOverlay | null
+): Promise<RenameResult> {
+  return languageQuery('rename', relativePath, offset, overlay, { newName })
+}
+
+export function codeActionsAt(
+  relativePath: string,
+  offset: number,
+  endOffset: number,
+  diagnosticCodes: readonly number[],
+  overlay: DocumentOverlay | null
+): Promise<CodeActionsResult> {
+  return languageQuery('codeActions', relativePath, offset, overlay, {
+    endOffset,
+    diagnosticCodes
+  })
 }
 
 /** Resolves with an empty query if the daemon never answers. */

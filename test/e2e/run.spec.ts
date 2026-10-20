@@ -117,8 +117,19 @@ test('the panel exposes Terminal and Output as separate views', async () => {
   await expect(window.locator('#panel')).toBeHidden()
 
   await window.keyboard.press('Control+`')
-  // Terminal, Output and Problems.
-  await expect(window.locator('.panel-view-tab')).toHaveCount(3)
+  /*
+   * The names rather than the count. This asserted `toHaveCount(3)` with a
+   * comment listing them, and Part 10's Debug view made it four — the test was
+   * right to fail, and the count alone could not say what had appeared. Listing
+   * them keeps the guard (a view added without a decision still fails here) and
+   * makes the failure legible when it does.
+   */
+  await expect(window.locator('.panel-view-tab')).toHaveText([
+    'Terminal',
+    'Output',
+    'Problems',
+    'Debug'
+  ])
   await expect(window.locator('.panel-view-tab--active')).toHaveText('Terminal')
 
   await window.locator('.panel-view-tab', { hasText: 'Output' }).click()

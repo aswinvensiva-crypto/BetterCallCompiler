@@ -169,3 +169,123 @@ describe('languages with no runtime at all', () => {
     expect(plan.reason).not.toBe('')
   })
 })
+
+describe('the runtime bundled with the app', () => {
+  /*
+   * Strategic bet #1 is zero-install, and until now it shipped as the mechanism
+   * only: one pack existed (`web`) and it cannot execute anything, because the
+   * renderer's `script-src 'self'` forbids `eval` and `new Function` and that
+   * invariant is what makes the preload boundary worth anything.
+   *
+   * `web.ts` names the answer in its own comment — an out-of-process runtime.
+   * Electron already bundles a Node, so the app's own binary with
+   * `ELECTRON_RUN_AS_NODE=1` is one, with nothing to install.
+   */
+
+  const ELECTRON = 'C:\\app\\BetterCallCompiler.exe'
+
+  it('runs JavaScript with no Node installed at all', () => {
+    const plan = planRun('javascript', `${ROOT}\\index.js`, ROOT, [missing('node')], ELECTRON)
+
+    expect(plan.mode).toBe('bundled')
+    expect(plan.pack).toBe('node')
+    expect(plan.command).toBe(ELECTRON)
+    expect(plan.args).toEqual([`${ROOT}\\index.js`])
+    expect(plan.reason).toContain('bundled with BetterCallCompiler')
+  })
+
+  it('sets ELECTRON_RUN_AS_NODE, without which the app relaunches itself', () => {
+    // A spectacular failure: the editor opens a second window instead of
+    // running the file. Obvious the first time and impossible to guess from
+    // the symptom afterwards.
+    const plan = planRun('javascript', `${ROOT}\\index.js`, ROOT, [missing('node')], ELECTRON)
+    expect(plan.env).toEqual({ ELECTRON_RUN_AS_NODE: '1' })
+  })
+
+  it('runs TypeScript on it too', () => {
+    // Node 22 strips types natively, and the Node inside Electron is new
+    // enough — so this is not a second implementation, just a second recipe.
+    const plan = planRun('typescript', `${ROOT}\\index.ts`, ROOT, [missing('node')], ELECTRON)
+    expect(plan.mode).toBe('bundled')
+    expect(plan.command).toBe(ELECTRON)
+  })
+
+  it('still prefers a real Node when there is one', () => {
+    /*
+     * The user's Node is the one their project is built against — its version,
+     * its global modules, its `node_modules` resolution. Preferring ours would
+     * silently change what their code runs on.
+     */
+    const plan = planRun('javascript', `${ROOT}\\index.js`, ROOT, [
+      toolchain({ id: 'node', path: 'C:\\Program Files\\nodejs\\node.exe' })
+    ], ELECTRON)
+
+    expect(plan.mode).toBe('real')
+    expect(plan.command).toBe('C:\\Program Files\\nodejs\\node.exe')
+    expect(plan.env).toBeNull()
+  })
+
+  it('falls back to unsupported when there is no bundled runtime to use', () => {
+    // Proves the branch depends on the path actually being supplied rather
+    // than on the recipe alone.
+    const plan = planRun('javascript', `${ROOT}\\index.js`, ROOT, [missing('node')], null)
+    expect(plan.mode).toBe('unsupported')
+    expect(plan.command).toBeNull()
+  })
+
+  it('leaves HTML to the renderer pack, which has no command', () => {
+    /*
+     * The discriminator the execution side keys on: a plan with a command is
+     * spawned by main, a plan without one goes to a renderer pack. Keying on
+     * the mode instead would send the bundled Node run looking for a renderer
+     * pack that does not exist.
+     */
+    const plan = planRun('html', `${ROOT}\\index.html`, ROOT, [], ELECTRON)
+
+    expect(plan.mode).toBe('bundled')
+    expect(plan.pack).toBe('web')
+    expect(plan.command).toBeNull()
+  })
+
+  it('does not pretend to bundle Python or C++', () => {
+    // Honest coverage. A real Python here means vendoring Pyodide and a real
+    // C++ means a WASM toolchain; both are large assets rather than logic, and
+    // claiming them would make the run panel lie.
+    for (const [language, file] of [['python', 'a.py'], ['cpp', 'a.cpp']] as const) {
+      const plan = planRun(language, `${ROOT}\\${file}`, ROOT, [missing(language === 'python' ? 'python' : 'g++')], ELECTRON)
+      expect(plan.mode, language).toBe('unsupported')
+      expect(plan.reason, language).toContain('no bundled')
+    }
+  })
+})
+
+describe('BCC, which needs nothing installed', () => {
+  /*
+   * The first language here that is neither spawned nor rendered: the compiler
+   * and the VM are this repository, and `startRun` drives them on a worker.
+   */
+
+  it('plans a bundled run with no toolchain and no command', () => {
+    const plan = planRun('bcc', `${ROOT}\\fib.bcc`, ROOT, [])
+
+    expect(plan.mode).toBe('bundled')
+    expect(plan.pack).toBe('bcc')
+    expect(plan.command).toBeNull()
+    expect(plan.toolchainId).toBeNull()
+    expect(plan.reason).toContain('no toolchain required')
+  })
+
+  it('does not go looking for a toolchain it could never find', () => {
+    // Passing a broken `bcc` toolchain must change nothing: there is no such
+    // thing to install, so a probe result has no bearing on the answer.
+    const withStub = planRun('bcc', `${ROOT}\\fib.bcc`, ROOT, [
+      toolchain({ id: 'bcc', kind: 'unusable', guidance: 'nonsense' })
+    ])
+    expect(withStub.mode).toBe('bundled')
+    expect(withStub.reason).toContain('no toolchain required')
+  })
+
+  it('needs no compile step, because the pipeline runs in the worker', () => {
+    expect(planRun('bcc', `${ROOT}\\fib.bcc`, ROOT, []).compile).toBeNull()
+  })
+})

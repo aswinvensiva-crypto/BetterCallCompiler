@@ -141,8 +141,17 @@ export const workbenchLayoutSchema = z.strictObject({
 })
 export type WorkbenchLayout = z.infer<typeof workbenchLayoutSchema>
 
+export const aiProviderIdSchema = z.enum(['anthropic', 'ollama'])
+export type AiProviderId = z.infer<typeof aiProviderIdSchema>
+
 export const settingsSchema = z.strictObject({
   aiModel: z.string().min(1),
+  /** Which backend serves the three AI actions — cloud Claude, or a local Ollama. */
+  aiProvider: aiProviderIdSchema,
+  /** Model name Ollama should run, e.g. `llama3.1`, `deepseek-coder-v2`, `qwen2.5-coder`. */
+  ollamaModel: z.string(),
+  /** Almost always the default; overridable for a remote or non-standard Ollama host. */
+  ollamaHost: z.string(),
   /** Whose contribution calendar to show when no token names one. */
   githubUser: z.string(),
   telemetry: z.boolean(),
@@ -341,8 +350,40 @@ export type GithubInsights = z.infer<typeof githubInsightsSchema>
 
 /* ----------------------------------- ai ---------------------------------- */
 
-export const aiModeSchema = z.enum(['explain', 'find-bugs', 'improve'])
+/**
+ * `agent` is the multi-file mode: given a plain-language instruction and a
+ * handful of files for context, the model proposes edits across all of them
+ * as one batch. The other three stay selection-scoped, one file at a time.
+ */
+export const aiModeSchema = z.enum(['explain', 'find-bugs', 'improve', 'agent'])
 export type AiMode = z.infer<typeof aiModeSchema>
+
+/** One file offered as context for a multi-file agent request. */
+export const agentFileSchema = z.strictObject({
+  path: z.string().min(1),
+  content: z.string()
+})
+export type AgentFile = z.infer<typeof agentFileSchema>
+
+/**
+ * What the multi-file agent is told: an instruction plus the files it is
+ * allowed to reason about and rewrite. Capped rather than unbounded — the
+ * renderer attaches open tabs and the files the instruction names, not a
+ * repository-wide scan; that scan is `Codebase Semantic Indexing`, a separate
+ * and much larger piece of work.
+ */
+export const agentContextSchema = z.strictObject({
+  instruction: z.string().min(1),
+  files: z.array(agentFileSchema).min(1).max(20)
+})
+export type AgentContext = z.infer<typeof agentContextSchema>
+
+/** One proposed file in a parsed agent plan, before the user accepts or rejects it. */
+export const agentFileEditSchema = z.strictObject({
+  path: z.string().min(1),
+  content: z.string()
+})
+export type AgentFileEdit = z.infer<typeof agentFileEditSchema>
 
 export const aiSelectionSchema = z.strictObject({
   text: z.string(),
@@ -389,12 +430,37 @@ export const aiStreamDeltaSchema = z.strictObject({
 })
 export type AiStreamDelta = z.infer<typeof aiStreamDeltaSchema>
 
+/**
+ * Token counts and an estimated dollar cost for one request.
+ *
+ * `costUsd` is an estimate, not a bill: it is `tokens * a static per-model
+ * rate table`, so a rate the provider changes without our knowledge makes
+ * this stale, not wrong in a way anything downstream needs to defend against.
+ */
+export const aiUsageSchema = z.strictObject({
+  inputTokens: z.number().int().nonnegative(),
+  outputTokens: z.number().int().nonnegative(),
+  costUsd: z.number().nonnegative()
+})
+export type AiUsage = z.infer<typeof aiUsageSchema>
+
+/** Running total across the session, reset only when the app restarts. */
+export const aiUsageTotalsSchema = z.strictObject({
+  requests: z.number().int().nonnegative(),
+  inputTokens: z.number().int().nonnegative(),
+  outputTokens: z.number().int().nonnegative(),
+  costUsd: z.number().nonnegative()
+})
+export type AiUsageTotals = z.infer<typeof aiUsageTotalsSchema>
+
 export const aiDoneSchema = z.strictObject({
   streamId: z.string(),
   stopReason: z.string().nullable(),
   /** Human-readable; already mapped from 401/429/network by the service. */
   error: z.string().nullable(),
-  cancelled: z.boolean()
+  cancelled: z.boolean(),
+  /** Null when the provider reported no usage (a cancelled or failed stream). */
+  usage: aiUsageSchema.nullable()
 })
 export type AiDone = z.infer<typeof aiDoneSchema>
 
@@ -415,7 +481,17 @@ export const aiLogEntrySchema = z.strictObject({
   file: z.string(),
   range: z.string(),
   applied: z.boolean(),
-  revertOf: z.string().nullable()
+  revertOf: z.string().nullable(),
+  /**
+   * Groups the several entries a single multi-file agent apply writes, so a
+   * revert can undo the whole batch as one unit rather than file by file.
+   * Null for every single-file edit — Explain, Find bugs and Improve never
+   * set it. `.default(null)` rather than a bare `.nullable()` so a log line
+   * written before this field existed still parses: `readAiLog` drops any
+   * line that fails validation, and a missing key is not the same failure as
+   * a wrong one.
+   */
+  batchId: z.string().nullable().default(null)
 })
 export type AiLogEntry = z.infer<typeof aiLogEntrySchema>
 
@@ -450,7 +526,19 @@ export const runStartedSchema = z.strictObject({
   /** Bundled pack id for `bundled` runs, e.g. `web`. */
   pack: z.string().nullable(),
   /** Why this mode was chosen. Always set for `bundled` and `unsupported`. */
-  reason: z.string().nullable()
+  reason: z.string().nullable(),
+  /**
+   * Whether MAIN is producing output events for this run.
+   *
+   * Explicit rather than inferred. Both processes have to agree about who
+   * carries a plan out, and until now each worked it out from a different
+   * field — the renderer from `mode`, then from `command`, while main used
+   * `command` alone. Two inference rules that must stay in step is one bug
+   * waiting for a third execution shape to be added, and BCC is that third
+   * shape: no toolchain to spawn and no renderer pack either, because it runs
+   * on the VM in a worker.
+   */
+  streamed: z.boolean()
 })
 export type RunStarted = z.infer<typeof runStartedSchema>
 
@@ -469,6 +557,141 @@ export const runExitSchema = z.strictObject({
   cancelled: z.boolean()
 })
 export type RunExit = z.infer<typeof runExitSchema>
+
+/* -------------------------------- debug --------------------------------- */
+
+/**
+ * The debugger's wire shapes.
+ *
+ * Deliberately the same vocabulary as `dap-protocol.ts` — `stackFrames`,
+ * `variables`, `breakpoints` — rather than something invented for the BCC VM.
+ * Workstream D built a DAP client for external adapters that answers in these
+ * shapes, so one panel can eventually drive both. The schemas live here because
+ * everything crossing IPC is validated in main, and `dap-protocol.ts` is a
+ * type-only description of somebody else's protocol.
+ */
+
+export const debugStopReasonSchema = z.enum([
+  'entry',
+  'breakpoint',
+  'step',
+  'pause',
+  'exception',
+  'exited',
+  'start'
+])
+export type DebugStopReason = z.infer<typeof debugStopReasonSchema>
+
+export const debugStopSchema = z.strictObject({
+  reason: debugStopReasonSchema,
+  /** Null once the program has ended: there is no line to highlight. */
+  line: z.number().int().positive().nullable(),
+  message: z.string().nullable()
+})
+
+/**
+ * Optional exactly where DAP makes it optional.
+ *
+ * The temptation is to require everything, because the built-in VM session
+ * always fills every field. But this panel is meant to render an EXTERNAL
+ * adapter's answer too — that is the whole reason the vocabulary was borrowed
+ * — and an adapter that omits a source or a type is within spec. Tightening
+ * the schema here would mean either dropping such a frame on the floor or
+ * inventing a value for it, and both are ways of lying about what the debugger
+ * said. The panel handles absence instead; it is one branch per field.
+ */
+export const debugFrameSchema = z.strictObject({
+  /**
+   * The frame's DEPTH, not an index into the array.
+   *
+   * The array is innermost-first for display, so a caller that stored an index
+   * would read the wrong frame after one step changed the stack.
+   */
+  id: z.number().int(),
+  name: z.string(),
+  source: z.strictObject({ name: z.string().optional(), path: z.string().optional() }).optional(),
+  line: z.number().int(),
+  column: z.number().int()
+})
+
+export const debugVariableSchema = z.strictObject({
+  name: z.string(),
+  value: z.string(),
+  type: z.string().optional(),
+  variablesReference: z.number().int()
+})
+
+export const debugBreakpointSchema = z.strictObject({
+  id: z.number().int().optional(),
+  /**
+   * False when it could not be set where the user clicked. `line` then says
+   * where it moved to, and `message` says why — showing it as a solid red dot
+   * anyway is the single most common way a debugger lies to its user.
+   */
+  verified: z.boolean(),
+  line: z.number().int().optional(),
+  message: z.string().optional()
+})
+
+/**
+ * Everything the panel paints, in one message.
+ *
+ * One snapshot rather than a stop event the UI then queries three more times:
+ * the state is a handful of frames and a handful of locals, and a round trip
+ * per pane would show a half-updated view while they arrived.
+ *
+ * `output` is the WHOLE transcript, not a delta. A run can only append, so
+ * `run:stdout` streams; a debug session can step backwards, which un-prints.
+ * The panel replaces rather than appends, and stepping back over a `print`
+ * visibly removes the line.
+ */
+export const debugStateSchema = z.strictObject({
+  runId: z.string(),
+  stop: debugStopSchema,
+  frames: z.array(debugFrameSchema),
+  /** Locals per frame, keyed by the frame id, which is its depth. */
+  locals: z.array(
+    z.strictObject({
+      frameId: z.number().int(),
+      variables: z.array(debugVariableSchema)
+    })
+  ),
+  output: z.string(),
+  breakpoints: z.array(debugBreakpointSchema),
+  /**
+   * The program has ended. NOT that the session has: the end is the most
+   * interesting place to step backwards from, so a finished session still
+   * takes commands.
+   */
+  finished: z.boolean()
+})
+export type DebugState = z.infer<typeof debugStateSchema>
+
+export const debugCommandSchema = z.enum([
+  'continue',
+  'stepInto',
+  'stepOver',
+  'stepOut',
+  'stepBack',
+  'reverseContinue'
+])
+export type DebugCommandName = z.infer<typeof debugCommandSchema>
+
+export const debugStartedSchema = z.strictObject({
+  runId: z.string(),
+  filePath: z.string(),
+  relativePath: z.string()
+})
+export type DebugStarted = z.infer<typeof debugStartedSchema>
+
+export const debugExitSchema = z.strictObject({
+  runId: z.string(),
+  /** 2 when the program could not be compiled, 130 when the session was ended. */
+  code: z.number().int(),
+  /** Compile diagnostics, or empty when the session was simply ended. */
+  message: z.string()
+})
+export type DebugExit = z.infer<typeof debugExitSchema>
 
 /* ------------------------------- terminal ------------------------------- */
 
@@ -529,8 +752,14 @@ export type DiagnosticSeverity = z.infer<typeof diagnosticSeveritySchema>
  * Which producer owns a diagnostic. Grouping metadata only — everything lands
  * under one Monaco marker owner, so a single `setModelMarkers` call replaces
  * the complete set for a file.
+ *
+ * `lsp` covers every language server at once rather than one member per
+ * server. The member is for grouping in the UI, and "which of pyright, clangd
+ * and gopls said this" is already in the diagnostic's `code`; a member per
+ * server would make the enum grow with the server registry and force a schema
+ * change to support a language.
  */
-export const diagnosticSourceSchema = z.enum(['typescript', 'graph', 'bcc'])
+export const diagnosticSourceSchema = z.enum(['typescript', 'graph', 'bcc', 'lsp'])
 export type DiagnosticSource = z.infer<typeof diagnosticSourceSchema>
 
 export const diagnosticMessageSchema = z.strictObject({
@@ -656,7 +885,18 @@ export const compilerStatusSchema = z.strictObject({
   heapUsedMb: z.number().nonnegative(),
   restarts: z.number().int().nonnegative(),
   /** Non-null only in `failed`; shown verbatim. */
-  detail: z.string().nullable()
+  detail: z.string().nullable(),
+  /**
+   * Whether the second, read-only LanguageService is up.
+   *
+   * The renderer's kill switch. Hover, completions and signature help come from
+   * Monaco's own worker until this turns true, and from the daemon afterwards —
+   * never from both, because two providers answering the same question means
+   * Monaco merges the lists and every completion appears twice. A worker that
+   * fails to start therefore degrades to what shipped before rather than to
+   * nothing.
+   */
+  interactive: z.boolean()
 })
 export type CompilerStatus = z.infer<typeof compilerStatusSchema>
 
@@ -677,9 +917,286 @@ export function stoppedCompilerStatus(): CompilerStatus {
     checkedFileCount: 0,
     heapUsedMb: 0,
     restarts: 0,
-    detail: null
+    detail: null,
+    interactive: false
   }
 }
+
+/* ---------------------------- language queries ---------------------------- */
+
+/**
+ * Everything the editor asks about a cursor, in one family of shapes.
+ *
+ * The daemon has the real program — the real tsconfig for TypeScript, the real
+ * resolution for BCC — and until now it was asked exactly two questions, both
+ * about diagnostics. These are the rest of what it already knows.
+ *
+ * Every position is 1-based with an EXCLUSIVE end column, matching
+ * `diagnosticMessageSchema` and Monaco's `IRange`. Offsets never cross this
+ * boundary: the renderer converts a position to an offset with
+ * `getOffsetAt` on the way in, and the worker converts back on the way out,
+ * because for a cross-file target the renderer often has no model to convert
+ * against.
+ */
+export const sourceRangeSchema = z.strictObject({
+  startLine: z.number().int().positive(),
+  startColumn: z.number().int().positive(),
+  endLine: z.number().int().positive(),
+  endColumn: z.number().int().positive()
+})
+export type SourceRange = z.infer<typeof sourceRangeSchema>
+
+export const languageLocationSchema = z.strictObject({
+  /** POSIX-separated, workspace-relative — the key every side joins on. */
+  relativePath: z.string(),
+  /** Absolute, so the renderer can open a file it does not already have. */
+  path: z.string(),
+  range: sourceRangeSchema
+})
+export type LanguageLocation = z.infer<typeof languageLocationSchema>
+
+/**
+ * The unsaved buffer, carried on the request itself.
+ *
+ * `pushOverlay` in `models.ts` debounces 300ms because every push triggers a
+ * re-check, so for up to 300ms after a keystroke the daemon's copy of a file is
+ * behind what the user is looking at. A definition answered at a stale offset
+ * points at the wrong token; a RENAME computed against stale text rewrites the
+ * wrong bytes. Both are worse than no answer at all.
+ *
+ * So an interactive request carries the buffer with it. The daemon adopts it as
+ * the overlay and answers against it WITHOUT scheduling a check — the debounce
+ * keeps doing its real job, which is deciding when to re-check, not deciding
+ * what the file says.
+ */
+export const documentOverlaySchema = z.strictObject({
+  content: z.string(),
+  /** Monaco's version id: monotonic per model, so a late overlay is discardable. */
+  version: z.number().int().nonnegative()
+})
+export type DocumentOverlay = z.infer<typeof documentOverlaySchema>
+
+/**
+ * How many references travel the wire before the answer is cut short.
+ *
+ * Find-all-references on a common identifier in a large workspace returns tens
+ * of thousands of hits, and a result nobody can read is not worth the
+ * structured clone. Same instinct as `MAX_DIAG_TRACE_EVENTS`, and the flag is
+ * the important half: a truncated answer that does not say so is a wrong one.
+ */
+export const MAX_REFERENCE_RESULTS = 5_000
+
+export const referencesResultSchema = z.strictObject({
+  locations: z.array(languageLocationSchema).max(MAX_REFERENCE_RESULTS),
+  truncated: z.boolean()
+})
+export type ReferencesResult = z.infer<typeof referencesResultSchema>
+
+export const definitionResultSchema = z.strictObject({
+  /**
+   * A list rather than a single location, because a TypeScript symbol can have
+   * several declarations (an overload set, a merged interface) and picking one
+   * of them in the daemon would throw away the answer the user wanted.
+   */
+  locations: z.array(languageLocationSchema).max(MAX_REFERENCE_RESULTS)
+})
+export type DefinitionResult = z.infer<typeof definitionResultSchema>
+
+export const documentSymbolKindSchema = z.enum(['function', 'variable', 'parameter'])
+export type DocumentSymbolKind = z.infer<typeof documentSymbolKindSchema>
+
+export interface DocumentSymbolNode {
+  readonly name: string
+  /** The signature or type, appended after the name in the outline. */
+  readonly detail: string
+  readonly kind: DocumentSymbolKind
+  /** The whole declaration — what the outline highlights. */
+  readonly range: SourceRange
+  /** Just the name — where clicking the row puts the cursor. */
+  readonly selectionRange: SourceRange
+  readonly children: readonly DocumentSymbolNode[]
+}
+
+/**
+ * Recursive, so `z.lazy` and an explicit annotation. The interface above is
+ * written by hand rather than inferred because a self-referencing schema cannot
+ * infer its own type.
+ */
+export const documentSymbolNodeSchema: z.ZodType<DocumentSymbolNode> = z.lazy(() =>
+  z.strictObject({
+    name: z.string(),
+    detail: z.string(),
+    kind: documentSymbolKindSchema,
+    range: sourceRangeSchema,
+    selectionRange: sourceRangeSchema,
+    children: z.array(documentSymbolNodeSchema)
+  })
+)
+
+export const documentSymbolsResultSchema = z.strictObject({
+  symbols: z.array(documentSymbolNodeSchema)
+})
+export type DocumentSymbolsResult = z.infer<typeof documentSymbolsResultSchema>
+
+export const hoverResultSchema = z.strictObject({
+  /** Rendered as markdown. Null means "nothing to say", not "not ready". */
+  contents: z.string().nullable(),
+  range: sourceRangeSchema.nullable()
+})
+export type HoverResult = z.infer<typeof hoverResultSchema>
+
+export const textEditSchema = z.strictObject({
+  range: sourceRangeSchema,
+  newText: z.string()
+})
+export type TextEdit = z.infer<typeof textEditSchema>
+
+export const fileEditSchema = z.strictObject({
+  relativePath: z.string(),
+  path: z.string(),
+  /**
+   * Descending by position, so applying them in order cannot invalidate the
+   * ranges of the ones not yet applied. Produced sorted rather than sorted at
+   * the point of use, because every consumer would otherwise have to remember.
+   */
+  edits: z.array(textEditSchema)
+})
+export type FileEdit = z.infer<typeof fileEditSchema>
+
+/**
+ * One channel serves both halves of a rename.
+ *
+ * Monaco asks twice: `resolveRenameLocation` when F2 is pressed, to draw the
+ * inline box over the right word, and `provideRenameEdits` when the new name is
+ * committed. Sending `newName: null` asks the first question — `target` and
+ * `placeholder` come back and `files` is empty — and sending a name asks the
+ * second. Two channels would mean two copies of "where is the symbol under this
+ * offset", which is precisely the part that must agree.
+ */
+export const renameResultSchema = z.strictObject({
+  /** The identifier being renamed. Null when there is nothing renameable here. */
+  target: sourceRangeSchema.nullable(),
+  placeholder: z.string().nullable(),
+  files: z.array(fileEditSchema),
+  /** Shown to the user verbatim by Monaco's rename widget. */
+  error: z.string().nullable()
+})
+export type RenameResult = z.infer<typeof renameResultSchema>
+
+/**
+ * A quick fix, with the edits that carry it out.
+ *
+ * `edits` covers every file the fix touches, which for an import fix is often
+ * two — the file with the error and the one the symbol comes from. That is why
+ * this carries the same `FileEdit` shape a rename does rather than a single
+ * file's worth: the caller has the same partition to make between open buffers
+ * and files on disk, and the same all-or-nothing rule to enforce.
+ */
+export const codeActionSchema = z.strictObject({
+  /** Shown in the lightbulb menu, verbatim. */
+  title: z.string(),
+  /**
+   * `quickfix` or `refactor`, in Monaco's vocabulary. Kept as a string rather
+   * than an enum because Monaco matches these by dotted prefix and inventing a
+   * closed set here would mean widening it every time TypeScript adds a fix.
+   */
+  kind: z.string(),
+  /** True for the fix TypeScript itself would apply first. */
+  preferred: z.boolean(),
+  edits: z.array(fileEditSchema)
+})
+export type CodeAction = z.infer<typeof codeActionSchema>
+
+/** Capped for the same reason references are: a menu nobody can read is waste. */
+export const MAX_CODE_ACTIONS = 32
+
+export const codeActionsResultSchema = z.strictObject({
+  actions: z.array(codeActionSchema).max(MAX_CODE_ACTIONS)
+})
+export type CodeActionsResult = z.infer<typeof codeActionsResultSchema>
+
+/* ---------------------------- interactive answers ------------------------- */
+
+/**
+ * Completions, hover and signature help — the answers that are asked for at
+ * keystroke frequency.
+ *
+ * These are correct only with the whole program, and Monaco's bundled worker
+ * has none of it: with no tsconfig and no module resolution, what it can say
+ * about a symbol that came from another file is a guess. But they are also
+ * asked hundreds of times a minute, which is why they cannot come from the
+ * check worker — cancelling the check on every keystroke would mean diagnostics
+ * never converge while typing. They come from a second, read-only
+ * LanguageService that is never interrupted.
+ */
+
+/**
+ * TypeScript's own `ScriptElementKind`, passed through as a string.
+ *
+ * Not an enum here. TypeScript adds kinds between versions, and a closed set
+ * would turn a new one into a validation failure that drops the whole
+ * completion list rather than one icon. The renderer maps what it recognises
+ * and falls back to a plain text icon for the rest.
+ */
+export const completionItemSchema = z.strictObject({
+  label: z.string(),
+  kind: z.string(),
+  /** What is written when the item is accepted; usually the label. */
+  insertText: z.string(),
+  /** TypeScript's own ordering, which puts locals above globals. */
+  sortText: z.string(),
+  /**
+   * Opaque, and handed straight back on the detail request.
+   *
+   * `getCompletionEntryDetails` needs the entry's name and the module it came
+   * from to describe it, and an auto-import entry's `source` is the only thing
+   * distinguishing two identically named symbols from different modules.
+   */
+  source: z.string().nullable()
+})
+export type CompletionItem = z.infer<typeof completionItemSchema>
+
+/**
+ * A cap, and a flag that says when it bit.
+ *
+ * A global completion list in a DOM project is several thousand entries, and
+ * every one of them crosses a structured clone on a keystroke. `incomplete`
+ * asks Monaco to re-request as the user types — which is what narrows the list
+ * — rather than silently serving a truncated one.
+ */
+export const MAX_COMPLETION_ITEMS = 2_000
+
+export const completionsResultSchema = z.strictObject({
+  items: z.array(completionItemSchema).max(MAX_COMPLETION_ITEMS),
+  incomplete: z.boolean()
+})
+export type CompletionsResult = z.infer<typeof completionsResultSchema>
+
+export const completionDetailResultSchema = z.strictObject({
+  /** The signature, as TypeScript renders it. */
+  detail: z.string().nullable(),
+  /** The doc comment, already flattened to text. */
+  documentation: z.string().nullable()
+})
+export type CompletionDetailResult = z.infer<typeof completionDetailResultSchema>
+
+export const signatureParameterSchema = z.strictObject({
+  label: z.string(),
+  documentation: z.string().nullable()
+})
+
+export const signatureSchema = z.strictObject({
+  label: z.string(),
+  documentation: z.string().nullable(),
+  parameters: z.array(signatureParameterSchema)
+})
+
+export const signatureHelpResultSchema = z.strictObject({
+  signatures: z.array(signatureSchema).max(64),
+  activeSignature: z.number().int().nonnegative(),
+  activeParameter: z.number().int().nonnegative()
+})
+export type SignatureHelpResult = z.infer<typeof signatureHelpResultSchema>
 
 /* -------------------------------- artifacts ------------------------------- */
 
@@ -771,6 +1288,40 @@ export const artifactSummarySchema = z.strictObject({
 })
 export type ArtifactSummary = z.infer<typeof artifactSummarySchema>
 
+/* ------------------------------ walkthrough ------------------------------- */
+
+export const walkthroughFileChangeSchema = z.strictObject({
+  path: z.string().min(1),
+  before: z.string(),
+  after: z.string()
+})
+export type WalkthroughFileChange = z.infer<typeof walkthroughFileChangeSchema>
+
+export const walkthroughRequestSchema = z.strictObject({
+  instruction: z.string().min(1),
+  files: z.array(walkthroughFileChangeSchema).min(1).max(20)
+})
+export type WalkthroughRequest = z.infer<typeof walkthroughRequestSchema>
+
+/* --------------------------- semantic index -------------------------------- */
+
+export const semanticMatchSchema = z.strictObject({
+  path: z.string(),
+  startLine: z.number().int().positive(),
+  endLine: z.number().int().positive(),
+  preview: z.string(),
+  score: z.number()
+})
+export type SemanticMatch = z.infer<typeof semanticMatchSchema>
+
+export const semanticIndexStatusSchema = z.strictObject({
+  built: z.boolean(),
+  builtAt: z.string().nullable(),
+  fileCount: z.number().int().nonnegative(),
+  chunkCount: z.number().int().nonnegative()
+})
+export type SemanticIndexStatus = z.infer<typeof semanticIndexStatusSchema>
+
 /* --------------------------- compiler intelligence ------------------------ */
 
 /**
@@ -842,7 +1393,7 @@ export const compilerPassSchema = z.strictObject({
    * folded together because they are different events, and conflating them would
    * make the distinction unrecoverable.
    */
-  reason: z.enum(['index', 'cold', 'watch', 'buffer']),
+  reason: z.enum(['index', 'cold', 'watch', 'buffer', 'idle']),
   /**
    * The paths reported changed or removed — the edit that caused this pass.
    *

@@ -15,22 +15,47 @@ import {
 } from '../shared/ipc-contract'
 import {
   closeDocument as closeCompilerDocument,
+  codeActionsAt as compilerCodeActionsAt,
   compilerPasses,
   compilerStatus,
+  definitionAt as compilerDefinitionAt,
   dependentsOf as compilerDependentsOf,
   diagnosticsFor,
   openDocument as openCompilerDocument,
+  referencesAt as compilerReferencesAt,
+  renameAt as compilerRenameAt,
   restartCompiler,
   startCompiler
 } from './compiler-service'
 import { isBccPath } from '../shared/lang-diagnostics'
 import {
+  sendCommand,
+  setBreakpoints as setDebugBreakpoints,
+  startDebug,
+  stopDebug
+} from './debug-service'
+import {
+  closeInteractiveDocument,
+  interactiveCompletionDetail,
+  interactiveCompletions,
+  interactiveHover,
+  interactiveSignatureHelp,
+  openInteractiveDocument,
+  restartInteractive
+} from './interactive-service'
+import {
   closeLangDocument,
+  langDefinition,
+  langDocumentSymbols,
+  langHover,
+  langReferences,
+  langRename,
   openLangDocument,
   restartLang,
   startLang
 } from './lang-service'
 import {
+  applyWorkspaceEdit,
   createDirectory,
   createFile,
   getWorkspace,
@@ -77,8 +102,26 @@ import {
 import { clearInsightsCache, fetchInsights } from './github-service'
 import { clearSecret, hasSecret, isEncryptionAvailable, setSecret } from './secrets'
 import { loadSettings, saveSettings } from './settings'
-import { cancelAiStream, startAiStream } from './ai-service'
-import { applyAiEdit, readAiLog, revertAiEdit } from './ai-log'
+import {
+  cancelAiStream,
+  getAiUsageTotals,
+  requestGhostCompletion,
+  startAgentStream,
+  startAiStream
+} from './ai-service'
+import { startWalkthrough } from './walkthrough-service'
+import {
+  buildSemanticIndex,
+  getSemanticIndexStatus,
+  querySemanticIndex
+} from './semantic-index'
+import {
+  applyAgentBatch,
+  applyAiEdit,
+  readAiLog,
+  revertAgentBatch,
+  revertAiEdit
+} from './ai-log'
 import {
   closeVisualizerWindow,
   getVisualizerHostWindow,
@@ -228,6 +271,16 @@ export function createHandlerMap(): HandlerMap {
 
     'run:cancel': (request) => ({ cancelled: cancelRun(request.runId) }),
 
+    // Acknowledgements only; the state arrives on `debug:stopped`, so there is
+    // one path that paints the panel whether the stop came from a command or
+    // from a breakpoint hit while the program ran.
+    'debug:start': async (request) => ({ session: await startDebug(request.path) }),
+    'debug:command': (request) => ({ accepted: sendCommand(request.runId, request.command) }),
+    'debug:setBreakpoints': (request) => ({
+      accepted: setDebugBreakpoints(request.runId, request.lines)
+    }),
+    'debug:stop': (request) => ({ stopped: stopDebug(request.runId) }),
+
     'git:status': async () => ({ status: await gitStatus() }),
 
     'git:diff': async (request) => ({ diff: await gitDiff(request.path, request.staged) }),
@@ -301,6 +354,36 @@ export function createHandlerMap(): HandlerMap {
 
     'ai:log': async () => ({ entries: await readAiLog() }),
 
+    'ai:usage': async () => ({ totals: getAiUsageTotals() }),
+
+    'ai:ghostCompletion': async (request) => ({
+      text: await requestGhostCompletion(request)
+    }),
+
+    'agent:start': async (request) => ({
+      started: await startAgentStream(request.context)
+    }),
+
+    'agent:apply': async (request) => ({
+      entries: await applyAgentBatch(request)
+    }),
+
+    'agent:revert': async (request) => ({
+      entries: await revertAgentBatch(request.batchId)
+    }),
+
+    'walkthrough:start': async (request) => ({
+      started: await startWalkthrough(request)
+    }),
+
+    'index:build': async () => ({ status: await buildSemanticIndex() }),
+
+    'index:status': async () => ({ status: await getSemanticIndexStatus() }),
+
+    'index:query': async (request) => ({
+      matches: await querySemanticIndex(request.instruction, request.limit)
+    }),
+
     // The sender is the parent for *positioning only* — the same way
     // `fs:openFolder` hands the dialog a window to sit over. Passing it as
     // Electron's `parent` option would make the diagram permanently on top of
@@ -362,20 +445,121 @@ export function createHandlerMap(): HandlerMap {
         openLangDocument(request.relativePath, request.content, request.version)
       } else {
         openCompilerDocument(request.relativePath, request.content, request.version)
+        // BOTH TypeScript daemons. They keep separate copies of the buffer on
+        // purpose — they are separate threads — but a copy that misses an
+        // update is worse than no copy: completions would describe a file the
+        // user has already changed, which reads as the IDE being confused.
+        openInteractiveDocument(request.relativePath, request.content, request.version)
       }
       return { accepted: true as const }
     },
     'compiler:closeDocument': (request) => {
       if (isBccPath(request.relativePath)) closeLangDocument(request.relativePath)
-      else closeCompilerDocument(request.relativePath)
+      else {
+        closeCompilerDocument(request.relativePath)
+        closeInteractiveDocument(request.relativePath)
+      }
       return { closed: true as const }
     },
     'compiler:restart': () => {
       restartCompiler()
       restartLang()
+      restartInteractive()
       return { restarted: true as const }
     },
     'compiler:passes': () => ({ passes: compilerPasses() }),
+
+    /* ----------------------------- navigation ----------------------------- */
+
+    // Routed by extension, exactly as openDocument is. Two compilers, one
+    // channel, and a renderer that never learns which of them answered.
+    'compiler:definition': async (request) =>
+      isBccPath(request.relativePath)
+        ? await langDefinition(request.relativePath, request.offset, request.overlay)
+        : await compilerDefinitionAt(request.relativePath, request.offset, request.overlay),
+
+    'compiler:references': async (request) =>
+      isBccPath(request.relativePath)
+        ? await langReferences(request.relativePath, request.offset, request.overlay)
+        : await compilerReferencesAt(request.relativePath, request.offset, request.overlay),
+
+    'compiler:rename': async (request) =>
+      isBccPath(request.relativePath)
+        ? await langRename(
+            request.relativePath,
+            request.offset,
+            request.newName,
+            request.overlay
+          )
+        : await compilerRenameAt(
+            request.relativePath,
+            request.offset,
+            request.newName,
+            request.overlay
+          ),
+
+    // BCC has no quick fixes yet — its diagnostics carry no fix data, and
+    // inventing one here would be a second compiler's opinion about a language
+    // this one owns. TypeScript's come from `getCodeFixesAtPosition`.
+    'compiler:codeActions': async (request) =>
+      isBccPath(request.relativePath)
+        ? { actions: [] }
+        : await compilerCodeActionsAt(
+            request.relativePath,
+            request.offset,
+            request.endOffset,
+            request.diagnosticCodes,
+            request.overlay
+          ),
+
+    // Language-agnostic on purpose: an edit is an edit, and which compiler
+    // produced it stops mattering once it is a range and a string.
+    'compiler:applyWorkspaceEdit': async (request) => ({
+      written: await applyWorkspaceEdit(request.files)
+    }),
+
+    'compiler:documentSymbols': async (request) =>
+      isBccPath(request.relativePath)
+        ? await langDocumentSymbols(request.relativePath, request.overlay)
+        : { symbols: [] },
+
+    // Hover for `.bcc` is the BCC daemon's; for TypeScript it is the
+    // interactive daemon's, which resolves imports and so can describe a symbol
+    // that came from another file. Empty while that daemon is still starting,
+    // and the renderer keeps Monaco's own hover until it reports ready.
+    'compiler:hover': async (request) =>
+      isBccPath(request.relativePath)
+        ? await langHover(request.relativePath, request.offset, request.overlay)
+        : await interactiveHover(request.relativePath, request.offset, request.overlay),
+
+    // BCC has no completions yet. Its parser is happy to describe a half-typed
+    // file, so this is reachable work rather than a missing piece — but a
+    // completion list is a language's opinion about what you might mean next,
+    // and BCC does not have one to offer yet.
+    'compiler:completions': async (request) =>
+      isBccPath(request.relativePath)
+        ? { items: [], incomplete: false }
+        : await interactiveCompletions(request.relativePath, request.offset, request.overlay),
+
+    'compiler:completionDetail': async (request) =>
+      isBccPath(request.relativePath)
+        ? { detail: null, documentation: null }
+        : await interactiveCompletionDetail(
+            request.relativePath,
+            request.offset,
+            request.entryName,
+            request.entrySource,
+            request.overlay
+          ),
+
+    'compiler:signatureHelp': async (request) =>
+      isBccPath(request.relativePath)
+        ? { signatures: [], activeSignature: 0, activeParameter: 0 }
+        : await interactiveSignatureHelp(
+            request.relativePath,
+            request.offset,
+            request.overlay
+          ),
 
     /* ------------------------------ artifacts ----------------------------- */
 

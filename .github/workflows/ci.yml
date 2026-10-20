@@ -112,12 +112,35 @@ jobs:
       - name: Incremental cutoff proof
         run: npm run test:query
 
+      # The claim that justifies Workstream A crossing a process boundary at
+      # all: go to definition from one file resolves INTO another. Monaco's
+      # bundled worker has no tsconfig and no module resolution, so it cannot
+      # follow `./lib` and answers nothing here. This also prints how long an
+      # interactive query waits behind a check, which is the number A4's
+      # cancellation flag is measured against.
+      - name: Navigation proof
+        run: npm run test:query:nav
+
+      # The third worker, whose whole justification is answering hover and
+      # completions with the program resolved — the thing Monaco's bundled
+      # worker structurally cannot do.
+      - name: Interactive daemon proof
+        run: npm run test:interactive
+
       # The same shape for the BCC daemon: walk, overlays, the clean sweep and
       # the merge of three stages' diagnostics, against the built worker rather
       # than a fake. It was added with the daemon and never wired here, so the
       # one thing guarding that worker has not been running on any pull request.
       - name: BCC daemon proof
         run: npm run test:lang
+
+      # The VM in a real worker thread, which the unit tests deliberately skip:
+      # that the built worker exists where the runner looks for it, that output
+      # arrives in slices while a program is still running, and that a runaway
+      # program can actually be terminated. It found a quadratic history
+      # eviction on its first run that no unit test could have.
+      - name: BCC VM proof
+        run: npm run test:vm
 
       # Screenshots, traces and the error-context markdown Playwright writes for
       # a failure. Without these a red E2E run on a machine nobody can reach is

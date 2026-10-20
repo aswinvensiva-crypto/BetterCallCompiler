@@ -11,7 +11,13 @@ import type { AiContext, AiMode, AiSelection } from '../../shared/types'
  * without a running editor. Main renders whatever it is given, verbatim.
  */
 
-const MODE_LABELS: Readonly<Record<AiMode, string>> = {
+/**
+ * Excludes `agent`: these three are the selection-scoped context-menu
+ * actions this file registers. Multi-file agent requests have their own
+ * entry point — a dedicated panel, not a selection — and are dispatched
+ * through `agent-actions.ts` instead.
+ */
+const MODE_LABELS: Readonly<Record<Exclude<AiMode, 'agent'>, string>> = {
   explain: 'Explain',
   'find-bugs': 'Find Bugs',
   improve: 'Improve'
@@ -106,7 +112,7 @@ export function buildContext(
  * point; all three are on the context menu.
  */
 export function registerAiActions(editor: monacoNs.editor.IStandaloneCodeEditor): void {
-  const dispatch = (mode: AiMode): void => {
+  const dispatch = (mode: Exclude<AiMode, 'agent'>): void => {
     const context = buildContext(editor)
     if (context === null) return
     document.dispatchEvent(
@@ -114,7 +120,7 @@ export function registerAiActions(editor: monacoNs.editor.IStandaloneCodeEditor)
     )
   }
 
-  const modes: readonly AiMode[] = ['explain', 'find-bugs', 'improve']
+  const modes: readonly Exclude<AiMode, 'agent'>[] = ['explain', 'find-bugs', 'improve']
   modes.forEach((mode, index) => {
     editor.addAction({
       id: `bettercallcompiler.ai.${mode}`,
