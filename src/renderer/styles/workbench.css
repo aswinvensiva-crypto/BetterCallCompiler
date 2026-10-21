@@ -185,6 +185,31 @@
   display: none;
 }
 
+/* Below 1180px the dock floats over the editor instead of taking a column from
+   it. Beside a 260px side bar, a 460px column leaves a laptop-width editor a
+   few hundred pixels — every dock view squeezed it that way. Floating, the
+   editor keeps its width and the dock is one click from closed. */
+@media (max-width: 1180px) {
+  .workbench {
+    --bcc-grid-right-dock: 0;
+    --bcc-grid-right-dock-splitter: 0;
+  }
+
+  .right-dock {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: var(--bcc-status-bar-height);
+    width: min(var(--bcc-right-dock-width), 86vw);
+    z-index: 30;
+    box-shadow: -14px 0 34px rgba(0, 0, 0, 0.45);
+  }
+
+  .splitter--right-dock {
+    display: none;
+  }
+}
+
 .right-dock__title {
   flex: 0 0 29px;
   display: flex;
@@ -461,10 +486,55 @@ body.workbench--resizing-y * {
   padding: 0 8px;
   font-size: var(--bcc-font-size-sm);
   white-space: nowrap;
+  overflow: hidden;
 }
 
 .status-bar__spacer {
   flex: 1 1 auto;
+}
+
+/* The compiler's verdict on the active file, and the Substrate shortcut in the
+   provenance cyan — the two segments the design puts colour on. */
+.status-bar__item--verdict[data-state='pass'] {
+  color: #8fc493;
+}
+
+.status-bar__item--verdict[data-state='fail'] {
+  color: #e89a9a;
+}
+
+.status-bar__item--substrate {
+  color: var(--bcc-prov);
+}
+
+.status-bar__item--path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* `display: inline-flex` on the items outranks the user agent's `[hidden]`
+   rule, so without this a hidden item — the minimized-Visualizer slot, the AI
+   spend before any request — still drew as an empty padded box. */
+.status-bar .status-bar__item[hidden] {
+  display: none;
+}
+
+/* Narrow windows keep the verdict, the caret and the controls; the machine
+   facts and the long path go first. Qualified by `.status-bar` so they outrank
+   the item rule further down. */
+@media (max-width: 1280px) {
+  .status-bar .status-bar__item--build {
+    display: none;
+  }
+}
+
+@media (max-width: 1100px) {
+  .status-bar .status-bar__item--path,
+  .status-bar .status-bar__item--counts,
+  .status-bar .status-bar__item--bridge {
+    display: none;
+  }
 }
 
 .status-bar__item {

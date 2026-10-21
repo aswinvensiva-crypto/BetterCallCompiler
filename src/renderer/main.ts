@@ -21,6 +21,7 @@ import { runActiveFile } from './views/run'
 import { mountActivityBar, setBadge, setSelected } from './workbench/activity-bar'
 import { mountSideBar, registerSideBarView, showSideBarView } from './workbench/side-bar'
 import {
+  activeRightDockView,
   hideRightDock,
   isRightDockVisible,
   mountRightDock,
@@ -28,6 +29,7 @@ import {
   showRightDock,
   showRightDockView
 } from './workbench/right-dock'
+import { attachEditorStatus } from './editor/editor-status'
 import { mountSplitter } from './workbench/splitter'
 import { clearDiffSelection, mountScm, onScmShown } from './views/scm'
 import { mountInsights, onInsightsShown } from './views/insights'
@@ -188,6 +190,8 @@ async function mountEditor(editorHost: HTMLElement, tabBar: HTMLElement): Promis
   attachEditor(editor)
   // Substrate traces whatever the caret is on, and marks it in this editor.
   attachSubstrateToEditor(editor)
+  // The status bar's file, caret, language and verdict.
+  attachEditorStatus(editor)
   // The glyph margin, and the line the debugger is stopped on. Attached here
   // rather than inside `createEditor` because it is a feature of the workbench
   // rather than of an editor instance — the diff editor gets no breakpoints.
@@ -442,12 +446,21 @@ async function saveThenDebug(): Promise<void> {
  * `Result` all the way back.
  */
 async function renderStatusBar(host: HTMLElement): Promise<void> {
-  const statusBar = mountStatusBar(host)
+  const statusBar = mountStatusBar(host, {
+    openCommands: openCommandPalette,
+    showProblems: () => void showProblemsPanel(),
+    // The same toggle as the Substrate activity item: open it, or close it
+    // when it is already what the dock is showing.
+    toggleSubstrate: () => {
+      if (isRightDockVisible() && activeRightDockView() === 'substrate') hideRightDock()
+      else void showRightDockView('substrate')
+    }
+  })
 
   const result = await window.betterCallCompiler.app.ping({})
 
   if (result.ok) {
-    statusBar.setBridge(`Bridge connected · Electron ${result.value.electron}`, 'ok')
+    statusBar.setBridge('Bridge connected', 'ok', `Electron ${result.value.electron}`)
     statusBar.setBuild(`BetterCallCompiler ${result.value.version} · ${result.value.platform}`)
   } else {
     statusBar.setBridge(`Bridge error: ${result.error.code}`, 'error')
@@ -501,11 +514,15 @@ const EDITOR_MIN_HEIGHT = 220
 /** Mirrors `workbenchLayoutSchema`'s ceiling; a larger value fails to persist. */
 const LAYOUT_MAX_PX = 4000
 
+/** Mirrors the stylesheet's breakpoint, below which the dock floats over the editor. */
+const DOCK_FLOATS = window.matchMedia('(max-width: 1180px)')
+
 function maxSideBarWidth(): number {
   const taken =
     cssPixels('--bcc-activity-bar-width') +
     EDITOR_MIN_WIDTH +
-    (isRightDockVisible() ? layout.rightDockWidth : 0)
+    // A floating dock takes no width from the row the side bar shares.
+    (isRightDockVisible() && !DOCK_FLOATS.matches ? layout.rightDockWidth : 0)
   return Math.min(LAYOUT_MAX_PX, Math.max(SIDE_BAR_MIN_WIDTH, window.innerWidth - taken))
 }
 
