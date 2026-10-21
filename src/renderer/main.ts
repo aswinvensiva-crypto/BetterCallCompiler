@@ -18,7 +18,7 @@ import { notifyError } from './workbench/notifications'
 import { mountPanel, showOutput, showProblems as showProblemsPanel } from './workbench/panel'
 import { mountStatusBar } from './workbench/status-bar'
 import { runActiveFile } from './views/run'
-import { mountActivityBar, setSelected } from './workbench/activity-bar'
+import { mountActivityBar, setBadge, setSelected } from './workbench/activity-bar'
 import { mountSideBar, registerSideBarView, showSideBarView } from './workbench/side-bar'
 import {
   hideRightDock,
@@ -61,6 +61,7 @@ import {
   setCompilerViewActivator
 } from './views/compiler-intelligence'
 import { attachSubstrateToEditor, mountSubstrate, onSubstrateShown } from './views/substrate/substrate'
+import { counts as problemCounts, onProblemsChanged } from './views/problems'
 import {
   listenForExplainRequests,
   mountArtifacts,
@@ -680,6 +681,7 @@ async function mountSideBarViews(): Promise<void> {
     if (id === 'run') void showOutput()
     else if (id === 'problems') void showProblemsPanel()
   })
+  onProblemsChanged(() => setBadge('problems', problemCounts().errors, 'error'))
 
   // Assist results surface in its panel the way AI answers surface in theirs.
   listenForAssistActions()

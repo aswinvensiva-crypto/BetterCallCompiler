@@ -1,5 +1,6 @@
 import type { FileNode, FsWatchEvent, Workspace } from '../../shared/types'
 import { confirmAction, notifyError } from '../workbench/notifications'
+import { errorCountFor, onProblemsChanged } from './problems'
 
 /**
  * The file explorer.
@@ -119,11 +120,39 @@ function chevron(open: boolean): SVGSVGElement {
   return svg
 }
 
+/** The lower-cased extension, which the stylesheet colours a file's icon by. */
+function extensionOf(name: string): string {
+  const dot = name.lastIndexOf('.')
+  return dot > 0 ? name.slice(dot + 1).toLowerCase() : ''
+}
+
+/** The file's error count at the end of its row, or nothing when it has none. */
+function paintErrorCount(item: HTMLElement, relativePath: string): void {
+  item.querySelector('.tree__err')?.remove()
+  const errors = errorCountFor(relativePath)
+  if (errors === 0) return
+  const badge = el('span', 'tree__err', errors > 99 ? '99+' : String(errors))
+  badge.title = `${errors} error${errors === 1 ? '' : 's'}`
+  item.append(badge)
+}
+
+/**
+ * Re-counts in place as diagnostics arrive. They arrive on every recheck, and
+ * a full render would rebuild a rename input mid-word.
+ */
+function repaintErrorCounts(): void {
+  bodyHost?.querySelectorAll<HTMLElement>('.tree__row[data-file]').forEach((item) => {
+    const relativePath = item.dataset['relativePath']
+    if (relativePath !== undefined) paintErrorCount(item, relativePath)
+  })
+}
+
 function buildRow(row: Row): HTMLElement {
   const { node, depth } = row
   const item = el('div', 'tree__row')
   item.style.paddingLeft = `${8 + depth * 12}px`
   item.dataset['path'] = node.path
+  item.dataset['relativePath'] = node.relativePath
   item.setAttribute('role', 'treeitem')
   item.title = node.relativePath
 
@@ -136,8 +165,14 @@ function buildRow(row: Row): HTMLElement {
     item.append(el('span', 'tree__chevron-spacer'))
   }
 
-  item.append(el('span', `tree__icon tree__icon--${node.kind}`))
+  const icon = el('span', `tree__icon tree__icon--${node.kind}`)
+  if (node.kind === 'file') icon.dataset['ext'] = extensionOf(node.name)
+  item.append(icon)
   item.append(el('span', 'tree__label', node.name))
+  if (node.kind === 'file') {
+    item.dataset['file'] = 'true'
+    paintErrorCount(item, node.relativePath)
+  }
 
   item.addEventListener('click', () => {
     void activate(node)
@@ -514,6 +549,7 @@ export async function mountExplorer(title: HTMLElement, body: HTMLElement): Prom
 
   document.addEventListener('click', closeContextMenu)
   window.betterCallCompiler.fs.onWatchEvent(onWatchEvent)
+  onProblemsChanged(repaintErrorCounts)
 
   const current = await window.betterCallCompiler.fs.getWorkspace({})
   if (current.ok && current.value.root !== null) {

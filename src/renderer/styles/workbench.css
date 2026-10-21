@@ -622,6 +622,43 @@ body.workbench--resizing-y * {
   -webkit-mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><path d='M4 1.5h5L12.5 5v9.5h-9z' fill='black'/></svg>");
 }
 
+/* Coloured by what the file is, from the syntax palette: BCC source takes the
+   keyword orange, docs the link blue, data the warning amber. */
+.tree__icon--file[data-ext='bcc'] {
+  color: #cf8e6d;
+  opacity: 0.9;
+}
+
+.tree__icon--file[data-ext='md'] {
+  color: #6f9fd8;
+  opacity: 0.9;
+}
+
+.tree__icon--file[data-ext='json'] {
+  color: var(--bcc-warning);
+  opacity: 0.9;
+}
+
+.tree__icon--file:is([data-ext='ts'], [data-ext='tsx'], [data-ext='mts']) {
+  color: var(--bcc-accent-hover);
+  opacity: 0.9;
+}
+
+.tree__icon--file:is([data-ext='js'], [data-ext='jsx'], [data-ext='mjs'], [data-ext='cjs']) {
+  color: #d9c043;
+  opacity: 0.9;
+}
+
+/* A file's error count, flush right on its row. */
+.tree__err {
+  margin-left: auto;
+  padding-left: 6px;
+  color: var(--bcc-danger);
+  font-size: 10px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
 .tree__icon--directory {
   color: var(--bcc-accent);
   -webkit-mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><path d='M1.5 3h4.5l1.5 2h7v8h-13z' fill='black'/></svg>");
@@ -1108,6 +1145,14 @@ body.workbench--resizing-y * {
 
 .panel-view-tab:hover {
   color: var(--bcc-fg);
+}
+
+/* The Problems tab's error count, from `data-count` (see panel.ts). */
+.panel-view-tab[data-count]::after {
+  content: attr(data-count);
+  margin-left: 5px;
+  color: var(--bcc-danger);
+  font-weight: 700;
 }
 
 .panel-view-tab--active {
