@@ -126,13 +126,17 @@
   --bcc-splitter: var(--bcc-gray-1);
   --bcc-splitter-hover: var(--bcc-accent);
 
-  /* ── typography ────────────────────────────────────────────────────────── */
-  --bcc-font-ui:
-    'Segoe UI Variable Text', 'Segoe UI', system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif;
+  /* ── typography ──────────────────────────────────────────────────────────
+     The chrome is set in the same monospace as the code. This is a tool for
+     reading what a compiler did, and every surface it shows — tokens, IR, the
+     trace, the file tree — lines up in columns when they share one face.
+     Sizes step down from the editor's 13px: 12px for lists and tabs, 10.5px
+     for headers and the status bar. */
   --bcc-font-mono: 'JetBrains Mono', 'Cascadia Code', 'Cascadia Mono', Consolas, 'Courier New', monospace;
+  --bcc-font-ui: var(--bcc-font-mono);
 
-  --bcc-font-size: 13px;
-  --bcc-font-size-sm: 11px;
+  --bcc-font-size: 12px;
+  --bcc-font-size-sm: 10.5px;
   --bcc-line-height: 1.5;
 
   /* ── metrics ─────────────────────────────────────────────────────────────

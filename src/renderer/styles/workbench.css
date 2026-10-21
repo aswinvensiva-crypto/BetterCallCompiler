@@ -60,40 +60,66 @@
 
 .activity-bar {
   grid-area: activity;
-  background: var(--bcc-bg-inset);
+  background: var(--bcc-bg-elevated);
   border-right: 1px solid var(--bcc-border);
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding-top: 4px;
-  gap: 2px;
+  padding: 5px 0;
+  gap: 1px;
+  overflow-y: auto;
+  scrollbar-width: none;
 }
 
+.activity-bar::-webkit-scrollbar {
+  width: 0;
+}
+
+/* Square buttons with the selection drawn as an inset bar, rather than a
+   full-width row with a border: fourteen 38px items fit a laptop-height
+   window where fourteen 48px rows did not. */
 .activity-bar__item {
-  width: 100%;
-  height: 48px;
+  width: 38px;
+  height: 38px;
+  flex: none;
   display: grid;
   place-items: center;
   color: var(--bcc-fg-subtle);
   background: none;
   border: none;
-  border-left: 2px solid transparent;
+  border-radius: var(--bcc-radius);
   cursor: pointer;
   position: relative;
 }
 
 .activity-bar__item:hover {
+  background: var(--bcc-bg-hover);
   color: var(--bcc-fg);
 }
 
 .activity-bar__item[aria-selected='true'] {
-  color: var(--bcc-fg);
-  border-left-color: var(--bcc-accent);
+  color: var(--bcc-gray-13);
+}
+
+.activity-bar__item[aria-selected='true']::before {
+  content: '';
+  position: absolute;
+  left: -5px;
+  top: 7px;
+  bottom: 7px;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--bcc-accent);
+}
+
+/* Settings sits apart at the foot of the bar, as in every IDE. */
+.activity-bar__item[data-view-id='settings'] {
+  margin-top: auto;
 }
 
 .activity-bar__item svg {
-  width: 22px;
-  height: 22px;
+  width: 20px;
+  height: 20px;
   fill: none;
   stroke: currentColor;
   stroke-width: 1.5;
@@ -119,13 +145,14 @@
 }
 
 .side-bar__title {
-  flex: 0 0 35px;
+  flex: 0 0 29px;
   display: flex;
   align-items: center;
-  padding: 0 16px;
+  padding: 0 6px 0 11px;
+  border-bottom: 1px solid var(--bcc-border);
   font-size: var(--bcc-font-size-sm);
-  font-weight: 600;
-  letter-spacing: 0.06em;
+  font-weight: 400;
+  letter-spacing: 0.09em;
   text-transform: uppercase;
   color: var(--bcc-fg-muted);
 }
@@ -159,18 +186,19 @@
 }
 
 .right-dock__title {
-  flex: 0 0 35px;
+  flex: 0 0 29px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 4px;
-  padding: 0 16px;
+  padding: 0 6px 0 11px;
   background: var(--bcc-toolwindow-header-bg);
+  border-bottom: 1px solid var(--bcc-border);
   font-size: var(--bcc-font-size-sm);
-  font-weight: 600;
-  letter-spacing: 0.06em;
+  font-weight: 400;
+  letter-spacing: 0.09em;
   text-transform: uppercase;
-  color: var(--bcc-toolwindow-header-fg);
+  color: var(--bcc-fg-muted);
 }
 
 /* A column rather than a scroll box, unlike `.side-bar__body`: what docks here
@@ -320,7 +348,7 @@ body.workbench--resizing-y * {
   flex: 0 0 var(--bcc-tab-height);
   display: flex;
   align-items: stretch;
-  background: var(--bcc-bg-inset);
+  background: var(--bcc-bg-elevated);
   border-bottom: 1px solid var(--bcc-border);
   overflow-x: auto;
   overflow-y: hidden;
@@ -335,6 +363,14 @@ body.workbench--resizing-y * {
   flex: 1 1 auto;
   min-height: 0;
   position: relative;
+}
+
+/* The gutter reads as its own strip: a darker ground (editorGutter.background,
+   from the Monaco theme) and a hairline where it meets the code. A shadow
+   rather than a border, so the margin width Monaco measured is not changed
+   underneath it. */
+.editor-host .monaco-editor .margin {
+  box-shadow: inset -1px 0 0 var(--bcc-border);
 }
 
 /* Placeholder shown until a real editor is mounted. */
@@ -530,12 +566,12 @@ body.workbench--resizing-y * {
 .tree__row {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
   height: 22px;
-  padding-right: 8px;
+  padding-right: 10px;
   cursor: pointer;
   white-space: nowrap;
-  color: var(--bcc-fg);
+  color: var(--bcc-fg-muted);
 }
 
 .tree__row:hover {
@@ -544,6 +580,7 @@ body.workbench--resizing-y * {
 
 .tree__row--selected {
   background: var(--bcc-bg-selected);
+  color: var(--bcc-gray-13);
 }
 
 .tree__row--editing {
@@ -764,7 +801,7 @@ body.workbench--resizing-y * {
   height: 100%;
   padding: 0 8px 0 12px;
   border-right: 1px solid var(--bcc-border);
-  background: var(--bcc-bg-inset);
+  background: var(--bcc-bg-elevated);
   color: var(--bcc-fg-subtle);
   cursor: pointer;
   white-space: nowrap;
@@ -777,8 +814,8 @@ body.workbench--resizing-y * {
 
 .tab--active {
   background: var(--bcc-bg);
-  color: var(--bcc-fg);
-  box-shadow: inset 0 1px 0 0 var(--bcc-accent);
+  color: var(--bcc-gray-13);
+  box-shadow: inset 0 2px 0 0 var(--bcc-accent);
 }
 
 .tab__label {
@@ -1054,14 +1091,15 @@ body.workbench--resizing-y * {
 }
 
 .panel-view-tab {
-  height: 24px;
+  position: relative;
+  height: 28px;
   padding: 0 10px;
   border: none;
   border-radius: 3px;
   background: none;
   color: var(--bcc-fg-subtle);
   font: inherit;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
   font-size: var(--bcc-font-size-sm);
   cursor: pointer;
@@ -1073,8 +1111,8 @@ body.workbench--resizing-y * {
 }
 
 .panel-view-tab--active {
-  color: var(--bcc-fg);
-  box-shadow: inset 0 -1px 0 0 var(--bcc-accent);
+  color: var(--bcc-gray-13);
+  box-shadow: inset 0 -2px 0 0 var(--bcc-accent);
   border-radius: 0;
 }
 
@@ -1253,18 +1291,24 @@ body.workbench--resizing-y * {
 
 .activity-bar__badge {
   position: absolute;
-  right: 8px;
-  bottom: 8px;
-  min-width: 15px;
-  height: 15px;
-  padding: 0 4px;
-  border-radius: 8px;
+  right: 3px;
+  top: 3px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: 7px;
   background: var(--bcc-accent);
   color: var(--bcc-accent-fg);
   font-size: 9px;
-  line-height: 15px;
+  line-height: 14px;
   text-align: center;
-  font-weight: 600;
+  font-weight: 700;
+}
+
+/* Errors are counted in red; a count of changed files stays the accent. */
+.activity-bar__badge--error {
+  background: var(--bcc-danger);
+  color: #fff;
 }
 
 /* ---------- SCM ---------- */
