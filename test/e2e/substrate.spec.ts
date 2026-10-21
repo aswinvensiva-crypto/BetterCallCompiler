@@ -176,9 +176,10 @@ test('a click far down the projection keeps the projection where it was', async 
   expect(await projectionScroll(true)).toBeGreaterThan(0)
 
   // The click moves the caret, which re-renders the whole view; the reader
-  // must not land back on the first row.
-  await projection().locator('.substrate__row').last().click()
-  await expect(beamLines()).toHaveCount(0)
+  // must not land back on the first row. `v80` is the last name in the file,
+  // so its row is near the bottom of the projection.
+  await projection().locator('.substrate__row', { hasText: 'v80' }).click()
+  await expect(traced()).toContainText('v80')
   expect(await projectionScroll()).toBeGreaterThan(0)
 })
 

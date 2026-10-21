@@ -69,8 +69,13 @@ let debounceTimer: ReturnType<typeof setTimeout> | null = null
 /** The editor whose caret is traced, and the marks Substrate draws in it. */
 let editor: monacoNs.editor.IStandaloneCodeEditor | null = null
 let beam: monacoNs.editor.IEditorDecorationsCollection | null = null
-/** The model version `state.result` was compiled from, so stale spans are never painted. */
-let compiledVersion: number | null = null
+/**
+ * The model, and its version, that `state.result` was compiled from — so stale
+ * spans are never traced or painted. The model as well as the version: two
+ * freshly opened files are both at version 1, and a tab switch moves the caret
+ * before the new file has been compiled.
+ */
+let compiled: { readonly model: monacoNs.editor.ITextModel; readonly version: number } | null = null
 /** The file the current tree was rendered for. Scroll positions carry only within one file. */
 let renderedPath: string | null = null
 
@@ -143,7 +148,8 @@ function sync(): void {
 
 function recompile(): void {
   state.result = compile(state.source)
-  compiledVersion = activeDocument()?.model.getVersionId() ?? null
+  const doc = activeDocument()
+  compiled = doc === null ? null : { model: doc.model, version: doc.model.getVersionId() }
   state.prov = provenanceAt(state.result, state.offset)
   render()
 }
@@ -152,6 +158,10 @@ function setOffset(offset: number): void {
   state.offset = offset
   if (state.result) state.prov = provenanceAt(state.result, offset)
   render()
+}
+
+function isCompiledFrom(doc: OpenDocument): boolean {
+  return compiled !== null && compiled.model === doc.model && compiled.version === doc.model.getVersionId()
 }
 
 function substrateShowing(): boolean {
@@ -187,7 +197,7 @@ function followCaret(): void {
   // Typing moves the caret too. Tracing that against a result compiled from
   // the previous text would mark the wrong span; the recompile already
   // scheduled for the edit traces the new offset instead.
-  if (!substrateShowing() || state.result === null || doc.model.getVersionId() !== compiledVersion) return
+  if (!substrateShowing() || state.result === null || !isCompiledFrom(doc)) return
   state.prov = provenanceAt(state.result, offset)
   render()
 }
@@ -214,7 +224,7 @@ function paintBeam(): void {
   }
   // Mid-edit: the spans belong to the previous text. Monaco carries the marks
   // already drawn through the edit, and the recompile repaints them.
-  if (doc.model.getVersionId() !== compiledVersion) return
+  if (!isCompiledFrom(doc)) return
 
   const model = doc.model
   const marks: monacoNs.editor.IModelDeltaDecoration[] = []
