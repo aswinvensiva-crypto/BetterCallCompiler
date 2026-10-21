@@ -60,7 +60,7 @@ import {
   onCompilerIntelligenceShown,
   setCompilerViewActivator
 } from './views/compiler-intelligence'
-import { mountSubstrate, onSubstrateShown } from './views/substrate/substrate'
+import { attachSubstrateToEditor, mountSubstrate, onSubstrateShown } from './views/substrate/substrate'
 import {
   listenForExplainRequests,
   mountArtifacts,
@@ -185,6 +185,8 @@ async function mountEditor(editorHost: HTMLElement, tabBar: HTMLElement): Promis
 
   const editor = await createEditor(surface)
   attachEditor(editor)
+  // Substrate traces whatever the caret is on, and marks it in this editor.
+  attachSubstrateToEditor(editor)
   // The glyph margin, and the line the debugger is stopped on. Attached here
   // rather than inside `createEditor` because it is a feature of the workbench
   // rather than of an editor instance — the diff editor gets no breakpoints.

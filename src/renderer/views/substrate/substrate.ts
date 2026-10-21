@@ -1,5 +1,6 @@
-import { activeDocument, onDocumentsChanged } from '../../editor/models'
-import { activeRightDockView, isRightDockVisible } from '../../workbench/right-dock'
+import type * as monacoNs from 'monaco-editor'
+import { activeDocument, onDocumentsChanged, type OpenDocument } from '../../editor/models'
+import { activeRightDockView, isRightDockVisible, onRightDockChanged } from '../../workbench/right-dock'
 import {
   FRONT_STAGES,
   compile,
@@ -19,10 +20,12 @@ import { provenanceAt, type Provenance } from './provenance'
  * anything in the open file and see what it became at every one of the seven
  * stages, at once, live off the real compiler.
  *
- * It mirrors the active document's text read-only rather than hosting its own
- * Monaco instance — editing still happens in the tab, which is the one place
- * undo history, save state and the language server already live. This view
- * recompiles from that text on every change and never writes back to it.
+ * It follows the caret in the editor itself rather than keeping a copy of the
+ * source: the construct under the caret is the one traced, and the trace is
+ * marked in the editor, where the reader already is. Editing still happens only
+ * in the tab — the one place undo history, save state and the language server
+ * live. This view recompiles from that text on every change and never writes
+ * back to it.
  */
 
 interface Stage {
@@ -40,9 +43,6 @@ const STAGES: readonly Stage[] = [
   { id: 'ssa', name: 'SSA', idx: '06' },
   { id: 'verify', name: 'Verify', idx: '07' }
 ]
-
-const KEYWORDS = new Set(['let', 'if', 'else', 'while', 'fn', 'return', 'print'])
-const BOOLS = new Set(['true', 'false'])
 
 let bodyHost: HTMLElement | null = null
 let unsubscribeDocs: (() => void) | null = null
@@ -66,6 +66,11 @@ const state: State = {
 }
 
 let debounceTimer: ReturnType<typeof setTimeout> | null = null
+/** The editor whose caret is traced, and the marks Substrate draws in it. */
+let editor: monacoNs.editor.IStandaloneCodeEditor | null = null
+let beam: monacoNs.editor.IEditorDecorationsCollection | null = null
+/** The model version `state.result` was compiled from, so stale spans are never painted. */
+let compiledVersion: number | null = null
 /** The file the current tree was rendered for. Scroll positions carry only within one file. */
 let renderedPath: string | null = null
 
@@ -116,10 +121,13 @@ function sync(): void {
   const path = doc?.node.relativePath ?? null
   const isBcc = path !== null && isBccFile(path)
 
-  // An offset means nothing in another file: kept across a tab switch, it
-  // would trace whatever construct happens to sit at that position there.
+  // The caret is the selection. Without an editor to read it from, an offset
+  // still means nothing in another file: kept across a tab switch, it would
+  // trace whatever construct happens to sit at that position there.
   const next = isBcc ? path : null
-  if (next !== state.relativePath) state.offset = 0
+  const caret = doc ? caretOffset(doc) : null
+  if (caret !== null) state.offset = caret
+  else if (next !== state.relativePath) state.offset = 0
   state.relativePath = next
   state.source = isBcc ? (doc?.model.getValue() ?? '') : ''
 
@@ -135,6 +143,7 @@ function sync(): void {
 
 function recompile(): void {
   state.result = compile(state.source)
+  compiledVersion = activeDocument()?.model.getVersionId() ?? null
   state.prov = provenanceAt(state.result, state.offset)
   render()
 }
@@ -143,6 +152,103 @@ function setOffset(offset: number): void {
   state.offset = offset
   if (state.result) state.prov = provenanceAt(state.result, offset)
   render()
+}
+
+function substrateShowing(): boolean {
+  return isRightDockVisible() && activeRightDockView() === 'substrate'
+}
+
+/** The caret's offset in `doc`, when the editor is showing it. */
+function caretOffset(doc: OpenDocument): number | null {
+  if (editor === null || editor.getModel() !== doc.model) return null
+  const position = editor.getPosition()
+  return position === null ? null : doc.model.getOffsetAt(position)
+}
+
+/** Moves the editor's caret to `offset`, which the caret listener then traces. */
+function jumpTo(offset: number): void {
+  const doc = activeDocument()
+  if (editor === null || doc === null || editor.getModel() !== doc.model) {
+    setOffset(offset)
+    return
+  }
+  const position = doc.model.getPositionAt(offset)
+  editor.setPosition(position)
+  editor.revealPositionInCenterIfOutsideViewport(position)
+  editor.focus()
+}
+
+function followCaret(): void {
+  const doc = activeDocument()
+  if (doc === null || !isBccFile(doc.node.relativePath)) return
+  const offset = caretOffset(doc)
+  if (offset === null || offset === state.offset) return
+  state.offset = offset
+  // Typing moves the caret too. Tracing that against a result compiled from
+  // the previous text would mark the wrong span; the recompile already
+  // scheduled for the edit traces the new offset instead.
+  if (!substrateShowing() || state.result === null || doc.model.getVersionId() !== compiledVersion) return
+  state.prov = provenanceAt(state.result, offset)
+  render()
+}
+
+/**
+ * Marks the traced construct in the editor — a cyan underline on the span and
+ * cyan line numbers beside it — and paints the line numbers of lines with
+ * errors red. Only while Substrate is showing: with the dock closed the marks
+ * would point at a trace nobody can see.
+ */
+function paintBeam(): void {
+  if (editor === null || beam === null) return
+  const doc = activeDocument()
+  const r = state.result
+  if (
+    !substrateShowing() ||
+    doc === null ||
+    r === null ||
+    !isBccFile(doc.node.relativePath) ||
+    editor.getModel() !== doc.model
+  ) {
+    beam.clear()
+    return
+  }
+  // Mid-edit: the spans belong to the previous text. Monaco carries the marks
+  // already drawn through the edit, and the recompile repaints them.
+  if (doc.model.getVersionId() !== compiledVersion) return
+
+  const model = doc.model
+  const marks: monacoNs.editor.IModelDeltaDecoration[] = []
+  const lineMark = (line: number, className: string): void => {
+    marks.push({
+      range: { startLineNumber: line, startColumn: 1, endLineNumber: line, endColumn: 1 },
+      options: { isWholeLine: true, lineNumberClassName: className }
+    })
+  }
+
+  const span = state.prov?.span ?? null
+  if (span !== null) {
+    const start = model.getPositionAt(span.offset)
+    const end = model.getPositionAt(span.offset + span.length)
+    marks.push({
+      range: { startLineNumber: start.lineNumber, startColumn: start.column, endLineNumber: end.lineNumber, endColumn: end.column },
+      options: { inlineClassName: 'substrate-beam' }
+    })
+    for (let line = start.lineNumber; line <= end.lineNumber; line++) lineMark(line, 'substrate-beam-line')
+  }
+  for (const line of new Set(r.diagnostics.map((d) => d.span.startLine))) lineMark(line, 'substrate-diag-line')
+
+  beam.set(marks)
+}
+
+/**
+ * Hands Substrate the editor whose caret it traces. Called once, from the
+ * workbench, with the editor every tab shares.
+ */
+export function attachSubstrateToEditor(instance: monacoNs.editor.IStandaloneCodeEditor): void {
+  editor = instance
+  beam = instance.createDecorationsCollection()
+  instance.onDidChangeCursorPosition(followCaret)
+  onRightDockChanged(paintBeam)
 }
 
 function scheduleRecompile(): void {
@@ -280,98 +386,6 @@ function renderSpine(): HTMLElement {
   return spine
 }
 
-function renderSource(): HTMLElement {
-  const pane = el('div', 'substrate__source')
-  pane.dataset['scrollKey'] = 'source'
-  const inner = el('div', 'substrate__source-inner')
-  const gutter = el('div', 'substrate__gutter')
-  const code = el('pre', 'substrate__code')
-
-  const r = state.result
-  if (!r) return pane
-
-  const mark = state.prov?.span ?? null
-  let html = ''
-  let cursor = 0
-  for (const tok of r.tokens) {
-    if (tok.span.offset > cursor) html += esc(state.source.slice(cursor, tok.span.offset))
-    const text = esc(state.source.substr(tok.span.offset, tok.span.length))
-    const cls = KEYWORDS.has(tok.kind)
-      ? 'substrate-tk-kw'
-      : BOOLS.has(tok.kind)
-        ? 'substrate-tk-bool'
-        : tok.kind === 'int'
-          ? 'substrate-tk-num'
-          : tok.kind === 'identifier'
-            ? 'substrate-tk-id'
-            : tok.kind === 'error'
-              ? 'substrate-tk-err'
-              : 'substrate-tk-punct'
-    const inMark =
-      mark !== null && tok.span.offset >= mark.offset && tok.span.offset + tok.span.length <= mark.offset + Math.max(mark.length, 1)
-    const span = `<span class="${cls}">${text}</span>`
-    html += inMark ? `<mark>${span}</mark>` : span
-    cursor = tok.span.offset + tok.span.length
-  }
-  if (cursor < state.source.length) html += esc(state.source.slice(cursor))
-  code.innerHTML = `${html}\n`
-
-  const lines = state.source.split('\n')
-  const provLines = new Set<number>()
-  if (mark) for (let ln = mark.startLine; ln <= mark.endLine; ln++) provLines.add(ln)
-  const diagLines = new Set(r.diagnostics.map((d) => d.span.startLine))
-
-  for (let i = 0; i < lines.length; i++) {
-    const ln = i + 1
-    const item = el('i', undefined, String(ln))
-    if (provLines.has(ln)) item.dataset['prov'] = 'true'
-    if (diagLines.has(ln)) item.dataset['diag'] = 'true'
-    gutter.append(item)
-  }
-
-  code.addEventListener('click', (event) => {
-    const offset = offsetFromClick(event, code, state.source)
-    if (offset !== null) setOffset(offset)
-  })
-
-  inner.append(gutter, code)
-  pane.append(inner)
-  return pane
-}
-
-/** Maps a click inside the mirrored `<pre>` back to a source offset by walking
- * text nodes — there is no real caret here, only a click target. */
-function offsetFromClick(event: MouseEvent, container: HTMLElement, source: string): number | null {
-  const doc = container.ownerDocument
-  let node: Node | null = null
-  let charOffset = 0
-  if (doc.caretPositionFromPoint) {
-    const pos = doc.caretPositionFromPoint(event.clientX, event.clientY)
-    if (!pos) return null
-    node = pos.offsetNode
-    charOffset = pos.offset
-  } else if (doc.caretRangeFromPoint) {
-    const range = doc.caretRangeFromPoint(event.clientX, event.clientY)
-    if (!range) return null
-    node = range.startContainer
-    charOffset = range.startOffset
-  } else {
-    return null
-  }
-  if (!node || !container.contains(node)) return null
-
-  // Walk preceding text nodes to accumulate the offset within the whole source.
-  const walker = doc.createTreeWalker(container, NodeFilter.SHOW_TEXT)
-  let total = 0
-  let current = walker.nextNode()
-  while (current) {
-    if (current === node) return Math.min(source.length, total + charOffset)
-    total += current.textContent?.length ?? 0
-    current = walker.nextNode()
-  }
-  return null
-}
-
 function rowsHtml(rows: string[]): HTMLElement {
   const wrap = el('div', 'substrate__rows')
   wrap.innerHTML = rows.join('')
@@ -382,7 +396,7 @@ function attachRowClicks(container: HTMLElement): void {
   container.querySelectorAll<HTMLElement>('[data-off]').forEach((rowEl) => {
     rowEl.addEventListener('click', () => {
       const off = Number(rowEl.dataset['off'])
-      if (!Number.isNaN(off)) setOffset(off)
+      if (!Number.isNaN(off)) jumpTo(off)
     })
   })
 }
@@ -598,18 +612,6 @@ function renderProjectionPane(): HTMLElement {
   return pane
 }
 
-function renderSourcePane(): HTMLElement {
-  const pane = el('div', 'substrate__pane')
-  const head = el('div', 'substrate__pane-head')
-  head.append(el('span', undefined, 'Source'), el('span', 'substrate__hint', 'click anything — the beam follows it downstream'))
-  const body = el('div', 'substrate__pane-body')
-  body.dataset['scrollKey'] = 'source-pane'
-  body.style.padding = '0'
-  body.append(renderSource())
-  pane.append(head, body)
-  return pane
-}
-
 function traceCell(name: string, on: boolean, html: string): string {
   return `<div class="substrate__cell" data-on="${on}"><div class="substrate__cell-name">${name}</div><div class="substrate__cell-val">${html}</div></div>`
 }
@@ -626,7 +628,7 @@ function renderTrace(): HTMLElement {
   const NONE = '<span class="substrate__dim">—</span>'
 
   if (!pv || (!pv.token && !pv.node)) {
-    what.innerHTML = '<em>select something in the source</em>'
+    what.innerHTML = '<em>click anything in the editor</em>'
     const blank = ['Source', ...STAGES.map((s) => s.name)].map((name) => traceCell(name, false, NONE))
     strip.innerHTML = blank.join('')
   } else {
@@ -718,6 +720,7 @@ function render(): void {
     root.append(empty)
     bodyHost.replaceChildren(root)
     renderedPath = null
+    paintBeam()
     return
   }
 
@@ -725,7 +728,7 @@ function render(): void {
   root.append(renderVerdict(), renderSpine())
 
   const workbench = el('div', 'substrate__workbench')
-  workbench.append(renderSourcePane(), renderProjectionPane())
+  workbench.append(renderProjectionPane())
   root.append(workbench)
 
   root.append(renderTrace())
@@ -748,6 +751,7 @@ function render(): void {
     const pos = kept.get(n.dataset['scrollKey']!)
     if (pos) [n.scrollTop, n.scrollLeft] = pos
   }
+  paintBeam()
 }
 
 /* --------------------------------- mounting --------------------------------- */
@@ -769,7 +773,7 @@ export function mountSubstrate(title: HTMLElement, body: HTMLElement): void {
       // Only recompile while this view is actually visible — same guard the
       // Compiler Intelligence view uses to stay off the typing hot path when
       // nobody is looking at the dock.
-      if (!isRightDockVisible() || activeRightDockView() !== 'substrate') return
+      if (!substrateShowing()) return
       scheduleRecompile()
     })
     disposeContentListener = () => subscription.dispose()

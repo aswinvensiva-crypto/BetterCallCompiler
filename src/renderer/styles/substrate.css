@@ -10,8 +10,8 @@
   height: 100%;
   display: grid;
   /* One row track per direct child, in DOM order: verdict, spine, workbench,
-     trace, footer. Only the workbench (source + projection) should flex — it
-     is the one row with scrollable content — so it is the sole
+     trace, footer. Only the workbench (the projection) should flex — it is
+     the one row with scrollable content — so it is the sole
      minmax(0, 1fr) track; everything else is auto. A grid with fewer row
      tracks than children silently hands a later child the flexible track
      instead, which is what let the spine collapse under its own content. */
@@ -172,11 +172,10 @@
   min-width: 0;
 }
 
-/* ── workbench: mirrored source + linked projection ──────────────────── */
+/* ── workbench: the selected stage's projection ──────────────────────── */
 .substrate__workbench {
   display: grid;
-  grid-template-rows: minmax(120px, 1fr) minmax(140px, 1.3fr);
-  gap: 1px;
+  grid-template-rows: minmax(0, 1fr);
   background: var(--bcc-bg-inset);
   min-height: 0;
 }
@@ -215,71 +214,21 @@
   padding: 7px 0;
 }
 
-/* ── mirrored source (read-only; the tab's Monaco instance owns editing) ── */
-.substrate__source {
-  overflow: auto;
-  min-height: 0;
-  background: var(--bcc-editor-bg);
-}
-.substrate__source-inner {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  min-height: 100%;
-}
-.substrate__gutter {
-  padding: 8px 7px 8px 10px;
-  text-align: right;
-  user-select: none;
-  color: var(--bcc-editor-line-number);
-  background: var(--bcc-editor-gutter-bg);
-  border-right: 1px solid var(--bcc-bg-inset);
-  font-variant-numeric: tabular-nums;
-  font-size: 11px;
-  line-height: 18px;
-}
-.substrate__gutter i {
-  display: block;
-  font-style: normal;
-}
-.substrate__gutter i[data-prov='true'] {
-  color: var(--bcc-prov);
-}
-.substrate__gutter i[data-diag='true'] {
-  color: var(--bcc-danger);
-}
-.substrate__code {
-  margin: 0;
-  padding: 8px 12px;
-  cursor: text;
-  white-space: pre;
-  font-size: 11px;
-  line-height: 18px;
-  color: var(--bcc-fg);
-}
-.substrate__code mark {
+/* ── the beam, in the editor ─────────────────────────────────────────────
+   Monaco decorations, so these live outside .substrate: the traced span is
+   underlined in cyan, its line numbers turn cyan, and a line with an error has
+   a red number — the same marks the trace strip and Problems use. */
+.monaco-editor .substrate-beam {
   background: var(--bcc-prov-dim);
-  color: inherit;
   box-shadow: inset 0 -1px 0 var(--bcc-prov);
   border-radius: 1px;
 }
-.substrate-tk-kw {
-  color: #cf8e6d;
+.monaco-editor .margin-view-overlays .line-numbers.substrate-beam-line {
+  color: var(--bcc-prov);
 }
-.substrate-tk-num {
-  color: #2aacb8;
-}
-.substrate-tk-bool {
-  color: #cf8e6d;
-}
-.substrate-tk-punct {
-  color: var(--bcc-gray-7);
-}
-.substrate-tk-err {
+.monaco-editor .margin-view-overlays .line-numbers.substrate-diag-line {
   color: var(--bcc-danger);
-  text-decoration: underline wavy var(--bcc-danger);
-}
-.substrate-tk-id {
-  color: var(--bcc-fg);
+  font-weight: 700;
 }
 
 /* ── projections ───────────────────────────────────────────────────────── */
