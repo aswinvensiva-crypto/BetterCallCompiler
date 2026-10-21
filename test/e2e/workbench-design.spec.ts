@@ -42,7 +42,7 @@ test.beforeAll(async () => {
   window.on('pageerror', (error) => consoleProblems.push(error.message))
 
   await window.waitForSelector('html[data-bettercallcompiler-ready="true"]')
-  await resize(1440, 900)
+  await widen()
 })
 
 test.afterAll(async () => {
@@ -50,16 +50,38 @@ test.afterAll(async () => {
   if (fixture !== '') await rm(fixture, { recursive: true, force: true })
 })
 
-async function resize(width: number, height: number): Promise<void> {
+/** Mirrors the stylesheet: at or below this width the right dock floats. */
+const DOCK_FLOATS_AT = 1180
+
+function innerWidth(): Promise<number> {
+  return window.evaluate(() => (globalThis as unknown as { innerWidth: number }).innerWidth)
+}
+
+/**
+ * Sizes the page, not the window. Bounds include the frame, so on Windows a
+ * 1440px window is a 1424px page; and the CI runner's work area is 1024x768,
+ * which the OS may clamp a window to. What a test needs is which side of the
+ * dock's breakpoint the page is on, so that is what these wait for.
+ */
+async function setContentSize(width: number, height: number): Promise<void> {
   await app.evaluate(
     ({ BrowserWindow }, size) => {
-      BrowserWindow.getAllWindows()[0]?.setBounds({ x: 0, y: 0, ...size })
+      const win = BrowserWindow.getAllWindows()[0]
+      win?.setPosition(0, 0)
+      win?.setContentSize(size.width, size.height)
     },
     { width, height }
   )
-  await expect
-    .poll(() => window.evaluate(() => (globalThis as unknown as { innerWidth: number }).innerWidth))
-    .toBe(width)
+}
+
+async function widen(): Promise<void> {
+  await setContentSize(1440, 900)
+  await expect.poll(innerWidth).toBeGreaterThan(DOCK_FLOATS_AT)
+}
+
+async function narrow(): Promise<void> {
+  await setContentSize(1024, 730)
+  await expect.poll(innerWidth).toBeLessThanOrEqual(DOCK_FLOATS_AT)
 }
 
 function row(name: string) {
@@ -157,7 +179,7 @@ test('a hidden status item takes no room', async () => {
 })
 
 test('on a narrow window the dock floats over the editor instead of squeezing it', async () => {
-  await resize(1024, 730)
+  await narrow()
   const editorWidth = (): Promise<number> =>
     window.locator('#editor-area').evaluate((element) => element.getBoundingClientRect().width)
 
@@ -170,7 +192,7 @@ test('on a narrow window the dock floats over the editor instead of squeezing it
 
   await activity('substrate').click()
   await expect(window.locator('.substrate')).toBeHidden()
-  await resize(1440, 900)
+  await widen()
 })
 
 test('raises no console errors', () => {
