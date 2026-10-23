@@ -32,6 +32,27 @@ let visible = false
 /** First registered view, shown when the region is opened with nothing active. */
 let firstViewId: string | null = null
 
+const changeListeners = new Set<() => void>()
+registry.onChanged(notifyChanged)
+
+function notifyChanged(): void {
+  for (const listener of changeListeners) listener()
+}
+
+/**
+ * Fires whenever the dock opens, closes or switches view.
+ *
+ * For a view that draws outside its own region — Substrate marks the traced
+ * construct in the editor — and has to take that down the moment it stops
+ * being visible. `onShow` alone cannot tell it: nothing is called on hide.
+ */
+export function onRightDockChanged(listener: () => void): () => void {
+  changeListeners.add(listener)
+  return () => {
+    changeListeners.delete(listener)
+  }
+}
+
 function workbenchElement(): HTMLElement | null {
   return document.getElementById('workbench')
 }
@@ -82,9 +103,12 @@ export function toggleRightDock(): void {
 }
 
 function setVisible(next: boolean): void {
+  const changed = visible !== next
   visible = next
   const root = workbenchElement()
-  if (root === null) return
-  if (next) root.removeAttribute(HIDDEN_ATTRIBUTE)
-  else root.setAttribute(HIDDEN_ATTRIBUTE, 'true')
+  if (root !== null) {
+    if (next) root.removeAttribute(HIDDEN_ATTRIBUTE)
+    else root.setAttribute(HIDDEN_ATTRIBUTE, 'true')
+  }
+  if (changed) notifyChanged()
 }

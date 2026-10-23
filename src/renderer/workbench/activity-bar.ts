@@ -1,8 +1,9 @@
-import { activeSideBarView, showSideBarView } from './side-bar'
+import { showSideBarView } from './side-bar'
 import {
   activeRightDockView,
   hideRightDock,
   isRightDockVisible,
+  onRightDockChanged,
   showRightDockView
 } from './right-dock'
 
@@ -145,6 +146,13 @@ export const ACTIVITY_ITEMS: readonly ActivityItem[] = [
 let host: HTMLElement | null = null
 const buttons = new Map<string, HTMLButtonElement>()
 
+/**
+ * The side bar's view. The right dock's is read from the dock itself, so the
+ * bar shows one selection per region on screen — the Explorer and Substrate
+ * both lit when both are open — and never a dock view that is closed.
+ */
+let selectedSideBarView = 'explorer'
+
 /** Activity items belonging to no dock (Run) route somewhere else. */
 let onNonSideBarSelect: ((id: string) => void) | null = null
 
@@ -165,16 +173,9 @@ function activate(item: ActivityItem): void {
   }
 
   if (item.region === 'rightdock') {
-    if (isRightDockVisible() && activeRightDockView() === item.id) {
-      hideRightDock()
-      // Selection follows the region that is still on screen, so the stripe
-      // does not go on highlighting a tool window that is no longer there.
-      const showing = activeSideBarView()
-      if (showing !== null) setSelected(showing)
-      return
-    }
-    setSelected(item.id)
-    void showRightDockView(item.id)
+    // The dock announces the change, which repaints the selection.
+    if (isRightDockVisible() && activeRightDockView() === item.id) hideRightDock()
+    else void showRightDockView(item.id)
     return
   }
 
@@ -182,8 +183,15 @@ function activate(item: ActivityItem): void {
 }
 
 export function setSelected(id: string): void {
+  const region = ACTIVITY_ITEMS.find((item) => item.id === id)?.region
+  if (region !== 'rightdock') selectedSideBarView = id
+  paintSelection()
+}
+
+function paintSelection(): void {
+  const dockView = isRightDockVisible() ? activeRightDockView() : null
   for (const [itemId, button] of buttons) {
-    button.setAttribute('aria-selected', String(itemId === id))
+    button.setAttribute('aria-selected', String(itemId === selectedSideBarView || itemId === dockView))
   }
 }
 
@@ -203,7 +211,6 @@ export function mountActivityBar(
     button.title = item.enabled ? item.label : `${item.label} — not in this milestone`
     button.setAttribute('role', 'tab')
     button.setAttribute('aria-label', item.label)
-    button.setAttribute('aria-selected', String(item.id === 'explorer'))
     button.dataset['viewId'] = item.id
     button.disabled = !item.enabled
     button.innerHTML =
@@ -217,10 +224,16 @@ export function mountActivityBar(
     buttons.set(item.id, button)
     host.append(button)
   }
+
+  paintSelection()
+  onRightDockChanged(paintSelection)
 }
 
-/** Draws the SCM badge — the count of changed files, VS Code style. */
-export function setBadge(id: string, count: number): void {
+/**
+ * Draws a count on an item: changed files on Source Control, VS Code style, and
+ * errors on Problems, in red.
+ */
+export function setBadge(id: string, count: number, tone: 'accent' | 'error' = 'accent'): void {
   const button = buttons.get(id)
   if (button === undefined) return
 
@@ -228,7 +241,7 @@ export function setBadge(id: string, count: number): void {
   if (count <= 0) return
 
   const badge = document.createElement('span')
-  badge.className = 'activity-bar__badge'
+  badge.className = `activity-bar__badge${tone === 'error' ? ' activity-bar__badge--error' : ''}`
   badge.textContent = count > 99 ? '99+' : String(count)
   button.append(badge)
 }

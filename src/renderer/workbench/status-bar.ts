@@ -258,25 +258,96 @@ export function setVisualizerStatus(status: VisualizerStatus | null): void {
   slot.hidden = false
 }
 
+/* ---------------------------- the active file ---------------------------- */
+
+/** What the status bar says about the file in the editor. */
+export interface EditorStatus {
+  readonly path: string
+  readonly line: number
+  readonly column: number
+  /** The language's display name — `BCC`, `TypeScript`. */
+  readonly language: string
+  /** `pass` reads green (`✓ verified`), `fail` red (`✗ 3 errors`). */
+  readonly verdict: { readonly state: 'pass' | 'fail'; readonly text: string }
+  /** A compiler-facing count, `74 tokens · 48 nodes`, or null when there is none. */
+  readonly counts: string | null
+}
+
+let verdictItem: HTMLButtonElement | null = null
+let countsItem: HTMLSpanElement | null = null
+let pathItem: HTMLSpanElement | null = null
+let positionItem: HTMLSpanElement | null = null
+let languageItem: HTMLSpanElement | null = null
+
+/** Shows the active file's segments, or hides them all when nothing is open. */
+export function setEditorStatus(status: EditorStatus | null): void {
+  if (verdictItem === null || countsItem === null || pathItem === null || positionItem === null || languageItem === null) {
+    return
+  }
+  const items = [verdictItem, countsItem, pathItem, positionItem, languageItem]
+  if (status === null) {
+    for (const item of items) item.hidden = true
+    return
+  }
+  verdictItem.hidden = false
+  verdictItem.textContent = status.verdict.text
+  verdictItem.dataset['state'] = status.verdict.state
+  countsItem.hidden = status.counts === null
+  countsItem.textContent = status.counts ?? ''
+  pathItem.hidden = false
+  pathItem.textContent = status.path
+  pathItem.title = status.path
+  positionItem.hidden = false
+  positionItem.textContent = `${status.line}:${status.column}`
+  positionItem.title = `Line ${status.line}, column ${status.column}`
+  languageItem.hidden = false
+  languageItem.textContent = status.language
+}
+
 /* --------------------------------- mount -------------------------------- */
+
+/** What the status bar's own buttons do; main.ts owns the regions they open. */
+export interface StatusBarActions {
+  readonly openCommands: () => void
+  readonly showProblems: () => void
+  readonly toggleSubstrate: () => void
+}
 
 export interface StatusBarHandle {
   /** Updates the bridge readout once `app:ping` answers. */
-  readonly setBridge: (text: string, state: 'ok' | 'error') => void
+  readonly setBridge: (text: string, state: 'ok' | 'error', detail?: string) => void
   readonly setBuild: (text: string) => void
 }
 
-export function mountStatusBar(statusBar: HTMLElement): StatusBarHandle {
+function button(className: string, text: string, label: string, onClick: () => void): HTMLButtonElement {
+  const item = el('button', `status-bar__item status-bar__item--button ${className}`, text)
+  item.type = 'button'
+  item.title = label
+  item.setAttribute('aria-label', label)
+  item.addEventListener('click', (event) => {
+    event.stopPropagation()
+    onClick()
+  })
+  return item
+}
+
+export function mountStatusBar(statusBar: HTMLElement, actions: StatusBarActions): StatusBarHandle {
   host = statusBar
   host.replaceChildren()
 
-  const bridge = el('span', 'status-bar__item')
-  const bridgeDot = el('span', 'status-bar__dot')
-  const bridgeLabel = document.createTextNode('Connecting…')
-  bridge.append(bridgeDot, bridgeLabel)
-  host.append(bridge)
+  // The left: what the compiler made of the file, and the way to every command.
+  host.append(button('status-bar__item--commands', '⌘ Commands', 'Command palette (Ctrl+Shift+P)', actions.openCommands))
+  verdictItem = button('status-bar__item--verdict', '', 'Show problems', actions.showProblems)
+  countsItem = el('span', 'status-bar__item status-bar__item--counts')
 
+  host.append(verdictItem, countsItem)
   host.append(el('span', 'status-bar__spacer'))
+
+  // The right: where the caret is, then the machine the IDE is running on.
+  pathItem = el('span', 'status-bar__item status-bar__item--path')
+  positionItem = el('span', 'status-bar__item status-bar__item--position')
+  languageItem = el('span', 'status-bar__item status-bar__item--language')
+  setEditorStatus(null)
 
   // Empty and hidden until the Visualizer is minimized. The listener is bound
   // once here rather than in `setVisualizerStatus`, which runs on every
@@ -290,6 +361,9 @@ export function mountStatusBar(statusBar: HTMLElement): StatusBarHandle {
     visualizerActivate?.()
   })
   host.append(visualizerSlot)
+
+  host.append(pathItem, positionItem, languageItem)
+  host.append(button('status-bar__item--substrate', 'Substrate', 'Toggle Substrate', actions.toggleSubstrate))
 
   indicator = el('button', 'status-bar__item status-bar__item--button')
   indicator.type = 'button'
@@ -308,7 +382,13 @@ export function mountStatusBar(statusBar: HTMLElement): StatusBarHandle {
   usageItem.hidden = true
   host.append(usageItem)
 
-  const build = el('span', 'status-bar__item', 'BetterCallCompiler')
+  const bridge = el('span', 'status-bar__item status-bar__item--bridge')
+  const bridgeDot = el('span', 'status-bar__dot')
+  const bridgeLabel = document.createTextNode('Connecting…')
+  bridge.append(bridgeDot, bridgeLabel)
+  host.append(bridge)
+
+  const build = el('span', 'status-bar__item status-bar__item--build', 'BetterCallCompiler')
   host.append(build)
 
   document.addEventListener('click', closePopover)
@@ -329,8 +409,9 @@ export function mountStatusBar(statusBar: HTMLElement): StatusBarHandle {
   void refreshUsage()
 
   return {
-    setBridge: (text, state) => {
+    setBridge: (text, state, detail) => {
       bridgeLabel.textContent = text
+      bridge.title = detail ?? ''
       bridgeDot.className = `status-bar__dot status-bar__dot--${state}`
     },
     setBuild: (text) => {

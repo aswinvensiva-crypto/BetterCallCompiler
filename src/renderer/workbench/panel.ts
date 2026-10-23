@@ -1,6 +1,6 @@
 import { createTerminal, hasTerminals, mountTerminals, refitActive } from '../terminal/xterm-view'
 import { mountRunView, refitOutput, showRunActions } from '../views/run'
-import { mountProblems, onProblemsShown } from '../views/problems'
+import { counts as problemCounts, mountProblems, onProblemsChanged, onProblemsShown } from '../views/problems'
 import { mountDebugView, onDebugShown } from '../views/debug'
 
 /**
@@ -63,6 +63,21 @@ function renderViewTabs(): void {
     })
     viewTabStrip.append(tab)
   }
+  paintProblemsCount()
+}
+
+/**
+ * The error count on the Problems tab. An attribute the stylesheet draws, not
+ * text: the tab's name stays "Problems" for anything that reads it, and a
+ * count arriving does not rebuild the strip.
+ */
+function paintProblemsCount(): void {
+  const tab = viewTabStrip?.querySelector<HTMLElement>('.panel-view-tab[data-view-id="problems"]')
+  if (tab == null) return
+  const { errors } = problemCounts()
+  if (errors > 0) tab.dataset['count'] = errors > 99 ? '99+' : String(errors)
+  else delete tab.dataset['count']
+  tab.title = errors > 0 ? `${errors} error${errors === 1 ? '' : 's'}` : ''
 }
 
 export async function showPanelView(id: PanelViewId): Promise<void> {
@@ -226,6 +241,7 @@ export function mountPanel(
   // event stream, and a panel that only starts listening when first opened
   // would miss every diagnostic produced before that.
   mountProblems(problemsBody, problemsActions)
+  onProblemsChanged(paintProblemsCount)
   // Also eager, for the same reason and one more: the session's `stopped`
   // events start arriving the moment Debug is pressed, and the command that
   // presses it can be run from the palette without the panel ever having been

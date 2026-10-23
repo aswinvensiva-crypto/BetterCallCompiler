@@ -40,6 +40,30 @@ let workspaceRoot: string | null = null
 /** Collapsed files, keyed by relative path. Survives re-renders. */
 const collapsed = new Set<string>()
 
+const changeListeners = new Set<() => void>()
+
+/**
+ * Fires whenever the set of diagnostics changes — for the counts shown outside
+ * this panel: the activity-bar badge, the panel tab and the file tree.
+ */
+export function onProblemsChanged(listener: () => void): () => void {
+  changeListeners.add(listener)
+  return () => {
+    changeListeners.delete(listener)
+  }
+}
+
+function notifyChanged(): void {
+  for (const listener of changeListeners) listener()
+}
+
+/** Errors in one file, by workspace-relative path in either slash direction. */
+export function errorCountFor(relativePath: string): number {
+  const key = relativePath.replace(/\\/g, '/')
+  const file = files.find((candidate) => candidate.relativePath.replace(/\\/g, '/') === key)
+  return file === undefined ? 0 : file.diagnostics.filter((d) => d.severity === 'error').length
+}
+
 function el<K extends keyof HTMLElementTagNameMap>(
   tag: K,
   className?: string,
@@ -70,7 +94,7 @@ function visibleFiles(): FileDiagnostics[] {
     })
 }
 
-function counts(): { errors: number; warnings: number } {
+export function counts(): { errors: number; warnings: number } {
   let errors = 0
   let warnings = 0
   for (const file of files) {
@@ -299,6 +323,7 @@ export function mountProblems(body: HTMLElement, actions: HTMLElement): void {
   window.betterCallCompiler.compiler.onDiagnosticsChanged((batch) => {
     mergeBatch(batch.files)
     render()
+    notifyChanged()
   })
 
   window.betterCallCompiler.compiler.onStatusChanged((next) => {
@@ -306,6 +331,7 @@ export function mountProblems(body: HTMLElement, actions: HTMLElement): void {
     // A restart invalidates everything the previous worker reported.
     if (next.state === 'restarting') files = []
     render()
+    notifyChanged()
   })
 
   void refresh()
@@ -323,6 +349,7 @@ export async function refresh(): Promise<void> {
   if (snapshot.ok) files = snapshot.value.files
   if (current.ok) status = current.value.status
   render()
+  notifyChanged()
 }
 
 export function onProblemsShown(): void {
